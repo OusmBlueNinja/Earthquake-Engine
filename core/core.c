@@ -102,7 +102,7 @@ void loop_application(void)
         accum += dt;
         if (accum >= 1.0)
         {
-            printf("dt: %.6f\n", dt);
+            printf("dt: %.6f fps: %.1f\n", dt, 1.0f / dt);
             accum = 0.0;
         }
 
