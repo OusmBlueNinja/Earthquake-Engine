@@ -1,0 +1,70 @@
+# --- Build directories ---
+build/
+bin/
+out/
+dist/
+
+# --- VSCode ---
+.vscode/
+
+# --- C/C++ build artifacts ---
+*.o
+*.obj
+*.lo
+*.la
+*.al
+*.a
+*.lib
+*.dll
+*.so
+*.dylib
+*.exe
+*.out
+*.app
+
+# --- CMake ---
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+Makefile
+*.cmake
+
+# --- Compiled static / shared libs ---
+*.lai
+*.slo
+*.lo
+*.la
+*.a
+*.so
+*.so.*
+*.dylib
+
+# --- Debug files ---
+*.dSYM/
+*.pdb
+*.idb
+*.ilk
+
+# --- Intermediate files ---
+*.pch
+*.gch
+*.deps
+*.d
+
+# --- IDE / Tooling ---
+*.user
+*.userossc
+*.suo
+*.sdf
+*.cache
+*.VC.db
+*.VC.VC.opendb
+
+# --- Logs ---
+*.log
+
+# --- Misc ---
+*.tmp
+*.swp
+*.DS_Store
