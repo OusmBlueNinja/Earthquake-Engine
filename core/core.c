@@ -102,12 +102,12 @@ void loop_application(void)
         accum += dt;
         if (accum >= 1.0)
         {
-            printf("dt: %.6f\n", dt);
+            printf("dt: %.6f fps: %.1f\n", dt, 1.0f / dt);
             accum = 0.0;
         }
 
         float t = (float)now;
-        float hue = fmodf(t * 0.10f, 1.0f); // 0.20 Hz => 5s per cycle
+        float hue = fmodf(t * 0.10f, 1.0f);
         vec4 color = hsv_to_rgb(hue, 1.0f, 1.0f, 1.0f);
         R_set_clear_color(&g_application.renderer, color);
 
