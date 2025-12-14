@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(GameEngine C)
+project(Earthquake C)
 include(FetchContent)
 
 set(CMAKE_C_STANDARD 23)
