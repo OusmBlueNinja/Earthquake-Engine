@@ -1,6 +1,8 @@
 #include "renderer.h"
-
+#include "utils/logger.h"
 #if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+
 #include <windows.h>
 #endif
 
@@ -27,6 +29,7 @@ int R_init(renderer_t *r)
 
 void R_shutdown(renderer_t *r)
 {
+    LOG_INFO("Shutting down Renderer");
     (void)r;
 }
 

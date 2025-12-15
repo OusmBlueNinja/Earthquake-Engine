@@ -3,13 +3,23 @@
 
 Application g_application;
 
+ApplicationSpecification create_specification()
+{
+    ApplicationSpecification spec;
+    spec.window_size = (vec2i){1270, 720};
+    spec.vsync = true;
+    spec.argc = 0;
+    spec.argv = NULL;
+    spec.terminal_colors = true;
+
+    return spec;
+}
+
 Application *create_application(ApplicationSpecification *specification)
 {
 
     if (!specification)
         return NULL;
-
-    printf("Creating Application\n");
 
     g_application.application_initalized = true;
 
@@ -36,14 +46,22 @@ void delete_application(Application *app)
 
     g_application.application_initalized = false;
 
+    R_shutdown(&g_application.renderer);
+
     wm_shutdown(&g_application.window_manager);
 
-    printf("Shutdown Application\n");
+    sv_shutdown();
 
-    printf("Application Shutdown with status: '%d'", g_application.status);
+    cvar_shutdown();
+
+    LOG_INFO("Shutdown Application");
+    if (!g_application.status)
+        LOG_OK("status: %d", g_application.status);
+    else
+        LOG_ERROR("error: %d", g_application.status);
 }
 
-void start_application(Application *app)
+void init_application(Application *app)
 {
     if (!app)
     {
@@ -63,7 +81,9 @@ void start_application(Application *app)
         return;
     }
 
-    printf("Starting Application\n");
+    log_enable_colors(g_application.specification->terminal_colors);
+
+    LOG_INFO("Starting Application");
 
     if (wm_init(&g_application.window_manager))
     {
@@ -71,9 +91,21 @@ void start_application(Application *app)
         return;
     }
 
-    if (R_init(&g_application.renderer) != 0)
+    if (R_init(&g_application.renderer))
     {
         g_application.status = APP_STATUS_FAILED_TO_INITALIZE_RENDERER;
+        return;
+    }
+
+    if (cvar_init())
+    {
+        g_application.status = APP_STATUS_FAILED_TO_INIT_CVARS;
+        return;
+    }
+
+    if (sv_init())
+    {
+        g_application.status = APP_STATUS_FAILED_TO_INIT_SV;
         return;
     }
 
@@ -102,7 +134,7 @@ void loop_application(void)
         accum += dt;
         if (accum >= 1.0)
         {
-            printf("dt: %.6f fps: %.1f\n", dt, 1.0f / dt);
+            LOG_DEBUG("dt: %.6f fps: %.1f", dt, 1.0f / dt);
             accum = 0.0;
         }
 

@@ -1,10 +1,11 @@
 #include <GLFW/glfw3.h>
 #include "window_manager.h"
 #include <stdio.h>
+#include "utils/logger.h"
 
 static void wm_error_callback(int error, const char *description)
 {
-    fprintf(stderr, "GLFW error %d: %s\n", error, description);
+    LOG_ERROR("GLFW error %d: %s", error, description);
 }
 
 int wm_init(window_manager *wm)
@@ -17,13 +18,13 @@ int wm_init(window_manager *wm)
     if (wm->size.y <= 0)
         wm->size.y = 600;
     if (!wm->title)
-        wm->title = "GLFW Window";
+        wm->title = "Earthquake Engine: Invalid Title";
 
     glfwSetErrorCallback(wm_error_callback);
 
     if (!glfwInit())
     {
-        printf("Failed to initialize GLFW\n");
+        LOG_ERROR("Failed to initialize GLFW");
         return 2;
     }
 
@@ -38,14 +39,14 @@ int wm_init(window_manager *wm)
     wm->window = glfwCreateWindow(wm->size.x, wm->size.y, wm->title, NULL, NULL);
     if (!wm->window)
     {
-        printf("Failed to create GLFW window\n");
+        LOG_ERROR("Failed to create window");
         glfwTerminate();
         return 3;
     }
 
     glfwMakeContextCurrent(wm->window);
     glfwSwapInterval(0);
-    printf("Created Window\n");
+    LOG_OK("Created Window");
     return 0;
 }
 
@@ -53,6 +54,8 @@ void wm_shutdown(window_manager *wm)
 {
     if (!wm)
         return;
+
+    LOG_INFO("Shutting Down Window Manager");
 
     if (wm->window)
     {

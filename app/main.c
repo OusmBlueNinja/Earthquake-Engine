@@ -2,16 +2,13 @@
 
 int main(int argc, char **argv)
 {
-    ApplicationSpecification specification;
-    specification.window_size.x = 1280;
-    specification.window_size.y = 720;
-
+    ApplicationSpecification specification = create_specification();
     specification.argc = argc;
     specification.argv = argv;
 
     Application *app = create_application(&specification);
 
-    start_application(app);
+    init_application(app);
 
     int status = app->status;
 
