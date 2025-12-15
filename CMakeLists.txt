@@ -31,6 +31,10 @@ file(GLOB_RECURSE CORE_SRC CONFIGURE_DEPENDS
 
 add_library(core STATIC ${CORE_SRC})
 
+if(WIN32)
+    target_link_libraries(core PUBLIC ws2_32)
+endif()
+
 target_include_directories(core PUBLIC
     "${CMAKE_SOURCE_DIR}"
     "${CMAKE_SOURCE_DIR}/core"

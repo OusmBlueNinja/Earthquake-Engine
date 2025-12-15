@@ -124,7 +124,7 @@ void loop_application(void)
 {
     double last_frame = wm_get_time();
     double accum = 0.0;
-
+    sv_start();
     while (!wm_should_close(&g_application.window_manager))
     {
         double now = wm_get_time();
@@ -150,4 +150,5 @@ void loop_application(void)
 
         wm_swap_buffers(&g_application.window_manager);
     }
+    sv_stop();
 }
