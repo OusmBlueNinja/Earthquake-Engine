@@ -6,6 +6,7 @@ dist/
 
 # --- VSCode ---
 .vscode/
+.idea/
 
 # --- C/C++ build artifacts ---
 *.o

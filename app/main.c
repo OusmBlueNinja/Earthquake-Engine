@@ -10,7 +10,7 @@ int main(int argc, char **argv)
 
     init_application(app);
 
-    int status = app->status;
+    const int status = app->status;
 
     delete_application(app);
     return status;

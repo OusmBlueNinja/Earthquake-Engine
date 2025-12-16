@@ -16,7 +16,7 @@
 
 #include "utils/logger.h"
 
-#define ENGINE_V "25.0.1a"
+#define ENGINE_V "25.0.1b"
 #define ENGINE_N "Earthquake"
 
 typedef struct ApplicationSpecification

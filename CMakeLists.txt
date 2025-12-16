@@ -24,6 +24,7 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(glfw)
 
 find_package(OpenGL REQUIRED)
+find_package(GLEW REQUIRED)
 
 file(GLOB_RECURSE CORE_SRC CONFIGURE_DEPENDS
     "${CMAKE_SOURCE_DIR}/core/*.c"
@@ -49,6 +50,7 @@ file(GLOB_RECURSE APP_SRC CONFIGURE_DEPENDS
 target_link_libraries(core PUBLIC
     glfw
     OpenGL::GL
+    GLEW::GLEW
 )
 
 add_executable(app ${APP_SRC})
