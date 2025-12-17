@@ -51,5 +51,9 @@ void vector_impl_remove_at(vector_t *v, uint32_t index);
         vector_impl_resize(v, n, &tmp);     \
     } while (0)
 
-#define VECTOR_FOR_EACH(v, type, it) \
-    for (type *it = (type *)(v).data; it < ((type *)(v).data + (v).size); ++it)
+#define VECTOR_FOR_EACH(v, type, it)               \
+    for (uint32_t _i = 0;                          \
+         _i < (v).size &&                          \
+         ((it) = (type *)((uint8_t *)(v).data +    \
+                          _i * (v).element_size)); \
+         ++_i)

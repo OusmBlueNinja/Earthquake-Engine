@@ -1,9 +1,8 @@
 #ifndef LOGGER_H
 #define LOGGER_H
-#define _DEBUG
 
 #include <stdio.h>
-/* Log levels */
+
 typedef enum
 {
     LOG_LEVEL_DEBUG = 0,

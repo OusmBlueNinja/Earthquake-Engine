@@ -3,6 +3,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdbool.h>
+#include <stdint.h>
 
 #include "layer.h"
 
@@ -70,7 +71,7 @@ void delete_application(Application *app);
 /* This starts the application and initalizes it */
 void init_application(Application *app);
 
-void uint32_t(layer_t layer);
+uint32_t push_layer(layer_t layer);
 
 //! PRIVATE
 void loop_application();

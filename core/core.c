@@ -44,6 +44,20 @@ void delete_application(Application *app)
         return;
     }
 
+    {
+        // shutdown Layers
+        layer_t *layer;
+        VECTOR_FOR_EACH(g_application.layers, layer_t, layer)
+        {
+            if (layer->shutdown)
+            {
+                LOG_INFO("Shutting Down Layer: '%s'", layer->name);
+
+                layer->shutdown(layer);
+            }
+        }
+    }
+
     if (!cvar_save("./config.cfg"))
     {
         LOG_WARN("Faild to save Config.");
@@ -119,12 +133,18 @@ void init_application(Application *app)
         LOG_WARN("Faild to load Config.");
     }
 
-    R_set_clear_color(&g_application.renderer, (vec4){
-                                                   255.0f / 255.0f,
-                                                   80.0f / 255.0f,
-                                                   200.0f / 255.0f,
-                                                   255.0f / 255.0f,
-                                               });
+    {
+        // Init Layers
+        layer_t *layer;
+        VECTOR_FOR_EACH(g_application.layers, layer_t, layer)
+        {
+            if (layer->init)
+            {
+                LOG_INFO("Initializing Layer: '%s'", layer->name);
+                layer->init(layer);
+            }
+        }
+    }
 
     g_application.running = true;
     loop_application();
@@ -145,18 +165,35 @@ void loop_application(void)
         accum += dt;
         if (accum >= 1.0)
         {
-            LOG_DEBUG("dt: %.6f fps: %.1f", dt, 1.0f / dt);
+            LOG_DEBUG("dt: %.7f fps: %.1f", dt, 1.0f / dt);
             accum = 0.0;
         }
 
-        const float t = (float)now;
-        const float hue = fmodf(t * 0.05f, 1.0f);
-        const vec4 color = hsv_to_rgb(hue, 1.0f, 1.0f, 1.0f);
-        R_set_clear_color(&g_application.renderer, color);
-
         wm_poll(&g_application.window_manager);
+
+        {
+            // Update Layers
+            layer_t *layer;
+            VECTOR_FOR_EACH(g_application.layers, layer_t, layer)
+            {
+                if (layer->update)
+                    layer->update(layer, dt);
+            }
+        }
+
         R_resize(&g_application.renderer, g_application.window_manager.size);
         R_begin_frame(&g_application.renderer);
+
+        {
+            // Draw Layers
+            layer_t *layer;
+            VECTOR_FOR_EACH(g_application.layers, layer_t, layer)
+            {
+                if (layer->draw)
+                    layer->draw(layer);
+            }
+        }
+
         R_end_frame(&g_application.renderer);
 
         wm_begin_frame(&g_application.window_manager);
