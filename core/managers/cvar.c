@@ -1,168 +1,119 @@
 #include "cvar.h"
 #include <string.h>
+#include <stddef.h>
 
 typedef struct
 {
     const char *name;
+    uint32_t hash;
     cvar_type_t type;
-    int32_t def_i;
-    bool def_b;
-    const char *def_s;
-    int32_t i;
-    bool b;
-    char s[64];
+    uint32_t flags;
+    union
+    {
+        int32_t i;
+        bool b;
+        char s[64];
+    } value;
+    union
+    {
+        int32_t i;
+        bool b;
+        const char *s;
+    } def;
 } cvar_entry_t;
 
 static cvar_entry_t g_cvars[SV_CVAR_COUNT] = {
-    [SV_MAX_PLAYERS] = {.name = "sv_max_players", .type = CVAR_INT, .def_i = 20},
-    [SV_HOST] = {.name = "sv_host", .type = CVAR_STRING, .def_s = "0.0.0.0"},
-    [SV_PORT] = {.name = "sv_port", .type = CVAR_INT, .def_i = 20},
+    [SV_MAX_PLAYERS] = {.name = "sv_max_players", .type = CVAR_INT, .def.i = 20, .flags = CVAR_FLAG_NONE},
+    [SV_HOST] = {.name = "sv_host", .type = CVAR_STRING, .def.s = "0.0.0.0", .flags = CVAR_FLAG_NO_SAVE},
+    [SV_PORT] = {.name = "sv_port", .type = CVAR_INT, .def.i = 20, .flags = CVAR_FLAG_NONE},
+    [CL_VSYNC] = {.name = "cl_vsync", .type = CVAR_BOOL, .def.b = true, .flags = CVAR_FLAG_READONLY},
 };
 
-static bool g_cvars_inited = false;
-
-static bool key_ok(sv_cvar_key_t key)
+static uint32_t fnv1a(const char *s)
 {
-    return (key >= 0) && (key < SV_CVAR_COUNT);
+    uint32_t h = 2166136261u;
+    while (*s)
+    {
+        h ^= (uint8_t)*s++;
+        h *= 16777619u;
+    }
+    return h;
+}
+
+static sv_cvar_key_t find_key(const char *name)
+{
+    uint32_t h = fnv1a(name);
+    for (int i = 0; i < SV_CVAR_COUNT; ++i)
+        if (g_cvars[i].hash == h)
+            return (sv_cvar_key_t)i;
+    return SV_CVAR_COUNT;
 }
 
 int cvar_init(void)
 {
-    if (SV_CVAR_COUNT == 0)
+    for (int i = 0; i < SV_CVAR_COUNT; ++i)
     {
-        return 1;
-    }
-
-    for (int i = 0; i < (int)SV_CVAR_COUNT; ++i)
-    {
-        g_cvars[i].i = g_cvars[i].def_i;
-        g_cvars[i].b = g_cvars[i].def_b;
-        if (g_cvars[i].def_s)
+        g_cvars[i].hash = fnv1a(g_cvars[i].name);
+        switch (g_cvars[i].type)
         {
-            strncpy(g_cvars[i].s, g_cvars[i].def_s, sizeof(g_cvars[i].s) - 1);
-            g_cvars[i].s[sizeof(g_cvars[i].s) - 1] = 0;
-        }
-        else
-        {
-            g_cvars[i].s[0] = 0;
+        case CVAR_INT:
+            g_cvars[i].value.i = g_cvars[i].def.i;
+            break;
+        case CVAR_BOOL:
+            g_cvars[i].value.b = g_cvars[i].def.b;
+            break;
+        case CVAR_STRING:
+            strncpy(g_cvars[i].value.s, g_cvars[i].def.s, sizeof(g_cvars[i].value.s) - 1);
+            break;
         }
     }
-
-    g_cvars_inited = true;
     return 0;
 }
 
-void cvar_shutdown(void)
+void cvar_shutdown(void) {}
+
+int32_t cvar_get_int_name(const char *name)
 {
-    if (!g_cvars_inited)
-        return;
-
-    for (int i = 0; i < (int)SV_CVAR_COUNT; ++i)
-    {
-        g_cvars[i].i = g_cvars[i].def_i;
-        g_cvars[i].b = g_cvars[i].def_b;
-        g_cvars[i].s[0] = 0;
-    }
-
-    g_cvars_inited = false;
+    sv_cvar_key_t k = find_key(name);
+    return k < SV_CVAR_COUNT && g_cvars[k].type == CVAR_INT ? g_cvars[k].value.i : 0;
 }
 
-cvar_type_t cvar_type(sv_cvar_key_t key)
+bool cvar_set_int_name(const char *name, int32_t v)
 {
-    if (!key_ok(key))
-        return CVAR_INT;
-    return g_cvars[key].type;
-}
-
-const char *cvar_name(sv_cvar_key_t key)
-{
-    if (!key_ok(key))
-        return "";
-    return g_cvars[key].name ? g_cvars[key].name : "";
-}
-
-bool cvar_set_int(sv_cvar_key_t key, int32_t v)
-{
-    if (!key_ok(key))
+    sv_cvar_key_t k = find_key(name);
+    if (k >= SV_CVAR_COUNT || g_cvars[k].type != CVAR_INT || (g_cvars[k].flags & CVAR_FLAG_READONLY))
         return false;
-    if (g_cvars[key].type != CVAR_INT)
-        return false;
-    g_cvars[key].i = v;
+    g_cvars[k].value.i = v;
     return true;
 }
 
-bool cvar_get_int(sv_cvar_key_t key, int32_t *out_v)
+bool cvar_get_bool_name(const char *name)
 {
-    if (!key_ok(key) || !out_v)
+    sv_cvar_key_t k = find_key(name);
+    return k < SV_CVAR_COUNT && g_cvars[k].type == CVAR_BOOL ? g_cvars[k].value.b : false;
+}
+
+bool cvar_set_bool_name(const char *name, bool v)
+{
+    sv_cvar_key_t k = find_key(name);
+    if (k >= SV_CVAR_COUNT || g_cvars[k].type != CVAR_BOOL || (g_cvars[k].flags & CVAR_FLAG_READONLY))
         return false;
-    if (g_cvars[key].type != CVAR_INT)
-        return false;
-    *out_v = g_cvars[key].i;
+    g_cvars[k].value.b = v;
     return true;
 }
 
-bool cvar_set_bool(sv_cvar_key_t key, bool v)
+const char *cvar_get_string_name(const char *name)
 {
-    if (!key_ok(key))
+    sv_cvar_key_t k = find_key(name);
+    return k < SV_CVAR_COUNT && g_cvars[k].type == CVAR_STRING ? g_cvars[k].value.s : "";
+}
+
+bool cvar_set_string_name(const char *name, const char *v)
+{
+    sv_cvar_key_t k = find_key(name);
+    if (k >= SV_CVAR_COUNT || g_cvars[k].type != CVAR_STRING || (g_cvars[k].flags & CVAR_FLAG_READONLY))
         return false;
-    if (g_cvars[key].type != CVAR_BOOL)
-        return false;
-    g_cvars[key].b = v;
+    strncpy(g_cvars[k].value.s, v, sizeof(g_cvars[k].value.s) - 1);
+    g_cvars[k].value.s[sizeof(g_cvars[k].value.s) - 1] = 0;
     return true;
-}
-
-bool cvar_get_bool(sv_cvar_key_t key, bool *out_v)
-{
-    if (!key_ok(key) || !out_v)
-        return false;
-    if (g_cvars[key].type != CVAR_BOOL)
-        return false;
-    *out_v = g_cvars[key].b;
-    return true;
-}
-
-bool cvar_set_string(sv_cvar_key_t key, const char *s)
-{
-    if (!key_ok(key) || !s)
-        return false;
-    if (g_cvars[key].type != CVAR_STRING)
-        return false;
-    strncpy(g_cvars[key].s, s, sizeof(g_cvars[key].s) - 1);
-    g_cvars[key].s[sizeof(g_cvars[key].s) - 1] = 0;
-    return true;
-}
-
-bool cvar_get_string(sv_cvar_key_t key, char *out, size_t out_len)
-{
-    if (!key_ok(key) || !out || out_len == 0)
-        return false;
-    if (g_cvars[key].type != CVAR_STRING)
-        return false;
-    size_t n = strlen(g_cvars[key].s);
-    if (n + 1 > out_len)
-        return false;
-    memcpy(out, g_cvars[key].s, n + 1);
-    return true;
-}
-
-void cvar_reset(sv_cvar_key_t key)
-{
-    if (!key_ok(key))
-        return;
-    g_cvars[key].i = g_cvars[key].def_i;
-    g_cvars[key].b = g_cvars[key].def_b;
-    if (g_cvars[key].def_s)
-    {
-        strncpy(g_cvars[key].s, g_cvars[key].def_s, sizeof(g_cvars[key].s) - 1);
-        g_cvars[key].s[sizeof(g_cvars[key].s) - 1] = 0;
-    }
-    else
-    {
-        g_cvars[key].s[0] = 0;
-    }
-}
-
-void cvar_reset_all(void)
-{
-    cvar_init();
 }

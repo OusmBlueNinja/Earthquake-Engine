@@ -3,6 +3,7 @@
 #include "window_manager.h"
 #include <stdio.h>
 #include "utils/logger.h"
+#include "cvar.h"
 
 static void wm_error_callback(int error, const char *description)
 {
@@ -55,8 +56,7 @@ int wm_init(window_manager *wm)
     {
         LOG_ERROR("Framebuffer objects not supported!\n");
     }
-
-    glfwSwapInterval(0);
+    wm_set_vsync(wm, cvar_get_bool_name("cl_vsync"));
     LOG_OK("Created Window");
     return 0;
 }
@@ -99,7 +99,14 @@ void wm_set_vsync(window_manager *wm, int state)
 {
     if (wm && wm->window)
     {
+        if (state >= WM_VSYNC_MAX)
+        {
+            LOG_ERROR("Invalid VSync State: %d", state);
+            return;
+        }
+
         glfwSwapInterval(state);
+        LOG_INFO("SET STATE: %d", state);
         wm->vsync = state;
     }
 }

@@ -17,6 +17,13 @@ typedef struct window_manager
     unsigned int fbo;
 } window_manager;
 
+enum
+{
+    WM_VSYNC_OFF = 0,
+    WM_VSYNC_ON = 1,
+    WM_VSYNC_MAX
+};
+
 int wm_init(window_manager *wm);
 
 void wm_shutdown(window_manager *wm);

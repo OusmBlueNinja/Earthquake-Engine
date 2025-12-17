@@ -9,12 +9,10 @@ static server_cfg_t sv_read_cfg(void)
 {
     server_cfg_t c;
 
-    char buff[MAX_IP_LEN];
-    cvar_get_string(SV_HOST, buff, sizeof(buff));
-    c.host = char_to_host(buff, sizeof(buff));
+    const char *host_str = cvar_get_string_name("sv_host");
+    c.host = char_to_host(host_str, sizeof(c.host));
 
-    int port_i;
-    cvar_get_int(SV_PORT, &port_i);
+    int32_t port_i = cvar_get_int_name("sv_port");
     if (port_i < 0)
         port_i = 0;
     if (port_i > SV_DEAFULT_PORT)

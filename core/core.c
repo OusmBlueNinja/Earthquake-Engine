@@ -6,7 +6,7 @@ ApplicationSpecification create_specification()
 {
     ApplicationSpecification spec;
     spec.window_size = (vec2i){1270, 720};
-    spec.vsync = true;
+    spec.vsync = WM_VSYNC_ON;
     spec.argc = 0;
     spec.argv = NULL;
     spec.terminal_colors = true;
@@ -137,7 +137,7 @@ void loop_application(void)
             accum = 0.0;
         }
 
-        const float t = (float)now ;
+        const float t = (float)now;
         const float hue = fmodf(t * 0.05f, 1.0f);
         const vec4 color = hsv_to_rgb(hue, 1.0f, 1.0f, 1.0f);
         R_set_clear_color(&g_application.renderer, color);

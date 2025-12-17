@@ -6,6 +6,8 @@ int main(int argc, char **argv)
     specification.argc = argc;
     specification.argv = argv;
 
+    specification.vsync = WM_VSYNC_ON;
+
     Application *app = create_application(&specification);
 
     init_application(app);
