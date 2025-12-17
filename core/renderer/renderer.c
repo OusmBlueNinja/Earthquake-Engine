@@ -13,9 +13,6 @@
 #include <GL/glew.h>
 #endif
 
-static camera_t g_camera;
-static light_t g_light;
-
 static void R_create_targets(renderer_t *r)
 {
     if (r->fbo)
@@ -133,21 +130,21 @@ void R_end_frame(renderer_t *r)
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
-void R_push_camera(const camera_t *cam)
+void R_push_camera(renderer_t *r, const camera_t *cam)
 {
     if (!cam)
         return;
-    g_camera = *cam;
+    r->current_camera = *cam;
 }
 
-void R_push_light(const light_t *light)
+void R_push_light(renderer_t *r, const light_t *light)
 {
     if (!light)
         return;
-    g_light = *light;
+    r->current_light = *light;
 }
 
-void R_draw_model(const model_t *model, mat4 model_matrix)
+void R_draw_model(renderer_t *r, const model_t *model, mat4 model_matrix)
 {
     if (!model || !model->material || !model->material->shader)
         return;
@@ -156,16 +153,16 @@ void R_draw_model(const model_t *model, mat4 model_matrix)
     shader_bind(s);
 
     shader_set_mat4(s, "u_Model", model_matrix);
-    shader_set_mat4(s, "u_View", g_camera.view);
-    shader_set_mat4(s, "u_Proj", g_camera.proj);
+    shader_set_mat4(s, "u_View", r->current_camera.view);
+    shader_set_mat4(s, "u_Proj", r->current_camera.proj);
 
-    shader_set_vec3(s, "u_CameraPos", g_camera.position);
+    shader_set_vec3(s, "u_CameraPos", r->current_camera.position);
 
-    shader_set_int(s, "u_LightType", g_light.type);
-    shader_set_vec3(s, "u_LightPos", g_light.position);
-    shader_set_vec3(s, "u_LightDir", g_light.direction);
-    shader_set_vec3(s, "u_LightColor", g_light.color);
-    shader_set_float(s, "u_LightIntensity", g_light.intensity);
+    shader_set_int(s, "u_LightType", r->current_light.type);
+    shader_set_vec3(s, "u_LightPos", r->current_light.position);
+    shader_set_vec3(s, "u_LightDir", r->current_light.direction);
+    shader_set_vec3(s, "u_LightColor", r->current_light.color);
+    shader_set_float(s, "u_LightIntensity", r->current_light.intensity);
 
     model_draw(model);
 }
