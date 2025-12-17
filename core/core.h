@@ -6,6 +6,8 @@
 
 #include "types/vec2.h"
 #include "types/vec2i.h"
+#include "types/vector.h"
+#include "types/vec3.h"
 
 #include "managers/window_manager.h"
 #include "managers/cvar.h"
@@ -15,6 +17,7 @@
 #include "net/server.h"
 
 #include "utils/logger.h"
+#include "utils/hsv_to_rgb.h"
 
 #define ENGINE_V "25.0.1b"
 #define ENGINE_N "Earthquake"

@@ -74,6 +74,8 @@ int R_init(renderer_t *r)
     glDisable(GL_BLEND);
 
     R_create_targets(r);
+
+    LOG_DEBUG("Created framebuffer '%d'", r->fbo);
     return 0;
 }
 

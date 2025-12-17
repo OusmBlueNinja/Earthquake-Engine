@@ -2,7 +2,6 @@
 #include <GLFW/glfw3.h>
 #include "window_manager.h"
 #include <stdio.h>
-
 #include "utils/logger.h"
 
 static void wm_error_callback(int error, const char *description)
@@ -24,7 +23,8 @@ int wm_init(window_manager *wm)
 
     glfwSetErrorCallback(wm_error_callback);
 
-    if (!glfwInit()) {
+    if (!glfwInit())
+    {
         LOG_ERROR("Failed to initialize GLFW");
         return 2;
     }
@@ -38,7 +38,8 @@ int wm_init(window_manager *wm)
 #endif
 
     wm->window = glfwCreateWindow(wm->size.x, wm->size.y, wm->title, NULL, NULL);
-    if (!wm->window) {
+    if (!wm->window)
+    {
         LOG_ERROR("Failed to create window");
         glfwTerminate();
         return 3;
@@ -50,8 +51,8 @@ int wm_init(window_manager *wm)
     if (err != GLEW_OK)
         LOG_ERROR("GLEW init failed: %s\n", glewGetErrorString(err));
 
-
-    if (!GLEW_ARB_framebuffer_object) {
+    if (!GLEW_ARB_framebuffer_object)
+    {
         LOG_ERROR("Framebuffer objects not supported!\n");
     }
 
@@ -67,7 +68,8 @@ void wm_shutdown(window_manager *wm)
 
     LOG_INFO("Shutting Down Window Manager");
 
-    if (wm->window) {
+    if (wm->window)
+    {
         glfwDestroyWindow(wm->window);
         wm->window = nullptr;
     }
@@ -83,7 +85,7 @@ bool wm_should_close(const window_manager *wm)
 
 void wm_poll(window_manager *wm)
 {
-    (void) wm;
+    (void)wm;
     glfwPollEvents();
 }
 
@@ -95,7 +97,8 @@ void wm_swap_buffers(window_manager *wm)
 
 void wm_set_vsync(window_manager *wm, int state)
 {
-    if (wm && wm->window) {
+    if (wm && wm->window)
+    {
         glfwSwapInterval(state);
         wm->vsync = state;
     }
@@ -103,7 +106,8 @@ void wm_set_vsync(window_manager *wm, int state)
 
 void wm_set_title(window_manager *wm, const char *title)
 {
-    if (wm && wm->window && title) {
+    if (wm && wm->window && title)
+    {
         wm->title = title;
         glfwSetWindowTitle(wm->window, title);
     }
@@ -116,9 +120,51 @@ double wm_get_time(void)
 
 vec2i wm_get_framebuffer_size(window_manager *wm)
 {
-    vec2i size;
-    if (wm && wm->window) {
+    vec2i size = {0, 0};
+    if (wm && wm->window)
+    {
         glfwGetFramebufferSize(wm->window, &size.x, &size.y);
     }
     return size;
+}
+
+void wm_bind_framebuffer(window_manager *wm, unsigned int framebuffer)
+{
+    wm->fbo = framebuffer;
+    glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+}
+
+void wm_begin_frame(window_manager *wm)
+{
+    if (wm->fbo != 0)
+        glBindFramebuffer(GL_FRAMEBUFFER, wm->fbo);
+    else
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    int width = 0, height = 0;
+    glfwGetFramebufferSize(glfwGetCurrentContext(), &width, &height);
+    glViewport(0, 0, width, height);
+}
+
+void wm_end_frame(window_manager *wm)
+{
+    if (wm->fbo != 0)
+    {
+        int width = 0, height = 0;
+        glfwGetFramebufferSize(glfwGetCurrentContext(), &width, &height);
+
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, wm->fbo);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+
+        glBlitFramebuffer(
+            0, 0, width, height,
+            0, 0, width, height,
+            GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    }
+
+    glfwSwapBuffers(glfwGetCurrentContext());
+    glfwPollEvents();
+
+    wm->fbo = 0;
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }

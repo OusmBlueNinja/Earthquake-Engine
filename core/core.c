@@ -1,7 +1,4 @@
 #include "core.h"
-#include "utils/hsv_to_rgb.h"
-#include "types/vector.h"
-#include "types/vec3.h"
 
 Application g_application;
 
@@ -39,7 +36,8 @@ Application *create_application(ApplicationSpecification *specification)
 
 void delete_application(Application *app)
 {
-    if (!app) {
+    if (!app)
+    {
         g_application.status = APP_STATUS_INVALID_APP;
         return;
     }
@@ -63,17 +61,20 @@ void delete_application(Application *app)
 
 void init_application(Application *app)
 {
-    if (!app) {
+    if (!app)
+    {
         g_application.status = APP_STATUS_INVALID_APP;
         return;
     }
 
-    if (app != &g_application) {
+    if (app != &g_application)
+    {
         g_application.status = APP_STATUS_MISMATCHING_APPLICATION;
         return;
     }
 
-    if (!g_application.application_initalized) {
+    if (!g_application.application_initalized)
+    {
         g_application.status = APP_STATUS_NOT_INITALIZED;
         return;
     }
@@ -82,33 +83,36 @@ void init_application(Application *app)
 
     LOG_INFO("Starting Application");
 
-    if (wm_init(&g_application.window_manager)) {
+    if (wm_init(&g_application.window_manager))
+    {
         g_application.status = APP_STATUS_FAILED_TO_CREATE_WINDOW;
         return;
     }
 
-    if (R_init(&g_application.renderer)) {
+    if (R_init(&g_application.renderer))
+    {
         g_application.status = APP_STATUS_FAILED_TO_INITALIZE_RENDERER;
         return;
     }
 
-    if (cvar_init()) {
+    if (cvar_init())
+    {
         g_application.status = APP_STATUS_FAILED_TO_INIT_CVARS;
         return;
     }
 
-    if (sv_init()) {
+    if (sv_init())
+    {
         g_application.status = APP_STATUS_FAILED_TO_INIT_SV;
         return;
     }
 
-
     R_set_clear_color(&g_application.renderer, (vec4){
-                          255.0f / 255.0f,
-                          80.0f / 255.0f,
-                          200.0f / 255.0f,
-                          255.0f / 255.0f,
-                      });
+                                                   255.0f / 255.0f,
+                                                   80.0f / 255.0f,
+                                                   200.0f / 255.0f,
+                                                   255.0f / 255.0f,
+                                               });
 
     g_application.running = true;
     loop_application();
@@ -120,19 +124,21 @@ void loop_application(void)
     double accum = 0.0;
     sv_start();
 
-    while (!wm_should_close(&g_application.window_manager)) {
+    while (!wm_should_close(&g_application.window_manager))
+    {
         const double now = wm_get_time();
         const double dt = now - last_frame;
         last_frame = now;
 
         accum += dt;
-        if (accum >= 1.0) {
+        if (accum >= 1.0)
+        {
             LOG_DEBUG("dt: %.6f fps: %.1f", dt, 1.0f / dt);
             accum = 0.0;
         }
 
-        const float t = (float) now;
-        const float hue = fmodf(t * 0.10f, 1.0f);
+        const float t = (float)now ;
+        const float hue = fmodf(t * 0.05f, 1.0f);
         const vec4 color = hsv_to_rgb(hue, 1.0f, 1.0f, 1.0f);
         R_set_clear_color(&g_application.renderer, color);
 
@@ -141,7 +147,9 @@ void loop_application(void)
         R_begin_frame(&g_application.renderer);
         R_end_frame(&g_application.renderer);
 
-        wm_swap_buffers(&g_application.window_manager);
+        wm_begin_frame(&g_application.window_manager);
+        wm_bind_framebuffer(&g_application.window_manager, R_get_color_texture(&g_application.renderer));
+        wm_end_frame(&g_application.window_manager);
     }
     sv_stop();
 }

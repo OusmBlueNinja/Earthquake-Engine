@@ -3,7 +3,6 @@
 #include "types/vec2.h"
 #include "types/vec2i.h"
 
-
 #define WM_DEFAULT_WIDTH 1280
 #define WM_DEFAULT_HEIGHT 720
 
@@ -15,6 +14,7 @@ typedef struct window_manager
     vec2i size;
     const char *title;
     int vsync;
+    unsigned int fbo;
 } window_manager;
 
 int wm_init(window_manager *wm);
@@ -34,3 +34,7 @@ void wm_set_title(window_manager *wm, const char *title);
 double wm_get_time(void);
 
 vec2i wm_get_framebuffer_size(window_manager *wm);
+
+void wm_bind_framebuffer(window_manager *wm, unsigned int framebuffer);
+void wm_begin_frame(window_manager *wm);
+void wm_end_frame(window_manager *wm);
