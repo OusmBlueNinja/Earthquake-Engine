@@ -38,3 +38,6 @@ bool cvar_set_bool_name(const char *name, bool v);
 
 const char *cvar_get_string_name(const char *name);
 bool cvar_set_string_name(const char *name, const char *v);
+
+bool cvar_save(const char *filename);
+bool cvar_load(const char *filename);

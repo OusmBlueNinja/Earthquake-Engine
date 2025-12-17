@@ -1,6 +1,8 @@
 #include "cvar.h"
 #include <string.h>
 #include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 typedef struct
 {
@@ -23,10 +25,10 @@ typedef struct
 } cvar_entry_t;
 
 static cvar_entry_t g_cvars[SV_CVAR_COUNT] = {
-    [SV_MAX_PLAYERS] = {.name = "sv_max_players", .type = CVAR_INT, .def.i = 20, .flags = CVAR_FLAG_NONE},
-    [SV_HOST] = {.name = "sv_host", .type = CVAR_STRING, .def.s = "0.0.0.0", .flags = CVAR_FLAG_NO_SAVE},
-    [SV_PORT] = {.name = "sv_port", .type = CVAR_INT, .def.i = 20, .flags = CVAR_FLAG_NONE},
-    [CL_VSYNC] = {.name = "cl_vsync", .type = CVAR_BOOL, .def.b = true, .flags = CVAR_FLAG_READONLY},
+    [SV_MAX_PLAYERS] = {.name = "sv_max_players", .type = CVAR_INT, .def.i = 20, .flags = CVAR_FLAG_CHEATS | CVAR_FLAG_NO_LOAD},
+    [SV_HOST] = {.name = "sv_host", .type = CVAR_STRING, .def.s = "0.0.0.0", .flags = CVAR_FLAG_READONLY | CVAR_FLAG_NO_LOAD},
+    [SV_PORT] = {.name = "sv_port", .type = CVAR_INT, .def.i = 20, .flags = CVAR_FLAG_READONLY | CVAR_FLAG_NO_LOAD},
+    [CL_VSYNC] = {.name = "cl_vsync", .type = CVAR_BOOL, .def.b = true, .flags = CVAR_FLAG_NONE},
 };
 
 static uint32_t fnv1a(const char *s)
@@ -115,5 +117,70 @@ bool cvar_set_string_name(const char *name, const char *v)
         return false;
     strncpy(g_cvars[k].value.s, v, sizeof(g_cvars[k].value.s) - 1);
     g_cvars[k].value.s[sizeof(g_cvars[k].value.s) - 1] = 0;
+    return true;
+}
+
+bool cvar_save(const char *filename)
+{
+    FILE *f = fopen(filename, "w");
+    if (!f)
+        return false;
+
+    for (int i = 0; i < SV_CVAR_COUNT; ++i)
+    {
+        if (g_cvars[i].flags & CVAR_FLAG_NO_SAVE)
+            continue;
+
+        switch (g_cvars[i].type)
+        {
+        case CVAR_INT:
+            fprintf(f, "%s %d\n", g_cvars[i].name, g_cvars[i].value.i);
+            break;
+        case CVAR_BOOL:
+            fprintf(f, "%s %d\n", g_cvars[i].name, g_cvars[i].value.b ? 1 : 0);
+            break;
+        case CVAR_STRING:
+            fprintf(f, "%s %s\n", g_cvars[i].name, g_cvars[i].value.s);
+            break;
+        }
+    }
+
+    fclose(f);
+    return true;
+}
+
+bool cvar_load(const char *filename)
+{
+    FILE *f = fopen(filename, "r");
+    if (!f)
+        return false;
+
+    char name[64];
+    char value[64];
+
+    while (fscanf(f, "%63s %63s\n", name, value) == 2)
+    {
+        sv_cvar_key_t k = find_key(name);
+        if (k >= SV_CVAR_COUNT)
+            continue;
+        if (g_cvars[k].flags & CVAR_FLAG_NO_LOAD)
+            continue;
+
+        switch (g_cvars[k].type)
+        {
+        case CVAR_INT:
+            g_cvars[k].value.i = atoi(value);
+            break;
+        case CVAR_BOOL:
+            g_cvars[k].value.b = atoi(value) != 0;
+            break;
+        case CVAR_STRING:
+            strncpy(g_cvars[k].value.s, value, sizeof(g_cvars[k].value.s) - 1);
+            g_cvars[k].value.s[sizeof(g_cvars[k].value.s) - 1] = 0;
+            break;
+        }
+    }
+
+    fclose(f);
     return true;
 }

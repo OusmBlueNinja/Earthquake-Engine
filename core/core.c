@@ -42,6 +42,11 @@ void delete_application(Application *app)
         return;
     }
 
+    if (!cvar_save("./config.cfg"))
+    {
+        LOG_WARN("Faild to save Config.");
+    }
+
     g_application.application_initalized = false;
 
     R_shutdown(&g_application.renderer);
@@ -105,6 +110,11 @@ void init_application(Application *app)
     {
         g_application.status = APP_STATUS_FAILED_TO_INIT_SV;
         return;
+    }
+
+    if (!cvar_load("./config.cfg"))
+    {
+        LOG_WARN("Faild to load Config.");
     }
 
     R_set_clear_color(&g_application.renderer, (vec4){
