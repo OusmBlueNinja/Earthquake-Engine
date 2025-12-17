@@ -1,4 +1,5 @@
 #include "../core/core.h"
+#include "demo_layer.h"
 
 int main(int argc, char **argv)
 {
@@ -9,6 +10,8 @@ int main(int argc, char **argv)
     specification.vsync = WM_VSYNC_ON;
 
     Application *app = create_application(&specification);
+
+    push_layer(create_demo_layer());
 
     init_application(app);
 

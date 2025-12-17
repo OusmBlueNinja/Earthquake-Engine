@@ -3,10 +3,8 @@
 
 void model_draw(const model_t *model)
 {
-    if (!model || !model->mesh || !model->material)
+    if (!model || !model->mesh)
         return;
-
-    material_bind(model->material);
 
     glBindVertexArray(model->mesh->vao);
     glDrawElements(GL_TRIANGLES, model->mesh->index_count, GL_UNSIGNED_INT, 0);

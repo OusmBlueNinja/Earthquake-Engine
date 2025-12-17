@@ -31,6 +31,8 @@ Application *create_application(ApplicationSpecification *specification)
 
     g_application.window_manager.title = ENGINE_N " | v" ENGINE_V;
 
+    g_application.layers = create_vector(layer_t);
+
     return &g_application;
 }
 
@@ -61,7 +63,7 @@ void delete_application(Application *app)
     if (!g_application.status)
         LOG_OK("status: %d", g_application.status);
     else
-        LOG_ERROR("error: %d", g_application.status);
+        LOG_ERROR("error: '%s' (%d)", app_status_to_string(g_application.status), g_application.status);
 }
 
 void init_application(Application *app)
@@ -162,4 +164,34 @@ void loop_application(void)
         wm_end_frame(&g_application.window_manager);
     }
     sv_stop();
+}
+
+uint32_t push_layer(layer_t layer)
+{
+    layer.id = g_application.layers.size;
+    vector_push_back(&g_application.layers, &layer);
+    return layer.id;
+}
+
+const char *app_status_to_string(app_status_t status)
+{
+    switch (status)
+    {
+    case APP_STATUS_INVALID_APP:
+        return "APP_STATUS_INVALID_APP";
+    case APP_STATUS_MISMATCHING_APPLICATION:
+        return "APP_STATUS_MISMATCHING_APPLICATION";
+    case APP_STATUS_NOT_INITALIZED:
+        return "APP_STATUS_NOT_INITALIZED";
+    case APP_STATUS_FAILED_TO_CREATE_WINDOW:
+        return "APP_STATUS_FAILED_TO_CREATE_WINDOW";
+    case APP_STATUS_FAILED_TO_INITALIZE_RENDERER:
+        return "APP_STATUS_FAILED_TO_INITALIZE_RENDERER";
+    case APP_STATUS_FAILED_TO_INIT_CVARS:
+        return "APP_STATUS_FAILED_TO_INIT_CVARS";
+    case APP_STATUS_FAILED_TO_INIT_SV:
+        return "APP_STATUS_FAILED_TO_INIT_SV";
+    default:
+        return "UNKNOWN_APP_STATUS";
+    }
 }

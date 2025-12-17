@@ -4,6 +4,8 @@
 #include <stdio.h>
 #include <stdbool.h>
 
+#include "layer.h"
+
 #include "types/vec2.h"
 #include "types/vec2i.h"
 #include "types/vector.h"
@@ -56,6 +58,8 @@ typedef struct Application
     app_status_t status;
     bool running;
 
+    vector_t layers;
+
 } Application;
 
 ApplicationSpecification create_specification();
@@ -66,5 +70,9 @@ void delete_application(Application *app);
 /* This starts the application and initalizes it */
 void init_application(Application *app);
 
+void uint32_t(layer_t layer);
+
 //! PRIVATE
 void loop_application();
+
+const char *app_status_to_string(app_status_t status);
