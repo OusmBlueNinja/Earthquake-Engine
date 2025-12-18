@@ -26,9 +26,9 @@ typedef struct renderer_t
 
     camera_t camera;
 
-    vector_t lights;  // vector<light_t>
-    vector_t models;  // vector<pushed_model_t>
-    vector_t shaders; // vector<shader_t*>
+    vector_t lights;
+    vector_t models;
+    vector_t shaders; // vector<shader_t>
 
     uint8_t default_shader_id;
 } renderer_t;
@@ -47,5 +47,7 @@ void R_push_model(renderer_t *r, const model_t *model, mat4 model_matrix);
 uint32_t R_get_color_texture(const renderer_t *r);
 uint32_t R_get_depth_texture(const renderer_t *r);
 
-uint8_t R_add_shader(renderer_t *r, shader_t *shader); // returns shader index
+uint8_t R_add_shader(renderer_t *r, shader_t *shader);
 shader_t *R_get_shader(const renderer_t *r, uint8_t shader_id);
+
+const shader_t *R_get_shader_const(const renderer_t *r, uint8_t shader_id);

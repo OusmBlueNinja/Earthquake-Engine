@@ -4,7 +4,8 @@
 typedef enum
 {
     LIGHT_DIRECTIONAL = 0,
-    LIGHT_POINT,
+    LIGHT_POINT = 1,
+    LIGHT_SPOT = 2
 } light_type_t;
 
 typedef struct light_t
@@ -14,4 +15,7 @@ typedef struct light_t
     vec3 direction;
     vec3 color;
     float intensity;
+
+    float radius;
+    float range;
 } light_t;

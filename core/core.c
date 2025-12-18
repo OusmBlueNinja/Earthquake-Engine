@@ -43,7 +43,6 @@ void delete_application(Application *app)
         g_application.status = APP_STATUS_INVALID_APP;
         return;
     }
-
     {
         // shutdown Layers
         layer_t *layer;
@@ -122,7 +121,7 @@ void init_application(Application *app)
         return;
     }
 
-        if (sv_init())
+    if (sv_init())
     {
         g_application.status = APP_STATUS_FAILED_TO_INIT_SV;
         return;
@@ -132,7 +131,6 @@ void init_application(Application *app)
     {
         LOG_WARN("Faild to load Config.");
     }
-
     {
         // Init Layers
         layer_t *layer;
@@ -170,7 +168,6 @@ void loop_application(void)
         }
 
         wm_poll(&g_application.window_manager);
-
         {
             // Update Layers
             layer_t *layer;
@@ -183,7 +180,6 @@ void loop_application(void)
 
         R_resize(&g_application.renderer, g_application.window_manager.size);
         R_begin_frame(&g_application.renderer);
-
         {
             // Draw Layers
             layer_t *layer;
@@ -206,6 +202,8 @@ void loop_application(void)
 uint32_t push_layer(layer_t layer)
 {
     layer.id = g_application.layers.size;
+
+    layer.app = &g_application;
     vector_push_back(&g_application.layers, &layer);
     return layer.id;
 }

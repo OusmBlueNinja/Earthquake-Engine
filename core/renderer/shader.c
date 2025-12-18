@@ -1,33 +1,127 @@
 #include "shader.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdio.h>
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
+
 #include <GL/glew.h>
 
-static int shader_uniform_location(shader_t *shader, const char *name)
+static char *sh_strdup(const char *s)
 {
-    for (size_t i = 0; i < shader->uniform_count; i++)
-        if (strcmp(shader->uniforms[i].name, name) == 0)
-            return shader->uniforms[i].location;
+    if (!s)
+        return NULL;
+    size_t n = strlen(s);
+    char *r = (char *)malloc(n + 1);
+    if (!r)
+        return NULL;
+    memcpy(r, s, n + 1);
+    return r;
+}
 
-    int loc = glGetUniformLocation(shader->program, name);
-    if (loc == -1)
-        return -1;
-
-    if (shader->uniform_count == shader->uniform_capacity)
+static void *sh_realloc_array(void *ptr, size_t elem, size_t count)
+{
+    if (elem == 0 || count == 0)
     {
-        shader->uniform_capacity = shader->uniform_capacity ? shader->uniform_capacity * 2 : 8;
-        shader->uniforms = realloc(shader->uniforms,
-                                   shader->uniform_capacity * sizeof(uniform_cache_entry_t));
+        free(ptr);
+        return NULL;
+    }
+    size_t bytes = elem * count;
+    return realloc(ptr, bytes);
+}
+
+static int sh_define_index(const shader_t *shader, const char *key)
+{
+    if (!shader || !key)
+        return -1;
+    for (size_t i = 0; i < shader->define_count; ++i)
+        if (shader->defines[i].key && strcmp(shader->defines[i].key, key) == 0)
+            return (int)i;
+    return -1;
+}
+
+static void sh_uniform_cache_clear(shader_t *shader)
+{
+    if (!shader)
+        return;
+    for (size_t i = 0; i < shader->uniform_count; ++i)
+        free(shader->uniforms[i].name);
+    free(shader->uniforms);
+    shader->uniforms = NULL;
+    shader->uniform_count = 0;
+    shader->uniform_capacity = 0;
+}
+
+static int sh_uniform_cache_find(const shader_t *shader, const char *name)
+{
+    for (size_t i = 0; i < shader->uniform_count; ++i)
+        if (shader->uniforms[i].name && strcmp(shader->uniforms[i].name, name) == 0)
+            return (int)i;
+    return -1;
+}
+
+static bool sh_uniform_cache_push(shader_t *shader, const char *name, int location)
+{
+    if (shader->uniform_count + 1 > shader->uniform_capacity)
+    {
+        size_t nc = shader->uniform_capacity ? shader->uniform_capacity * 2 : 32;
+        void *p = sh_realloc_array(shader->uniforms, sizeof(shader_uniform_cache_entry_t), nc);
+        if (!p)
+            return false;
+        shader->uniforms = (shader_uniform_cache_entry_t *)p;
+        shader->uniform_capacity = nc;
     }
 
-    shader->uniforms[shader->uniform_count].name = strdup(name);
-    shader->uniforms[shader->uniform_count].location = loc;
+    shader->uniforms[shader->uniform_count].name = sh_strdup(name);
+    shader->uniforms[shader->uniform_count].location = location;
     shader->uniform_count++;
+    return true;
+}
+
+static int sh_get_uniform_location_cached(shader_t *shader, const char *name)
+{
+    if (!shader || !shader->linked || shader->program == 0 || !name)
+        return -1;
+
+    int idx = sh_uniform_cache_find(shader, name);
+    if (idx >= 0)
+        return shader->uniforms[idx].location;
+
+    int loc = glGetUniformLocation(shader->program, name);
+    sh_uniform_cache_push(shader, name, loc);
     return loc;
 }
 
-static GLuint compile_stage(GLenum type, const char *src)
+static char *sh_read_text_file(const char *path)
+{
+    if (!path)
+        return NULL;
+    FILE *f = fopen(path, "rb");
+    if (!f)
+        return NULL;
+    fseek(f, 0, SEEK_END);
+    long len = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (len < 0)
+    {
+        fclose(f);
+        return NULL;
+    }
+    char *buf = (char *)malloc((size_t)len + 1);
+    if (!buf)
+    {
+        fclose(f);
+        return NULL;
+    }
+    size_t rd = fread(buf, 1, (size_t)len, f);
+    fclose(f);
+    buf[rd] = 0;
+    return buf;
+}
+
+static GLuint sh_compile(GLenum type, const char *src)
 {
     GLuint s = glCreateShader(type);
     glShaderSource(s, 1, &src, NULL);
@@ -37,187 +131,353 @@ static GLuint compile_stage(GLenum type, const char *src)
     glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
     if (!ok)
     {
-        char log[4096];
-        glGetShaderInfoLog(s, sizeof(log), NULL, log);
-        fprintf(stderr, "%s\n", log);
         glDeleteShader(s);
         return 0;
     }
-
     return s;
 }
 
-static shader_t *shader_link(GLuint *stages, size_t count)
+static bool sh_link_program(shader_t *shader, GLuint vs, GLuint fs, GLuint cs)
 {
-    GLuint program = glCreateProgram();
-    for (size_t i = 0; i < count; i++)
-        glAttachShader(program, stages[i]);
-    glLinkProgram(program);
+    if (!shader)
+        return false;
+
+    if (shader->program)
+        glDeleteProgram(shader->program);
+
+    shader->program = glCreateProgram();
+
+    if (vs)
+        glAttachShader(shader->program, vs);
+    if (fs)
+        glAttachShader(shader->program, fs);
+    if (cs)
+        glAttachShader(shader->program, cs);
+
+    glLinkProgram(shader->program);
 
     GLint ok = 0;
-    glGetProgramiv(program, GL_LINK_STATUS, &ok);
+    glGetProgramiv(shader->program, GL_LINK_STATUS, &ok);
+
+    if (vs)
+        glDetachShader(shader->program, vs);
+    if (fs)
+        glDetachShader(shader->program, fs);
+    if (cs)
+        glDetachShader(shader->program, cs);
+
     if (!ok)
     {
-        char log[4096];
-        glGetProgramInfoLog(program, sizeof(log), NULL, log);
-        fprintf(stderr, "%s\n", log);
-        glDeleteProgram(program);
-        return NULL;
+        glDeleteProgram(shader->program);
+        shader->program = 0;
+        shader->linked = false;
+        sh_uniform_cache_clear(shader);
+        return false;
     }
 
-    for (size_t i = 0; i < count; i++)
-        glDeleteShader(stages[i]);
+    shader->linked = true;
+    sh_uniform_cache_clear(shader);
+    return true;
+}
 
-    shader_t *s = calloc(1, sizeof(shader_t));
-    s->program = program;
+shader_t shader_create(void)
+{
+    shader_t s;
+    memset(&s, 0, sizeof(s));
+    s.program = 0;
+    s.kind = SHADER_STAGE_VERTEX;
+    s.linked = false;
     return s;
 }
 
-char *shader_preprocess_glsl(const char *src,
-                             const shader_define_t *defines,
-                             size_t define_count)
+void shader_destroy(shader_t *shader)
 {
-    size_t cap = strlen(src) + 1;
-    for (size_t i = 0; i < define_count; i++)
-        cap += strlen(defines[i].key) + strlen(defines[i].value) + 16;
+    if (!shader)
+        return;
 
-    char *out = malloc(cap);
-    out[0] = 0;
+    if (shader->program)
+        glDeleteProgram(shader->program);
 
-    for (size_t i = 0; i < define_count; i++)
+    for (size_t i = 0; i < shader->define_count; ++i)
     {
-        strcat(out, "#define ");
-        strcat(out, defines[i].key);
-        strcat(out, " ");
-        strcat(out, defines[i].value);
-        strcat(out, "\n");
+        free(shader->defines[i].key);
+        free(shader->defines[i].value);
+    }
+    free(shader->defines);
+
+    sh_uniform_cache_clear(shader);
+
+    memset(shader, 0, sizeof(*shader));
+}
+
+bool shader_define(shader_t *shader, const char *key, const char *value)
+{
+    if (!shader || !key || !value)
+        return false;
+
+    int idx = sh_define_index(shader, key);
+    if (idx >= 0)
+    {
+        char *nv = sh_strdup(value);
+        if (!nv)
+            return false;
+        free(shader->defines[idx].value);
+        shader->defines[idx].value = nv;
+        return true;
     }
 
-    strcat(out, src);
+    if (shader->define_count + 1 > shader->define_capacity)
+    {
+        size_t nc = shader->define_capacity ? shader->define_capacity * 2 : 16;
+        void *p = sh_realloc_array(shader->defines, sizeof(shader_define_kv_t), nc);
+        if (!p)
+            return false;
+        shader->defines = (shader_define_kv_t *)p;
+        shader->define_capacity = nc;
+    }
+
+    shader->defines[shader->define_count].key = sh_strdup(key);
+    shader->defines[shader->define_count].value = sh_strdup(value);
+
+    if (!shader->defines[shader->define_count].key || !shader->defines[shader->define_count].value)
+        return false;
+
+    shader->define_count++;
+    return true;
+}
+
+const char *shader_get_define(const shader_t *shader, const char *key)
+{
+    if (!shader || !key)
+        return NULL;
+    int idx = sh_define_index(shader, key);
+    if (idx < 0)
+        return NULL;
+    return shader->defines[idx].value;
+}
+
+bool shader_undefine(shader_t *shader, const char *key)
+{
+    if (!shader || !key)
+        return false;
+
+    int idx = sh_define_index(shader, key);
+    if (idx < 0)
+        return false;
+
+    free(shader->defines[idx].key);
+    free(shader->defines[idx].value);
+
+    size_t last = shader->define_count - 1;
+    if ((size_t)idx != last)
+        shader->defines[idx] = shader->defines[last];
+
+    shader->define_count--;
+    return true;
+}
+
+void shader_clear_defines(shader_t *shader)
+{
+    if (!shader)
+        return;
+    for (size_t i = 0; i < shader->define_count; ++i)
+    {
+        free(shader->defines[i].key);
+        free(shader->defines[i].value);
+    }
+    free(shader->defines);
+    shader->defines = NULL;
+    shader->define_count = 0;
+    shader->define_capacity = 0;
+}
+
+char *shader_preprocess_glsl(const char *src, const shader_t *shader)
+{
+    if (!src)
+        return NULL;
+
+    size_t src_len = strlen(src);
+    size_t extra = 0;
+
+    if (shader)
+    {
+        for (size_t i = 0; i < shader->define_count; ++i)
+        {
+            const char *k = shader->defines[i].key ? shader->defines[i].key : "";
+            const char *v = shader->defines[i].value ? shader->defines[i].value : "";
+            extra += 10 + strlen(k) + 1 + strlen(v) + 1;
+        }
+    }
+
+    size_t out_len = src_len + extra + 4;
+    char *out = (char *)malloc(out_len);
+    if (!out)
+        return NULL;
+
+    const char *p = src;
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n')
+        p++;
+
+    size_t at = 0;
+
+    if (strncmp(p, "#version", 8) == 0)
+    {
+        const char *line_end = strchr(p, '\n');
+        size_t line_len = line_end ? (size_t)(line_end - p + 1) : strlen(p);
+
+        memcpy(out + at, p, line_len);
+        at += line_len;
+
+        size_t prefix_len = (size_t)(p - src);
+        const char *rest = src + prefix_len + line_len;
+        size_t rest_len = src_len - prefix_len - line_len;
+
+        if (shader)
+        {
+            for (size_t i = 0; i < shader->define_count; ++i)
+            {
+                const char *k = shader->defines[i].key ? shader->defines[i].key : "";
+                const char *v = shader->defines[i].value ? shader->defines[i].value : "";
+                int n = snprintf(out + at, out_len - at, "#define %s %s\n", k, v);
+                if (n < 0)
+                {
+                    free(out);
+                    return NULL;
+                }
+                at += (size_t)n;
+            }
+        }
+
+        memcpy(out + at, rest, rest_len);
+        at += rest_len;
+        out[at] = 0;
+        return out;
+    }
+
+    if (shader)
+    {
+        for (size_t i = 0; i < shader->define_count; ++i)
+        {
+            const char *k = shader->defines[i].key ? shader->defines[i].key : "";
+            const char *v = shader->defines[i].value ? shader->defines[i].value : "";
+            int n = snprintf(out + at, out_len - at, "#define %s %s\n", k, v);
+            if (n < 0)
+            {
+                free(out);
+                return NULL;
+            }
+            at += (size_t)n;
+        }
+    }
+
+    memcpy(out + at, src, src_len + 1);
     return out;
 }
 
-static char *load_file(const char *path)
+bool shader_load_from_source(shader_t *shader, const char *vertex_src, const char *fragment_src)
 {
-    FILE *f = fopen(path, "rb");
-    if (!f)
-        return NULL;
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    char *buf = malloc(sz + 1);
-    fread(buf, 1, sz, f);
-    buf[sz] = 0;
-    fclose(f);
-    return buf;
-}
+    if (!shader || !vertex_src || !fragment_src)
+        return false;
 
-shader_t *shader_create_from_source(const char *vs, const char *fs)
-{
-    GLuint stages[2];
-    stages[0] = compile_stage(GL_VERTEX_SHADER, vs);
-    stages[1] = compile_stage(GL_FRAGMENT_SHADER, fs);
-    if (!stages[0] || !stages[1])
-        return NULL;
-    return shader_link(stages, 2);
-}
+    shader->kind = SHADER_STAGE_VERTEX;
 
-shader_t *shader_create_from_source_with_defines(const char *vs,
-                                                 const char *fs,
-                                                 const shader_define_t *defs,
-                                                 size_t n)
-{
-    char *v = shader_preprocess_glsl(vs, defs, n);
-    char *f = shader_preprocess_glsl(fs, defs, n);
-    shader_t *s = shader_create_from_source(v, f);
-    free(v);
-    free(f);
-    return s;
-}
-
-shader_t *shader_create_from_files(const char *vp, const char *fp)
-{
-    char *v = load_file(vp);
-    char *f = load_file(fp);
+    char *v = shader_preprocess_glsl(vertex_src, shader);
+    char *f = shader_preprocess_glsl(fragment_src, shader);
     if (!v || !f)
-        return NULL;
-    shader_t *s = shader_create_from_source(v, f);
+    {
+        free(v);
+        free(f);
+        return false;
+    }
+
+    GLuint vs = sh_compile(GL_VERTEX_SHADER, v);
+    GLuint fs = sh_compile(GL_FRAGMENT_SHADER, f);
+
     free(v);
     free(f);
-    return s;
+
+    if (!vs || !fs)
+    {
+        if (vs)
+            glDeleteShader(vs);
+        if (fs)
+            glDeleteShader(fs);
+        return false;
+    }
+
+    bool ok = sh_link_program(shader, vs, fs, 0);
+
+    glDeleteShader(vs);
+    glDeleteShader(fs);
+
+    return ok;
 }
 
-shader_t *shader_create_from_files_with_defines(const char *vp,
-                                                const char *fp,
-                                                const shader_define_t *d,
-                                                size_t n)
+bool shader_load_from_files(shader_t *shader, const char *vertex_path, const char *fragment_path)
 {
-    char *v = load_file(vp);
-    char *f = load_file(fp);
-    if (!v || !f)
-        return NULL;
-    shader_t *s = shader_create_from_source_with_defines(v, f, d, n);
-    free(v);
-    free(f);
-    return s;
+    if (!shader || !vertex_path || !fragment_path)
+        return false;
+
+    char *vs = sh_read_text_file(vertex_path);
+    char *fs = sh_read_text_file(fragment_path);
+    if (!vs || !fs)
+    {
+        free(vs);
+        free(fs);
+        return false;
+    }
+
+    bool ok = shader_load_from_source(shader, vs, fs);
+
+    free(vs);
+    free(fs);
+
+    return ok;
 }
 
-shader_t *shader_create_compute_from_source(const char *cs)
+bool shader_load_compute_from_source(shader_t *shader, const char *compute_src)
 {
-    GLuint s = compile_stage(GL_COMPUTE_SHADER, cs);
-    if (!s)
-        return NULL;
-    return shader_link(&s, 1);
-}
+    if (!shader || !compute_src)
+        return false;
 
-shader_t *shader_create_compute_from_source_with_defines(
-    const char *cs,
-    const shader_define_t *d,
-    size_t n)
-{
-    char *c = shader_preprocess_glsl(cs, d, n);
-    shader_t *s = shader_create_compute_from_source(c);
-    free(c);
-    return s;
-}
+    shader->kind = SHADER_STAGE_COMPUTE;
 
-shader_t *shader_create_compute_from_file(const char *cp)
-{
-    char *c = load_file(cp);
+    char *c = shader_preprocess_glsl(compute_src, shader);
     if (!c)
-        return NULL;
-    shader_t *s = shader_create_compute_from_source(c);
+        return false;
+
+    GLuint cs = sh_compile(GL_COMPUTE_SHADER, c);
     free(c);
-    return s;
+
+    if (!cs)
+        return false;
+
+    bool ok = sh_link_program(shader, 0, 0, cs);
+
+    glDeleteShader(cs);
+
+    return ok;
 }
 
-shader_t *shader_create_compute_from_file_with_defines(
-    const char *cp,
-    const shader_define_t *d,
-    size_t n)
+bool shader_load_compute_from_file(shader_t *shader, const char *compute_path)
 {
-    char *c = load_file(cp);
-    if (!c)
-        return NULL;
-    shader_t *s = shader_create_compute_from_source_with_defines(c, d, n);
-    free(c);
-    return s;
+    if (!shader || !compute_path)
+        return false;
+
+    char *cs = sh_read_text_file(compute_path);
+    if (!cs)
+        return false;
+
+    bool ok = shader_load_compute_from_source(shader, cs);
+    free(cs);
+    return ok;
 }
 
-void shader_destroy(shader_t *s)
+void shader_bind(const shader_t *shader)
 {
-    if (!s)
+    if (!shader || !shader->linked || shader->program == 0)
         return;
-    for (size_t i = 0; i < s->uniform_count; i++)
-        free(s->uniforms[i].name);
-    free(s->uniforms);
-    glDeleteProgram(s->program);
-    free(s);
-}
-
-void shader_bind(const shader_t *s)
-{
-    glUseProgram(s ? s->program : 0);
+    glUseProgram(shader->program);
 }
 
 void shader_unbind(void)
@@ -225,135 +485,231 @@ void shader_unbind(void)
     glUseProgram(0);
 }
 
-unsigned int shader_get_program(const shader_t *s)
+unsigned int shader_get_program(const shader_t *shader)
 {
-    return s->program;
+    return shader ? shader->program : 0;
 }
 
-void shader_dispatch_compute(const shader_t *s,
-                             unsigned int x,
-                             unsigned int y,
-                             unsigned int z)
+void shader_dispatch_compute(const shader_t *shader,
+                             unsigned int groups_x,
+                             unsigned int groups_y,
+                             unsigned int groups_z)
 {
-    glUseProgram(s->program);
-    glDispatchCompute(x, y, z);
+    if (!shader || !shader->linked || shader->program == 0)
+        return;
+    glDispatchCompute(groups_x, groups_y, groups_z);
 }
 
-void shader_memory_barrier(unsigned int bits)
+void shader_memory_barrier(unsigned int barrier_bits)
 {
-    glMemoryBarrier(bits);
+    glMemoryBarrier(barrier_bits);
 }
 
-#define SET_UNIFORM(name, call)                                  \
-    int loc = shader_uniform_location((shader_t *)shader, name); \
-    if (loc < 0)                                                 \
-        return false;                                            \
-    call;                                                        \
+bool shader_set_int(const shader_t *shader, const char *name, int value)
+{
+    if (!shader || !name)
+        return false;
+    int loc = sh_get_uniform_location_cached((shader_t *)shader, name);
+    if (loc < 0)
+        return false;
+    glUniform1i(loc, value);
     return true;
-
-bool shader_set_int(const shader_t *shader, const char *name, int v)
-{
-    SET_UNIFORM(name, glUniform1i(loc, v))
 }
 
-bool shader_set_int_array(const shader_t *shader, const char *name, const int *v, int count)
+bool shader_set_int_array(const shader_t *shader, const char *name, const int *values, int count)
 {
-    SET_UNIFORM(name, glUniform1iv(loc, count, v))
+    if (!shader || !name || !values || count <= 0)
+        return false;
+    int loc = sh_get_uniform_location_cached((shader_t *)shader, name);
+    if (loc < 0)
+        return false;
+    glUniform1iv(loc, count, values);
+    return true;
 }
 
-bool shader_set_uint(const shader_t *shader, const char *name, unsigned int v)
+bool shader_set_uint(const shader_t *shader, const char *name, unsigned int value)
 {
-    SET_UNIFORM(name, glUniform1ui(loc, v))
+    if (!shader || !name)
+        return false;
+    int loc = sh_get_uniform_location_cached((shader_t *)shader, name);
+    if (loc < 0)
+        return false;
+    glUniform1ui(loc, value);
+    return true;
 }
 
-bool shader_set_uint_array(const shader_t *shader, const char *name, const unsigned int *v, int count)
+bool shader_set_uint_array(const shader_t *shader, const char *name, const unsigned int *values, int count)
 {
-    SET_UNIFORM(name, glUniform1uiv(loc, count, v))
+    if (!shader || !name || !values || count <= 0)
+        return false;
+    int loc = sh_get_uniform_location_cached((shader_t *)shader, name);
+    if (loc < 0)
+        return false;
+    glUniform1uiv(loc, count, values);
+    return true;
 }
 
-bool shader_set_float(const shader_t *shader, const char *name, float v)
+bool shader_set_float(const shader_t *shader, const char *name, float value)
 {
-    SET_UNIFORM(name, glUniform1fv(loc, 1, &v))
+    if (!shader || !name)
+        return false;
+    int loc = sh_get_uniform_location_cached((shader_t *)shader, name);
+    if (loc < 0)
+        return false;
+    glUniform1f(loc, value);
+    return true;
 }
 
-bool shader_set_float_array(const shader_t *shader, const char *name, const float *v, int count)
+bool shader_set_float_array(const shader_t *shader, const char *name, const float *values, int count)
 {
-    SET_UNIFORM(name, glUniform1fv(loc, count, v))
+    if (!shader || !name || !values || count <= 0)
+        return false;
+    int loc = sh_get_uniform_location_cached((shader_t *)shader, name);
+    if (loc < 0)
+        return false;
+    glUniform1fv(loc, count, values);
+    return true;
 }
 
-bool shader_set_vec2(const shader_t *shader, const char *name, vec2 v)
+bool shader_set_vec2(const shader_t *shader, const char *name, vec2 value)
 {
-    float data[2] = {v.x, v.y};
-    SET_UNIFORM(name, glUniform2fv(loc, 1, data))
+    if (!shader || !name)
+        return false;
+    int loc = sh_get_uniform_location_cached((shader_t *)shader, name);
+    if (loc < 0)
+        return false;
+    glUniform2f(loc, value.x, value.y);
+    return true;
 }
 
-bool shader_set_vec2_array(const shader_t *shader, const char *name, const vec2 *v, int count)
+bool shader_set_vec2_array(const shader_t *shader, const char *name, const vec2 *values, int count)
 {
-    float *data = (float *)v;
-    SET_UNIFORM(name, glUniform2fv(loc, count, data))
+    if (!shader || !name || !values || count <= 0)
+        return false;
+    int loc = sh_get_uniform_location_cached((shader_t *)shader, name);
+    if (loc < 0)
+        return false;
+    glUniform2fv(loc, count, (const float *)values);
+    return true;
 }
 
-bool shader_set_vec3(const shader_t *shader, const char *name, vec3 v)
+bool shader_set_vec3(const shader_t *shader, const char *name, vec3 value)
 {
-    float data[3] = {v.x, v.y, v.z};
-    SET_UNIFORM(name, glUniform3fv(loc, 1, data))
+    if (!shader || !name)
+        return false;
+    int loc = sh_get_uniform_location_cached((shader_t *)shader, name);
+    if (loc < 0)
+        return false;
+    glUniform3f(loc, value.x, value.y, value.z);
+    return true;
 }
 
-bool shader_set_vec3_array(const shader_t *shader, const char *name, const vec3 *v, int count)
+bool shader_set_vec3_array(const shader_t *shader, const char *name, const vec3 *values, int count)
 {
-    float *data = (float *)v;
-    SET_UNIFORM(name, glUniform3fv(loc, count, data))
+    if (!shader || !name || !values || count <= 0)
+        return false;
+    int loc = sh_get_uniform_location_cached((shader_t *)shader, name);
+    if (loc < 0)
+        return false;
+    glUniform3fv(loc, count, (const float *)values);
+    return true;
 }
 
-bool shader_set_vec4(const shader_t *shader, const char *name, vec4 v)
+bool shader_set_vec4(const shader_t *shader, const char *name, vec4 value)
 {
-    float data[4] = {v.x, v.y, v.z, v.w};
-    SET_UNIFORM(name, glUniform4fv(loc, 1, data))
+    if (!shader || !name)
+        return false;
+    int loc = sh_get_uniform_location_cached((shader_t *)shader, name);
+    if (loc < 0)
+        return false;
+    glUniform4f(loc, value.x, value.y, value.z, value.w);
+    return true;
 }
 
-bool shader_set_vec4_array(const shader_t *shader, const char *name, const vec4 *v, int count)
+bool shader_set_vec4_array(const shader_t *shader, const char *name, const vec4 *values, int count)
 {
-    float *data = (float *)v;
-    SET_UNIFORM(name, glUniform4fv(loc, count, data))
+    if (!shader || !name || !values || count <= 0)
+        return false;
+    int loc = sh_get_uniform_location_cached((shader_t *)shader, name);
+    if (loc < 0)
+        return false;
+    glUniform4fv(loc, count, (const float *)values);
+    return true;
 }
 
-bool shader_set_ivec2(const shader_t *shader, const char *name, vec2i v)
+bool shader_set_ivec2(const shader_t *shader, const char *name, vec2i value)
 {
-    int data[2] = {v.x, v.y};
-    SET_UNIFORM(name, glUniform2iv(loc, 1, data))
+    if (!shader || !name)
+        return false;
+    int loc = sh_get_uniform_location_cached((shader_t *)shader, name);
+    if (loc < 0)
+        return false;
+    glUniform2i(loc, value.x, value.y);
+    return true;
 }
 
-bool shader_set_ivec3(const shader_t *shader, const char *name, vec3i v)
+bool shader_set_ivec3(const shader_t *shader, const char *name, vec3i value)
 {
-    int data[3] = {v.x, v.y, v.z};
-    SET_UNIFORM(name, glUniform3iv(loc, 1, data))
+    if (!shader || !name)
+        return false;
+    int loc = sh_get_uniform_location_cached((shader_t *)shader, name);
+    if (loc < 0)
+        return false;
+    glUniform3i(loc, value.x, value.y, value.z);
+    return true;
 }
 
-bool shader_set_ivec4(const shader_t *shader, const char *name, vec4i v)
+bool shader_set_ivec4(const shader_t *shader, const char *name, vec4i value)
 {
-    int data[4] = {v.x, v.y, v.z, v.w};
-    SET_UNIFORM(name, glUniform4iv(loc, 1, data))
+    if (!shader || !name)
+        return false;
+    int loc = sh_get_uniform_location_cached((shader_t *)shader, name);
+    if (loc < 0)
+        return false;
+    glUniform4i(loc, value.x, value.y, value.z, value.w);
+    return true;
 }
 
-bool shader_set_uvec2(const shader_t *shader, const char *name, uvec2 v)
+bool shader_set_uvec2(const shader_t *shader, const char *name, uvec2 value)
 {
-    unsigned int data[2] = {v.x, v.y};
-    SET_UNIFORM(name, glUniform2uiv(loc, 1, data))
+    if (!shader || !name)
+        return false;
+    int loc = sh_get_uniform_location_cached((shader_t *)shader, name);
+    if (loc < 0)
+        return false;
+    glUniform2ui(loc, value.x, value.y);
+    return true;
 }
 
-bool shader_set_uvec3(const shader_t *shader, const char *name, uvec3 v)
+bool shader_set_uvec3(const shader_t *shader, const char *name, uvec3 value)
 {
-    unsigned int data[3] = {v.x, v.y, v.z};
-    SET_UNIFORM(name, glUniform3uiv(loc, 1, data))
+    if (!shader || !name)
+        return false;
+    int loc = sh_get_uniform_location_cached((shader_t *)shader, name);
+    if (loc < 0)
+        return false;
+    glUniform3ui(loc, value.x, value.y, value.z);
+    return true;
 }
 
-bool shader_set_uvec4(const shader_t *shader, const char *name, uvec4 v)
+bool shader_set_uvec4(const shader_t *shader, const char *name, uvec4 value)
 {
-    unsigned int data[4] = {v.x, v.y, v.z, v.w};
-    SET_UNIFORM(name, glUniform4uiv(loc, 1, data))
+    if (!shader || !name)
+        return false;
+    int loc = sh_get_uniform_location_cached((shader_t *)shader, name);
+    if (loc < 0)
+        return false;
+    glUniform4ui(loc, value.x, value.y, value.z, value.w);
+    return true;
 }
 
-bool shader_set_mat4(const shader_t *shader, const char *name, mat4 m)
+bool shader_set_mat4(const shader_t *shader, const char *name, mat4 value)
 {
-    SET_UNIFORM(name, glUniformMatrix4fv(loc, 1, GL_FALSE, m.m))
+    if (!shader || !name)
+        return false;
+    int loc = sh_get_uniform_location_cached((shader_t *)shader, name);
+    if (loc < 0)
+        return false;
+    glUniformMatrix4fv(loc, 1, GL_FALSE, (const float *)value.m);
+    return true;
 }

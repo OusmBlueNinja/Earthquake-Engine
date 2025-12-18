@@ -15,5 +15,5 @@ typedef struct layer_t
     void (*draw)(struct layer_t *layer);
     void (*shutdown)(struct layer_t *layer);
     void *data;
-    
+
 } layer_t;

@@ -2,6 +2,8 @@
 #include "shader.h"
 #include "utils/logger.h"
 #include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
 
 #include "cvar.h"
 #include "core.h"
@@ -18,6 +20,8 @@
 #endif
 
 #define MAX_LIGHTS 16
+#define STR1(x) #x
+#define STR(x) STR1(x)
 
 static void R_create_targets(renderer_t *r)
 {
@@ -49,6 +53,27 @@ static void R_create_targets(renderer_t *r)
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
+static shader_t *R_new_shader_from_files_with_defines(const char *vp, const char *fp)
+{
+    shader_t tmp = shader_create();
+    shader_define(&tmp, "MAX_LIGHTS", STR(MAX_LIGHTS));
+
+    if (!shader_load_from_files(&tmp, vp, fp))
+    {
+        shader_destroy(&tmp);
+        return NULL;
+    }
+
+    shader_t *out = (shader_t *)malloc(sizeof(shader_t));
+    if (!out)
+    {
+        shader_destroy(&tmp);
+        return NULL;
+    }
+
+    *out = tmp;
+    return out;
+}
 
 int R_init(renderer_t *r)
 {
@@ -73,7 +98,7 @@ int R_init(renderer_t *r)
     r->models = create_vector(pushed_model_t);
     r->shaders = create_vector(shader_t *);
 
-    shader_t *default_shader = shader_create_from_files(
+    shader_t *default_shader = R_new_shader_from_files_with_defines(
         "res/shaders/shader.vert",
         "res/shaders/shader.frag");
     if (!default_shader)
@@ -83,11 +108,6 @@ int R_init(renderer_t *r)
     }
 
     r->default_shader_id = R_add_shader(r, default_shader);
-
-    shader_bind(default_shader);
-    shader_set_int(default_shader, "u_MaxLights", MAX_LIGHTS);
-    shader_unbind();
-
 
     LOG_DEBUG("Renderer initialized with framebuffer %u", r->fbo);
     return 0;
@@ -103,7 +123,13 @@ uint8_t R_add_shader(renderer_t *r, shader_t *shader)
 
 shader_t *R_get_shader(const renderer_t *r, uint8_t shader_id)
 {
-    return *(shader_t **)(void *)vector_at((vector_t *)&r->shaders, shader_id);
+    if (!r)
+        return NULL;
+    if (shader_id >= r->shaders.size)
+        return NULL;
+
+    shader_t **ps = (shader_t **)vector_at((vector_t *)&r->shaders, shader_id);
+    return ps ? *ps : NULL;
 }
 
 void R_shutdown(renderer_t *r)
@@ -115,7 +141,10 @@ void R_shutdown(renderer_t *r)
     {
         shader_t *s = *(shader_t **)vector_at(&r->shaders, i);
         if (s)
+        {
             shader_destroy(s);
+            free(s);
+        }
     }
 
     vector_free(&r->shaders);
@@ -194,23 +223,7 @@ void R_end_frame(renderer_t *r)
         shader_set_mat4(s, "u_Proj", r->camera.proj);
         shader_set_vec3(s, "u_CameraPos", r->camera.position);
 
-        shader_set_int(s, "u_LightCount", light_count);
-        for (uint32_t l = 0; l < light_count; l++)
-        {
-            light_t *light = vector_at(&r->lights, l);
-
-            char buf[64];
-            snprintf(buf, 64, "u_Lights[%u].type", l);
-            shader_set_int(s, buf, light->type);
-            snprintf(buf, 64, "u_Lights[%u].position", l);
-            shader_set_vec3(s, buf, light->position);
-            snprintf(buf, 64, "u_Lights[%u].direction", l);
-            shader_set_vec3(s, buf, light->direction);
-            snprintf(buf, 64, "u_Lights[%u].color", l);
-            shader_set_vec3(s, buf, light->color);
-            snprintf(buf, 64, "u_Lights[%u].intensity", l);
-            shader_set_float(s, buf, light->intensity);
-        }
+        shader_set_int(s, "u_HasMaterial", mat ? 1 : 0);
 
         if (mat)
         {
@@ -219,6 +232,36 @@ void R_end_frame(renderer_t *r)
             shader_set_float(s, "u_Roughness", mat->roughness);
             shader_set_float(s, "u_Metallic", mat->metallic);
             shader_set_float(s, "u_Opacity", mat->opacity);
+        }
+        else
+        {
+            shader_set_vec3(s, "u_Albedo", (vec3){1.0f, 1.0f, 1.0f});
+            shader_set_vec3(s, "u_Emissive", (vec3){0.0f, 0.0f, 0.0f});
+            shader_set_float(s, "u_Roughness", 1.0f);
+            shader_set_float(s, "u_Metallic", 0.0f);
+            shader_set_float(s, "u_Opacity", 1.0f);
+        }
+
+        shader_set_int(s, "u_LightCount", (int)light_count);
+        for (uint32_t l = 0; l < light_count; l++)
+        {
+            light_t *light = vector_at(&r->lights, l);
+
+            char buf[64];
+            snprintf(buf, 64, "u_Lights[%u].type", l);
+            shader_set_int(s, buf, (int)light->type);
+            snprintf(buf, 64, "u_Lights[%u].position", l);
+            shader_set_vec3(s, buf, light->position);
+            snprintf(buf, 64, "u_Lights[%u].direction", l);
+            shader_set_vec3(s, buf, light->direction);
+            snprintf(buf, 64, "u_Lights[%u].color", l);
+            shader_set_vec3(s, buf, light->color);
+            snprintf(buf, 64, "u_Lights[%u].intensity", l);
+            shader_set_float(s, buf, light->intensity);
+            snprintf(buf, 64, "u_Lights[%u].radius", l);
+            shader_set_float(s, buf, light->radius);
+            snprintf(buf, 64, "u_Lights[%u].range", l);
+            shader_set_float(s, buf, light->range);
         }
 
         model_draw(pm->model);

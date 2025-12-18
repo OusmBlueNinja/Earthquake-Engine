@@ -21,6 +21,7 @@
 
 #include "utils/logger.h"
 #include "utils/hsv_to_rgb.h"
+#include "utils/macros.h"
 
 #define ENGINE_V "25.0.2a"
 #define ENGINE_N "Earthquake"
@@ -52,7 +53,6 @@ typedef struct Application
     ApplicationSpecification *specification;
 
     window_manager window_manager;
-
     renderer_t renderer;
 
     bool application_initalized;
@@ -73,11 +73,9 @@ void init_application(Application *app);
 
 uint32_t push_layer(layer_t layer);
 
-Application* get_application();
-
+Application *get_application();
 
 //! PRIVATE
 void loop_application();
 
 const char *app_status_to_string(app_status_t status);
-
