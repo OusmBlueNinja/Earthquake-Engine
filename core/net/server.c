@@ -2,6 +2,8 @@
 #include "sv_net.h"
 #include "utils/logger.h"
 #include <string.h>
+#include "managers/cvar.h"
+
 
 static server_t g_server;
 

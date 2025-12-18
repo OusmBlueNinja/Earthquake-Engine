@@ -40,6 +40,10 @@ target_include_directories(core PUBLIC
     "${CMAKE_SOURCE_DIR}"
     "${CMAKE_SOURCE_DIR}/core"
     "${CMAKE_SOURCE_DIR}/core/include"
+    "${CMAKE_SOURCE_DIR}/core/managers"
+    "${CMAKE_SOURCE_DIR}/core/systems"
+    "${CMAKE_SOURCE_DIR}/core/types"
+
 )
 
 file(GLOB_RECURSE APP_SRC CONFIGURE_DEPENDS

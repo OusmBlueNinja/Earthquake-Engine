@@ -3,6 +3,9 @@
 #include "utils/logger.h"
 #include <string.h>
 
+#include "cvar.h"
+#include "core.h"
+
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -46,6 +49,7 @@ static void R_create_targets(renderer_t *r)
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
+
 int R_init(renderer_t *r)
 {
     if (!r)
@@ -83,6 +87,7 @@ int R_init(renderer_t *r)
     shader_bind(default_shader);
     shader_set_int(default_shader, "u_MaxLights", MAX_LIGHTS);
     shader_unbind();
+
 
     LOG_DEBUG("Renderer initialized with framebuffer %u", r->fbo);
     return 0;

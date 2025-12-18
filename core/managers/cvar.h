@@ -27,6 +27,8 @@ typedef enum cvar_flag_t
     CVAR_FLAG_CHEATS = 1 << 3
 } cvar_flag_t;
 
+typedef void (*cvar_changed_fn)(sv_cvar_key_t key, const void *old_value, const void *new_value);
+
 int cvar_init(void);
 void cvar_shutdown(void);
 
@@ -41,3 +43,6 @@ bool cvar_set_string_name(const char *name, const char *v);
 
 bool cvar_save(const char *filename);
 bool cvar_load(const char *filename);
+
+bool cvar_set_callback_name(const char *name, cvar_changed_fn fn);
+bool cvar_set_callback_key(sv_cvar_key_t key, cvar_changed_fn fn);

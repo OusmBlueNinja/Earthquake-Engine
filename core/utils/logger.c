@@ -4,7 +4,6 @@
 #include <time.h>
 #include <string.h>
 
-/* Global (internal) settings */
 static log_level_t g_log_level = LOG_LEVEL_DEBUG;
 static FILE *g_log_fp = NULL;
 static int g_use_colors = 1;

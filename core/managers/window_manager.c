@@ -4,10 +4,22 @@
 #include <stdio.h>
 #include "utils/logger.h"
 #include "cvar.h"
+#include "core.h"
 
 static void wm_error_callback(int error, const char *description)
 {
     LOG_ERROR("GLFW error %d: %s", error, description);
+}
+
+void wm_on_vsync_change(sv_cvar_key_t key, const void *old_state, const void *state)
+{
+    (void)key;
+    bool oldb = *(const bool *)old_state;
+    bool newb = *(const bool *)state;
+
+    LOG_DEBUG("cl_vsync: %d -> %d", oldb, newb);
+
+    wm_set_vsync(&get_application()->window_manager, newb);
 }
 
 int wm_init(window_manager *wm)
@@ -30,8 +42,8 @@ int wm_init(window_manager *wm)
         return 2;
     }
 
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 6);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
 #if defined(__APPLE__)
@@ -57,6 +69,7 @@ int wm_init(window_manager *wm)
         LOG_ERROR("Framebuffer objects not supported!\n");
     }
     wm_set_vsync(wm, cvar_get_bool_name("cl_vsync"));
+    cvar_set_callback_name("cl_vsync", wm_on_vsync_change);
     LOG_OK("Created Window");
     return 0;
 }

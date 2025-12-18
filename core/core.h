@@ -22,7 +22,7 @@
 #include "utils/logger.h"
 #include "utils/hsv_to_rgb.h"
 
-#define ENGINE_V "25.0.1b"
+#define ENGINE_V "25.0.2a"
 #define ENGINE_N "Earthquake"
 
 typedef struct ApplicationSpecification
@@ -73,7 +73,11 @@ void init_application(Application *app);
 
 uint32_t push_layer(layer_t layer);
 
+Application* get_application();
+
+
 //! PRIVATE
 void loop_application();
 
 const char *app_status_to_string(app_status_t status);
+

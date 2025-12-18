@@ -104,6 +104,12 @@ void init_application(Application *app)
 
     LOG_INFO("Starting Application");
 
+    if (cvar_init())
+    {
+        g_application.status = APP_STATUS_FAILED_TO_INIT_CVARS;
+        return;
+    }
+
     if (wm_init(&g_application.window_manager))
     {
         g_application.status = APP_STATUS_FAILED_TO_CREATE_WINDOW;
@@ -116,13 +122,7 @@ void init_application(Application *app)
         return;
     }
 
-    if (cvar_init())
-    {
-        g_application.status = APP_STATUS_FAILED_TO_INIT_CVARS;
-        return;
-    }
-
-    if (sv_init())
+        if (sv_init())
     {
         g_application.status = APP_STATUS_FAILED_TO_INIT_SV;
         return;
@@ -208,6 +208,11 @@ uint32_t push_layer(layer_t layer)
     layer.id = g_application.layers.size;
     vector_push_back(&g_application.layers, &layer);
     return layer.id;
+}
+
+Application *get_application()
+{
+    return &g_application;
 }
 
 const char *app_status_to_string(app_status_t status)

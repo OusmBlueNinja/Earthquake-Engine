@@ -1,6 +1,10 @@
 #ifndef LOGGER_H
 #define LOGGER_H
 
+#ifndef _DEBUG
+#define _DEBUG
+#endif
+
 #include <stdio.h>
 
 typedef enum

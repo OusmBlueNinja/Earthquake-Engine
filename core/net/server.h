@@ -2,7 +2,6 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "sv_utils.h"
-#include "managers/cvar.h"
 
 // 000.000.000.000 + null
 #define MAX_IP_LEN 64
