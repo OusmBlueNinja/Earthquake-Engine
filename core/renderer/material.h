@@ -1,7 +1,10 @@
 #pragma once
 #include <stdint.h>
+#include <stdbool.h>
+
 #include "types/vec3.h"
 #include "handle.h"
+#include "ikv1.h"
 
 typedef struct material_t
 {
@@ -27,3 +30,13 @@ typedef struct material_t
     ihandle_t height_tex;
     ihandle_t arm_tex;
 } material_t;
+
+material_t material_make_default(uint8_t shader_id);
+
+ikv_node_t *material_to_ikv(const material_t *m, const char *key);
+bool material_from_ikv(const ikv_node_t *node, material_t *out);
+
+bool material_save_file(const char *path, const material_t *m);
+bool material_load_file(const char *path, material_t *out);
+
+
