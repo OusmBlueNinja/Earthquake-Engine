@@ -3,6 +3,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <ctype.h>
+#include "utils/macros.h"
 
 static char *ikv_strdup(const char *s)
 {
@@ -533,24 +534,31 @@ bool ikv_write_file(const char *path, const ikv_node_t *root)
 {
     if (!path || !root)
         return false;
+
     FILE *f = fopen(path, "wb");
     if (!f)
         return false;
+
     if (root->type != IKV_OBJECT)
     {
         write_value(f, root, 0);
         fputc('\n', f);
+        fclose(f);
+        return true;
     }
-    else
+
+    fputs("ikv" STR(iKv_VERSION) " ", f);
+    write_escaped_string(f, (root->key && root->key[0]) ? root->key : "root");
+    fputc('\n', f);
+
+    fputs("{\n", f);
+    for (uint32_t i = 0; i < root->value.object.bucket_count; i++)
     {
-        fputs("{\n", f);
-        for (uint32_t i = 0; i < root->value.object.bucket_count; i++)
-        {
-            for (ikv_node_t *c = root->value.object.buckets[i]; c; c = c->next)
-                write_node(f, c, 4);
-        }
-        fputs("}\n", f);
+        for (ikv_node_t *c = root->value.object.buckets[i]; c; c = c->next)
+            write_node(f, c, 4);
     }
+    fputs("}\n", f);
+
     fclose(f);
     return true;
 }
@@ -957,14 +965,61 @@ ikv_node_t *ikv_parse_string(const char *src)
 {
     if (!src)
         return NULL;
+
     lexer l;
     l.p = src;
 
-    const char *save = l.p;
-    token t = lex_next(&l);
-    if (t.type == T_LBRACE)
+    const char *save0 = l.p;
+    token t0 = lex_next(&l);
+
+    if (t0.type == T_WORD)
+    {
+        char *w0 = token_to_cstr(&t0);
+        if (!w0)
+            return NULL;
+
+        if (strcmp(w0, "ikv1") == 0)
+        {
+            free(w0);
+
+            token tn = lex_next(&l);
+            if (tn.type != T_STRING && tn.type != T_WORD)
+                return NULL;
+
+            char *name = (tn.type == T_STRING) ? unescape_string(tn.start, tn.len) : token_to_cstr(&tn);
+            if (!name)
+                return NULL;
+
+            token tb = lex_next(&l);
+            if (tb.type != T_LBRACE)
+            {
+                free(name);
+                return NULL;
+            }
+
+            ikv_node_t *obj = parse_object_lex(&l);
+            if (!obj)
+            {
+                free(name);
+                return NULL;
+            }
+
+            free(obj->key);
+            obj->key = name;
+            return obj;
+        }
+
+        free(w0);
+        l.p = save0;
+    }
+    else if (t0.type == T_LBRACE)
+    {
         return parse_object_lex(&l);
-    l.p = save;
+    }
+    else
+    {
+        l.p = save0;
+    }
 
     ikv_node_t *root = ikv_create_object(NULL);
     if (!root)

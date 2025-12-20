@@ -630,10 +630,10 @@ int R_init(renderer_t *r, asset_manager_t *assets)
     r->cfg.bloom = cvar_get_bool_name("cl_bloom");
     r->cfg.debug_mode = cvar_get_int_name("cl_render_debug");
 
-    r->cfg.bloom_threshold = 1.2f;
-    r->cfg.bloom_knee = 0.8f;
-    r->cfg.bloom_intensity = 0.10f;
-    r->cfg.bloom_mips = 5;
+    r->cfg.bloom_threshold = 1.0f;
+    r->cfg.bloom_knee = 0.5f;
+    r->cfg.bloom_intensity = 0.15f;
+    r->cfg.bloom_mips = 6;
 
     r->clear_color = (vec4){0.05f, 0.05f, 0.06f, 1.0f};
     r->fb_size = (vec2i){1, 1};

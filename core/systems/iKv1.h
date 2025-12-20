@@ -2,6 +2,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#define iKv_VERSION 1
+
 typedef enum
 {
     IKV_NULL,
