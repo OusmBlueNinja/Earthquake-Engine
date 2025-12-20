@@ -90,8 +90,8 @@ void init_application(Application *app)
     }
 
     asset_manager_desc_t desc = {0};
-    desc.worker_count = 4;
-    desc.max_inflight_jobs = 2048;
+    desc.worker_count = threads_get_cpu_logical_count();
+    desc.max_inflight_jobs = g_application.specification->am_max_inflight_jobs;
     desc.handle_type = iHANDLE_TYPE_ASSET;
 
     asset_manager_init(&g_application.asset_manager, &desc);

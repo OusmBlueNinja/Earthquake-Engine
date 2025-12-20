@@ -50,7 +50,7 @@ static material_t *material_create_solid(uint8_t shader_id, vec3 albedo)
     mat->emissive_tex = ihandle_invalid();
     mat->occlusion_tex = ihandle_invalid();
     mat->height_tex = ihandle_invalid();
-    mat->custom_tex = ihandle_invalid();
+    mat->arm_tex = ihandle_invalid();
 
     return mat;
 }
@@ -108,9 +108,9 @@ static void demo_layer_init(layer_t *layer)
         camera_set_perspective(&s->cam, 60.0f * 0.017453292519943295f, aspect, 0.1f, 100.0f);
     }
 
-    s->mats[0] = material_create_solid(r->default_shader_id, (vec3){1.0f,1.0f, 1.0f});
-    s->mats[1] = material_create_solid(r->default_shader_id, (vec3){1.0f,1.0f, 1.0f});
-    s->mats[2] = material_create_solid(r->default_shader_id, (vec3){1.0f,1.0f, 1.0f});
+    s->mats[0] = material_create_solid(r->default_shader_id, (vec3){1.0f, 1.0f, 1.0f});
+    s->mats[1] = material_create_solid(r->default_shader_id, (vec3){1.0f, 1.0f, 1.0f});
+    s->mats[2] = material_create_solid(r->default_shader_id, (vec3){1.0f, 1.0f, 1.0f});
 
     if (!s->mats[0] || !s->mats[1] || !s->mats[2])
     {
@@ -141,13 +141,13 @@ static void demo_layer_init(layer_t *layer)
     s->model_m[1] = mat4_mul(t1, r1);
     s->model_m[2] = mat4_mul(t2, r2);
 
-    s->lights_point[0] = make_point((vec3){3.0f, 2.0f, 1.0f}, (vec3){1.0f, 0.85f, 0.75f}, 1.0f);
-    s->lights_point[1] = make_point((vec3){3.0f, 0.5f, -1.5f}, (vec3){0.75f, 0.85f, 1.0f}, 1.0f);
+    s->lights_point[0] = make_point((vec3){3.0f, 2.0f, 1.0f}, (vec3){1.0f, 1.0f, 1.0f}, 1.0f);
+    s->lights_point[1] = make_point((vec3){3.0f, 0.5f, -1.5f}, (vec3){1.0f, 1.0f, 1.0f}, 1.0f);
 
     {
         vec3 spotPos = (vec3){0.0f, 0.0f, -5.0f};
         vec3 spotDir = (vec3){0.0f, 0.0f, 1.0f};
-        s->light_spot = make_spot(spotPos, spotDir, (vec3){1.0f, 0.0f, 1.0f}, 5.0f);
+        s->light_spot = make_spot(spotPos, spotDir, (vec3){1.0f, 1.0f, 1.0f}, 1.0f);
     }
 
     s->mats[0]->albedo_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/blue_metal_plate_4k/textures/blue_metal_plate_diff_4k.png");
@@ -156,7 +156,7 @@ static void demo_layer_init(layer_t *layer)
     s->mats[0]->metallic_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/blue_metal_plate_4k/textures/blue_metal_plate_arm_4k.png");
     s->mats[0]->occlusion_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/blue_metal_plate_4k/textures/blue_metal_plate_ao_4k.png");
     s->mats[0]->height_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/blue_metal_plate_4k/textures/blue_metal_plate_disp_4k.png");
-    s->mats[0]->custom_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/blue_metal_plate_4k/textures/blue_metal_plate_arm_4k.png");
+    s->mats[0]->arm_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/blue_metal_plate_4k/textures/blue_metal_plate_arm_4k.png");
 
     s->mats[1]->albedo_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/wood_chip_path_4k/textures/wood_chip_path_diff_4k.png");
     s->mats[1]->normal_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/wood_chip_path_4k/textures/wood_chip_path_nor_gl_4k.png");
@@ -164,7 +164,7 @@ static void demo_layer_init(layer_t *layer)
     s->mats[1]->metallic_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/wood_chip_path_4k/textures/wood_chip_path_arm_4k.png");
     s->mats[1]->occlusion_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/wood_chip_path_4k/textures/wood_chip_path_ao_4k.png");
     s->mats[1]->height_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/wood_chip_path_4k/textures/wood_chip_path_disp_4k.png");
-    s->mats[1]->custom_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/wood_chip_path_4k/textures/wood_chip_path_arm_4k.png");
+    s->mats[1]->arm_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/wood_chip_path_4k/textures/wood_chip_path_arm_4k.png");
 
     s->mats[2]->albedo_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/rusty_metal_grid_4k/textures/rusty_metal_grid_diff_4k.png");
     s->mats[2]->normal_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/rusty_metal_grid_4k/textures/rusty_metal_grid_nor_gl_4k.png");
@@ -172,7 +172,7 @@ static void demo_layer_init(layer_t *layer)
     s->mats[2]->metallic_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/rusty_metal_grid_4k/textures/rusty_metal_grid_arm_4k.png");
     s->mats[2]->occlusion_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/rusty_metal_grid_4k/textures/rusty_metal_grid_ao_4k.png");
     s->mats[2]->height_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/rusty_metal_grid_4k/textures/rusty_metal_grid_disp_4k.png");
-    s->mats[2]->custom_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/rusty_metal_grid_4k/textures/rusty_metal_grid_arm_4k.png");
+    s->mats[2]->arm_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/rusty_metal_grid_4k/textures/rusty_metal_grid_arm_4k.png");
 
     s->ready = 1;
 }

@@ -44,6 +44,18 @@ typedef struct gpu_lights_block_t
     gpu_light_t lights[MAX_LIGHTS];
 } gpu_lights_block_t;
 
+enum material_tex_flags
+{
+    MAT_TEX_ALBEDO = 1 << 0,
+    MAT_TEX_NORMAL = 1 << 1,
+    MAT_TEX_METALLIC = 1 << 2,
+    MAT_TEX_ROUGHNESS = 1 << 3,
+    MAT_TEX_EMISSIVE = 1 << 4,
+    MAT_TEX_OCCLUSION = 1 << 5,
+    MAT_TEX_HEIGHT = 1 << 6,
+    MAT_TEX_ARM = 1 << 7
+};
+
 static GLuint g_pp_fbo = 0;
 static GLuint g_black_tex = 0;
 
@@ -215,7 +227,7 @@ static uint32_t R_resolve_image_gl(const renderer_t *r, ihandle_t h)
     return a->as.image.gl_handle;
 }
 
-static void R_bind_image_slot(renderer_t *r, shader_t *s, const char *has_name, const char *sampler_name, int unit, ihandle_t h)
+static void R_bind_image_slot_mask(renderer_t *r, shader_t *s, const char *sampler_name, int unit, ihandle_t h, uint32_t bit, uint32_t *mask)
 {
     uint32_t glh = R_resolve_image_gl(r, h);
     glActiveTexture((GLenum)(GL_TEXTURE0 + (GLenum)unit));
@@ -223,12 +235,11 @@ static void R_bind_image_slot(renderer_t *r, shader_t *s, const char *has_name, 
     {
         glBindTexture(GL_TEXTURE_2D, glh);
         shader_set_int(s, sampler_name, unit);
-        shader_set_int(s, has_name, 1);
+        *mask |= bit;
     }
     else
     {
         glBindTexture(GL_TEXTURE_2D, 0);
-        shader_set_int(s, has_name, 0);
     }
 }
 
@@ -393,8 +404,10 @@ static int R_bloom_init(renderer_t *r)
     {
         w = (w > 1) ? (w >> 1) : 1;
         h = (h > 1) ? (h >> 1) : 1;
-        if (w < 1) w = 1;
-        if (h < 1) h = 1;
+        if (w < 1)
+            w = 1;
+        if (h < 1)
+            h = 1;
 
         R_bloom_alloc_tex(&r->bloom.tex_down[i], w, h);
         R_bloom_alloc_tex(&r->bloom.tex_up[i], w, h);
@@ -466,8 +479,10 @@ static void R_bloom_run(renderer_t *r)
 
     int w0 = base_w >> 1;
     int h0 = base_h >> 1;
-    if (w0 < 1) w0 = 1;
-    if (h0 < 1) h0 = 1;
+    if (w0 < 1)
+        w0 = 1;
+    if (h0 < 1)
+        h0 = 1;
 
     R_clear_rgba16f_tex(r->bloom.tex_down[0]);
 
@@ -488,8 +503,10 @@ static void R_bloom_run(renderer_t *r)
     {
         int nw = w >> 1;
         int nh = h >> 1;
-        if (nw < 1) nw = 1;
-        if (nh < 1) nh = 1;
+        if (nw < 1)
+            nw = 1;
+        if (nh < 1)
+            nh = 1;
 
         R_clear_rgba16f_tex(r->bloom.tex_down[i]);
 
@@ -515,8 +532,10 @@ static void R_bloom_run(renderer_t *r)
     {
         int lw = base_w >> (int)(last + 1);
         int lh = base_h >> (int)(last + 1);
-        if (lw < 1) lw = 1;
-        if (lh < 1) lh = 1;
+        if (lw < 1)
+            lw = 1;
+        if (lh < 1)
+            lh = 1;
 
         glCopyImageSubData(
             r->bloom.tex_down[last], GL_TEXTURE_2D, 0, 0, 0, 0,
@@ -532,10 +551,14 @@ static void R_bloom_run(renderer_t *r)
         int low_w = base_w >> (i + 2);
         int low_h = base_h >> (i + 2);
 
-        if (dst_w < 1) dst_w = 1;
-        if (dst_h < 1) dst_h = 1;
-        if (low_w < 1) low_w = 1;
-        if (low_h < 1) low_h = 1;
+        if (dst_w < 1)
+            dst_w = 1;
+        if (dst_h < 1)
+            dst_h = 1;
+        if (low_w < 1)
+            low_w = 1;
+        if (low_h < 1)
+            low_h = 1;
 
         shader_bind(r->bloom.cs_up);
 
@@ -607,10 +630,10 @@ int R_init(renderer_t *r, asset_manager_t *assets)
     r->cfg.bloom = cvar_get_bool_name("cl_bloom");
     r->cfg.debug_mode = cvar_get_int_name("cl_render_debug");
 
-    r->cfg.bloom_threshold = 0.9f;
-    r->cfg.bloom_knee = 0.5f;
-    r->cfg.bloom_intensity = 0.2f;
-    r->cfg.bloom_mips = 6;
+    r->cfg.bloom_threshold = 1.2f;
+    r->cfg.bloom_knee = 0.8f;
+    r->cfg.bloom_intensity = 0.10f;
+    r->cfg.bloom_mips = 5;
 
     r->clear_color = (vec4){0.05f, 0.05f, 0.06f, 1.0f};
     r->fb_size = (vec2i){1, 1};
@@ -719,8 +742,10 @@ void R_resize(renderer_t *r, vec2i size)
     if (!r)
         return;
 
-    if (size.x < 1) size.x = 1;
-    if (size.y < 1) size.y = 1;
+    if (size.x < 1)
+        size.x = 1;
+    if (size.y < 1)
+        size.y = 1;
     if (r->fb_size.x == size.x && r->fb_size.y == size.y)
         return;
 
@@ -792,40 +817,42 @@ void R_end_frame(renderer_t *r)
             shader_set_float(s, "u_Metallic", mat->metallic);
             shader_set_float(s, "u_Opacity", mat->opacity);
 
-            R_bind_image_slot(r, s, "u_HasAlbedoTex", "u_AlbedoTex", 0, mat->albedo_tex);
-            R_bind_image_slot(r, s, "u_HasNormalTex", "u_NormalTex", 1, mat->normal_tex);
-            R_bind_image_slot(r, s, "u_HasMetallicTex", "u_MetallicTex", 2, mat->metallic_tex);
-            R_bind_image_slot(r, s, "u_HasRoughnessTex", "u_RoughnessTex", 3, mat->roughness_tex);
-            R_bind_image_slot(r, s, "u_HasEmissiveTex", "u_EmissiveTex", 4, mat->emissive_tex);
-            R_bind_image_slot(r, s, "u_HasOcclusionTex", "u_OcclusionTex", 5, mat->occlusion_tex);
-            R_bind_image_slot(r, s, "u_HasHeightTex", "u_HeightTex", 6, mat->height_tex);
-            R_bind_image_slot(r, s, "u_HasCustomTex", "u_CustomTex", 7, mat->custom_tex);
+            shader_set_float(s, "u_NormalStrength", mat->normal_strength);
+            shader_set_float(s, "u_HeightScale", mat->height_scale);
+            shader_set_int(s, "u_HeightSteps", mat->height_steps);
+
+            uint32_t tex_mask = 0;
+
+            R_bind_image_slot_mask(r, s, "u_AlbedoTex", 0, mat->albedo_tex, MAT_TEX_ALBEDO, &tex_mask);
+            R_bind_image_slot_mask(r, s, "u_NormalTex", 1, mat->normal_tex, MAT_TEX_NORMAL, &tex_mask);
+            R_bind_image_slot_mask(r, s, "u_MetallicTex", 2, mat->metallic_tex, MAT_TEX_METALLIC, &tex_mask);
+            R_bind_image_slot_mask(r, s, "u_RoughnessTex", 3, mat->roughness_tex, MAT_TEX_ROUGHNESS, &tex_mask);
+            R_bind_image_slot_mask(r, s, "u_EmissiveTex", 4, mat->emissive_tex, MAT_TEX_EMISSIVE, &tex_mask);
+            R_bind_image_slot_mask(r, s, "u_OcclusionTex", 5, mat->occlusion_tex, MAT_TEX_OCCLUSION, &tex_mask);
+            R_bind_image_slot_mask(r, s, "u_HeightTex", 6, mat->height_tex, MAT_TEX_HEIGHT, &tex_mask);
+            R_bind_image_slot_mask(r, s, "u_ArmTex", 7, mat->arm_tex, MAT_TEX_ARM, &tex_mask);
+
+            shader_set_int(s, "u_MaterialTexMask", (int)tex_mask);
         }
         else
         {
-            glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, 0);
-            glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, 0);
-            glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, 0);
-            glActiveTexture(GL_TEXTURE3); glBindTexture(GL_TEXTURE_2D, 0);
-            glActiveTexture(GL_TEXTURE4); glBindTexture(GL_TEXTURE_2D, 0);
-            glActiveTexture(GL_TEXTURE5); glBindTexture(GL_TEXTURE_2D, 0);
-            glActiveTexture(GL_TEXTURE6); glBindTexture(GL_TEXTURE_2D, 0);
-            glActiveTexture(GL_TEXTURE7); glBindTexture(GL_TEXTURE_2D, 0);
+            for (int ti = 0; ti < 8; ++ti)
+            {
+                glActiveTexture((GLenum)(GL_TEXTURE0 + (GLenum)ti));
+                glBindTexture(GL_TEXTURE_2D, 0);
+            }
 
-            shader_set_int(s, "u_HasAlbedoTex", 0);
-            shader_set_int(s, "u_HasNormalTex", 0);
-            shader_set_int(s, "u_HasMetallicTex", 0);
-            shader_set_int(s, "u_HasRoughnessTex", 0);
-            shader_set_int(s, "u_HasEmissiveTex", 0);
-            shader_set_int(s, "u_HasOcclusionTex", 0);
-            shader_set_int(s, "u_HasHeightTex", 0);
-            shader_set_int(s, "u_HasCustomTex", 0);
+            shader_set_int(s, "u_MaterialTexMask", 0);
 
             shader_set_vec3(s, "u_Albedo", (vec3){1.0f, 1.0f, 1.0f});
             shader_set_vec3(s, "u_Emissive", (vec3){0.0f, 0.0f, 0.0f});
             shader_set_float(s, "u_Roughness", 1.0f);
             shader_set_float(s, "u_Metallic", 0.0f);
             shader_set_float(s, "u_Opacity", 1.0f);
+
+            shader_set_float(s, "u_NormalStrength", 1.0f);
+            shader_set_float(s, "u_HeightScale", 0.0f);
+            shader_set_int(s, "u_HeightSteps", 0);
         }
 
         model_draw(pm->model);

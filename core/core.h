@@ -23,6 +23,7 @@
 #include "utils/logger.h"
 #include "utils/hsv_to_rgb.h"
 #include "utils/macros.h"
+#include "utils/threads.h"
 
 #define ENGINE_V "25.0.2b"
 #define ENGINE_N "Earthquake"
@@ -34,6 +35,7 @@ typedef struct ApplicationSpecification
     int argc;
     char **argv;
     bool terminal_colors;
+    int am_max_inflight_jobs;
 
 } ApplicationSpecification;
 

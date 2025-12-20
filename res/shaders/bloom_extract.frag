@@ -14,11 +14,15 @@ float lum(vec3 c)
 void main()
 {
     vec3 c = texture(u_Src, v_UV).rgb;
+
     float l = lum(c);
     float t = u_Threshold;
-    float k = max(u_Knee, 1e-4);
-    float soft = clamp((l - t + k) / (2.0 * k), 0.0, 1.0);
-    float w = max(l - t, 0.0) + soft * soft * (2.0 * k);
-    vec3 outc = c * (w / max(l, 1e-4));
+    float k = max(u_Knee, 1e-6);
+
+    float x = l - t;
+    float soft = clamp(x / (2.0 * k) + 0.5, 0.0, 1.0);
+    float w = max(x, 0.0) + (soft * soft) * k;
+
+    vec3 outc = c * (w / max(l, 1e-6));
     FragColor = vec4(outc, 1.0);
 }

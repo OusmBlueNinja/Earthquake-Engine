@@ -14,7 +14,10 @@ typedef struct material_t
     float metallic;
     float opacity;
 
-    // handles are iHANDLE_TYPE_ASSET = 1
+    float normal_strength;
+    float height_scale;
+    int height_steps;
+
     ihandle_t albedo_tex;
     ihandle_t normal_tex;
     ihandle_t metallic_tex;
@@ -22,6 +25,5 @@ typedef struct material_t
     ihandle_t emissive_tex;
     ihandle_t occlusion_tex;
     ihandle_t height_tex;
-    ihandle_t custom_tex;
-
+    ihandle_t arm_tex;
 } material_t;

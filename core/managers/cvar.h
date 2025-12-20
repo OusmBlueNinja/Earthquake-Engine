@@ -5,11 +5,13 @@
 typedef enum
 {
     SV_MAX_PLAYERS = 0,
+    SV_CHEATS,
     SV_HOST,
     SV_PORT,
     CL_VSYNC,
     CL_BLOOM,
     CL_RENDER_DEBUG,
+    CL_CPU_THREADS,
     SV_CVAR_COUNT
 } sv_cvar_key_t;
 
@@ -48,3 +50,6 @@ bool cvar_load(const char *filename);
 
 bool cvar_set_callback_name(const char *name, cvar_changed_fn fn);
 bool cvar_set_callback_key(sv_cvar_key_t key, cvar_changed_fn fn);
+
+void cvar_set_cheats_permission(bool allowed);
+bool cvar_get_cheats_permission(void);

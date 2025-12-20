@@ -13,12 +13,22 @@ void main()
     vec3 low = texture(u_Low, v_UV).rgb;
 
     vec2 t = vec2(u_TexelX, u_TexelY);
+
     vec3 h = vec3(0.0);
-    h += texture(u_High, v_UV + t * vec2(-1.0, -1.0)).rgb;
-    h += texture(u_High, v_UV + t * vec2( 1.0, -1.0)).rgb;
-    h += texture(u_High, v_UV + t * vec2(-1.0,  1.0)).rgb;
-    h += texture(u_High, v_UV + t * vec2( 1.0,  1.0)).rgb;
-    h *= 0.25;
+
+    h += texture(u_High, v_UV).rgb * 4.0;
+
+    h += texture(u_High, v_UV + vec2( t.x, 0.0)).rgb * 2.0;
+    h += texture(u_High, v_UV + vec2(-t.x, 0.0)).rgb * 2.0;
+    h += texture(u_High, v_UV + vec2(0.0,  t.y)).rgb * 2.0;
+    h += texture(u_High, v_UV + vec2(0.0, -t.y)).rgb * 2.0;
+
+    h += texture(u_High, v_UV + vec2( t.x,  t.y)).rgb;
+    h += texture(u_High, v_UV + vec2(-t.x,  t.y)).rgb;
+    h += texture(u_High, v_UV + vec2( t.x, -t.y)).rgb;
+    h += texture(u_High, v_UV + vec2(-t.x, -t.y)).rgb;
+
+    h *= 1.0 / 16.0;
 
     vec3 outc = low + h * u_Intensity;
     FragColor = vec4(outc, 1.0);

@@ -504,16 +504,16 @@ static void worker_main(void *p)
             if (ok)
             {
                 d.asset = out;
-                LOG_DEBUG("Loaded asset '%s' (%s)", j.path, asset_type_name(am, j.type));
+                LOG_DEBUG("Loaded asset: [%s](%s) ", asset_type_name(am, j.type), j.path);
             }
             else
             {
-                LOG_ERROR("Failed to load asset '%s' (%s)", j.path, asset_type_name(am, j.type));
+                LOG_ERROR("Failed to load asset: [%s](%s)", asset_type_name(am, j.type), j.path);
             }
         }
         else
         {
-            LOG_ERROR("No loader registered for asset '%s' (%s)", j.path, asset_type_name(am, j.type));
+            LOG_ERROR("No loader registered for asset: [%s]'%s'", asset_type_name(am, j.type), j.path);
         }
 
         free(j.path);
@@ -565,7 +565,7 @@ bool asset_manager_init(asset_manager_t *am, const asset_manager_desc_t *desc)
 {
     memset(am, 0, sizeof(*am));
 
-    uint32_t wc = 2;
+    uint32_t wc = 4;
     uint32_t cap = 1024;
     ihandle_type_t ht = 1;
 
@@ -677,7 +677,7 @@ ihandle_t asset_manager_request(asset_manager_t *am, asset_type_t type, const ch
     }
     memcpy(j.path, path, n + 1);
 
-    LOG_DEBUG("Loading Asset: '%s'(%s)", path, asset_type_name(am, type));
+    LOG_DEBUG("Loading Asset: [%s](%s)", asset_type_name(am, type), path);
 
     if (!jobq_push(&am->jobs, &j))
     {

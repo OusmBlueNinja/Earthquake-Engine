@@ -5,7 +5,6 @@
 #include <stdlib.h>
 
 #include "utils/logger.h"
-
 #include "systems/iKv1.h"
 
 typedef struct
@@ -40,14 +39,55 @@ static uint32_t fnv1a(const char *s)
     return h;
 }
 
+static bool g_cheats_permission = false;
+
 static cvar_entry_t g_cvars[SV_CVAR_COUNT] = {
+    [SV_CHEATS] = {.name = "sv_cheats", .type = CVAR_BOOL, .def.b = false, .flags = CVAR_FLAG_NO_LOAD},
     [SV_MAX_PLAYERS] = {.name = "sv_max_players", .type = CVAR_INT, .def.i = 20, .flags = CVAR_FLAG_CHEATS | CVAR_FLAG_NO_LOAD},
     [SV_HOST] = {.name = "sv_host", .type = CVAR_STRING, .def.s = "0.0.0.0", .flags = CVAR_FLAG_READONLY | CVAR_FLAG_NO_LOAD},
     [SV_PORT] = {.name = "sv_port", .type = CVAR_INT, .def.i = 0, .flags = CVAR_FLAG_READONLY | CVAR_FLAG_NO_LOAD},
     [CL_VSYNC] = {.name = "cl_vsync", .type = CVAR_BOOL, .def.b = true, .flags = CVAR_FLAG_NONE},
     [CL_BLOOM] = {.name = "cl_bloom", .type = CVAR_BOOL, .def.b = true, .flags = CVAR_FLAG_NONE},
-    [CL_RENDER_DEBUG] = {.name = "cl_render_debug", .type = CVAR_INT, .def.i = 0, .flags = CVAR_FLAG_NONE},
+    [CL_RENDER_DEBUG] = {.name = "cl_render_debug", .type = CVAR_INT, .def.i = 0, .flags = CVAR_FLAG_CHEATS},
+    [CL_CPU_THREADS] = {.name = "cl_cpu_threads", .type = CVAR_INT, .def.i = 1, .flags = CVAR_FLAG_READONLY | CVAR_FLAG_NO_LOAD | CVAR_FLAG_NO_SAVE},
 };
+
+void cvar_set_cheats_permission(bool allowed)
+{
+    g_cheats_permission = allowed;
+}
+
+bool cvar_get_cheats_permission(void)
+{
+    return g_cheats_permission;
+}
+
+static bool cvar_cheats_enabled(void)
+{
+    return g_cvars[SV_CHEATS].type == CVAR_BOOL ? g_cvars[SV_CHEATS].value.b : false;
+}
+
+static bool cvar_can_set(sv_cvar_key_t k)
+{
+    if (k >= SV_CVAR_COUNT)
+        return false;
+
+    if (g_cvars[k].flags & CVAR_FLAG_READONLY)
+        return false;
+
+    if (k == SV_CHEATS && !g_cheats_permission)
+        return false;
+
+    if (g_cvars[k].flags & CVAR_FLAG_CHEATS)
+    {
+        if (!cvar_cheats_enabled() && k != SV_CHEATS)
+            return false;
+        if (!g_cheats_permission)
+            return false;
+    }
+
+    return true;
+}
 
 static void cvar_fire_changed(sv_cvar_key_t k, const void *oldv, const void *newv)
 {
@@ -75,17 +115,14 @@ static sv_cvar_key_t find_key(const char *name)
 
     return SV_CVAR_COUNT;
 }
+
 int cvar_init(void)
 {
     for (int i = 0; i < SV_CVAR_COUNT; ++i)
-    {
         g_cvars[i].hash = fnv1a(g_cvars[i].name);
-    }
 
     for (int i = 0; i < SV_CVAR_COUNT; ++i)
-    {
         for (int j = i + 1; j < SV_CVAR_COUNT; ++j)
-        {
             if (g_cvars[i].hash == g_cvars[j].hash)
             {
                 LOG_ERROR("CVar hash collision: '%s' and '%s' both hash to 0x%08X",
@@ -94,11 +131,8 @@ int cvar_init(void)
                           (unsigned int)g_cvars[i].hash);
                 return 1;
             }
-        }
-    }
 
     for (int i = 0; i < SV_CVAR_COUNT; ++i)
-    {
         switch (g_cvars[i].type)
         {
         case CVAR_INT:
@@ -114,7 +148,6 @@ int cvar_init(void)
         default:
             break;
         }
-    }
 
     return 0;
 }
@@ -142,7 +175,10 @@ const char *cvar_get_string_name(const char *name)
 bool cvar_set_int_name(const char *name, int32_t v)
 {
     sv_cvar_key_t k = find_key(name);
-    if (k >= SV_CVAR_COUNT || g_cvars[k].type != CVAR_INT || (g_cvars[k].flags & CVAR_FLAG_READONLY))
+    if (k >= SV_CVAR_COUNT || g_cvars[k].type != CVAR_INT)
+        return false;
+
+    if (!cvar_can_set(k))
         return false;
 
     int32_t oldv = g_cvars[k].value.i;
@@ -157,7 +193,10 @@ bool cvar_set_int_name(const char *name, int32_t v)
 bool cvar_set_bool_name(const char *name, bool v)
 {
     sv_cvar_key_t k = find_key(name);
-    if (k >= SV_CVAR_COUNT || g_cvars[k].type != CVAR_BOOL || (g_cvars[k].flags & CVAR_FLAG_READONLY))
+    if (k >= SV_CVAR_COUNT || g_cvars[k].type != CVAR_BOOL)
+        return false;
+
+    if (!cvar_can_set(k))
         return false;
 
     bool oldv = g_cvars[k].value.b;
@@ -172,7 +211,10 @@ bool cvar_set_bool_name(const char *name, bool v)
 bool cvar_set_string_name(const char *name, const char *v)
 {
     sv_cvar_key_t k = find_key(name);
-    if (k >= SV_CVAR_COUNT || g_cvars[k].type != CVAR_STRING || (g_cvars[k].flags & CVAR_FLAG_READONLY))
+    if (k >= SV_CVAR_COUNT || g_cvars[k].type != CVAR_STRING)
+        return false;
+
+    if (!cvar_can_set(k))
         return false;
 
     const char *in = v ? v : "";
@@ -289,8 +331,11 @@ bool cvar_load(const char *filename)
                 int32_t newv = (int32_t)ikv_as_int(n);
                 if (oldv != newv)
                 {
-                    g_cvars[i].value.i = newv;
-                    cvar_fire_changed((sv_cvar_key_t)i, &oldv, &g_cvars[i].value.i);
+                    if (cvar_can_set((sv_cvar_key_t)i))
+                    {
+                        g_cvars[i].value.i = newv;
+                        cvar_fire_changed((sv_cvar_key_t)i, &oldv, &g_cvars[i].value.i);
+                    }
                 }
             }
             break;
@@ -302,8 +347,11 @@ bool cvar_load(const char *filename)
                 bool newv = ikv_as_bool(n);
                 if (oldv != newv)
                 {
-                    g_cvars[i].value.b = newv;
-                    cvar_fire_changed((sv_cvar_key_t)i, &oldv, &g_cvars[i].value.b);
+                    if (cvar_can_set((sv_cvar_key_t)i))
+                    {
+                        g_cvars[i].value.b = newv;
+                        cvar_fire_changed((sv_cvar_key_t)i, &oldv, &g_cvars[i].value.b);
+                    }
                 }
             }
             else if (n->type == IKV_INT)
@@ -312,8 +360,11 @@ bool cvar_load(const char *filename)
                 bool newv = ikv_as_int(n) != 0;
                 if (oldv != newv)
                 {
-                    g_cvars[i].value.b = newv;
-                    cvar_fire_changed((sv_cvar_key_t)i, &oldv, &g_cvars[i].value.b);
+                    if (cvar_can_set((sv_cvar_key_t)i))
+                    {
+                        g_cvars[i].value.b = newv;
+                        cvar_fire_changed((sv_cvar_key_t)i, &oldv, &g_cvars[i].value.b);
+                    }
                 }
             }
             break;
@@ -326,14 +377,17 @@ bool cvar_load(const char *filename)
 
                 if (strncmp(g_cvars[i].value.s, in, sizeof(g_cvars[i].value.s)) != 0)
                 {
-                    char oldv[64];
-                    strncpy(oldv, g_cvars[i].value.s, sizeof(oldv) - 1);
-                    oldv[sizeof(oldv) - 1] = 0;
+                    if (cvar_can_set((sv_cvar_key_t)i))
+                    {
+                        char oldv[64];
+                        strncpy(oldv, g_cvars[i].value.s, sizeof(oldv) - 1);
+                        oldv[sizeof(oldv) - 1] = 0;
 
-                    strncpy(g_cvars[i].value.s, in, sizeof(g_cvars[i].value.s) - 1);
-                    g_cvars[i].value.s[sizeof(g_cvars[i].value.s) - 1] = 0;
+                        strncpy(g_cvars[i].value.s, in, sizeof(g_cvars[i].value.s) - 1);
+                        g_cvars[i].value.s[sizeof(g_cvars[i].value.s) - 1] = 0;
 
-                    cvar_fire_changed((sv_cvar_key_t)i, oldv, g_cvars[i].value.s);
+                        cvar_fire_changed((sv_cvar_key_t)i, oldv, g_cvars[i].value.s);
+                    }
                 }
             }
             break;
