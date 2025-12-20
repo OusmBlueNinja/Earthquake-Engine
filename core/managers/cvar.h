@@ -4,8 +4,8 @@
 
 typedef enum
 {
-    SV_MAX_PLAYERS = 0,
-    SV_CHEATS,
+    SV_CHEATS = 0,
+    SV_MAX_PLAYERS,
     SV_HOST,
     SV_PORT,
     CL_VSYNC,

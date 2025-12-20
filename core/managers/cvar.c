@@ -42,7 +42,7 @@ static uint32_t fnv1a(const char *s)
 static bool g_cheats_permission = false;
 
 static cvar_entry_t g_cvars[SV_CVAR_COUNT] = {
-    [SV_CHEATS] = {.name = "sv_cheats", .type = CVAR_BOOL, .def.b = false, .flags = CVAR_FLAG_NO_LOAD},
+    [SV_CHEATS] = {.name = "sv_cheats", .type = CVAR_BOOL, .def.b = false, .flags = CVAR_FLAG_NO_LOAD | CVAR_FLAG_NO_SAVE},
     [SV_MAX_PLAYERS] = {.name = "sv_max_players", .type = CVAR_INT, .def.i = 20, .flags = CVAR_FLAG_CHEATS | CVAR_FLAG_NO_LOAD},
     [SV_HOST] = {.name = "sv_host", .type = CVAR_STRING, .def.s = "0.0.0.0", .flags = CVAR_FLAG_READONLY | CVAR_FLAG_NO_LOAD},
     [SV_PORT] = {.name = "sv_port", .type = CVAR_INT, .def.i = 0, .flags = CVAR_FLAG_READONLY | CVAR_FLAG_NO_LOAD},
@@ -255,21 +255,25 @@ bool cvar_set_callback_name(const char *name, cvar_changed_fn fn)
     return true;
 }
 
+static bool ikv_root_is_named(const ikv_node_t *root, const char *name)
+{
+    if (!root || root->type != IKV_OBJECT)
+        return false;
+    if (!name || !name[0])
+        return false;
+    if (!root->key || !root->key[0])
+        return false;
+    return strcmp(root->key, name) == 0;
+}
+
 bool cvar_save(const char *filename)
 {
     if (!filename || !filename[0])
         return false;
 
-    ikv_node_t *root = ikv_create_object(NULL);
+    ikv_node_t *root = ikv_create_object("icvar");
     if (!root)
         return false;
-
-    ikv_node_t *cvars = ikv_object_add_object(root, "cvars");
-    if (!cvars)
-    {
-        ikv_free(root);
-        return false;
-    }
 
     for (int i = 0; i < SV_CVAR_COUNT; ++i)
     {
@@ -279,13 +283,13 @@ bool cvar_save(const char *filename)
         switch (g_cvars[i].type)
         {
         case CVAR_INT:
-            ikv_object_set_int(cvars, g_cvars[i].name, (int64_t)g_cvars[i].value.i);
+            ikv_object_set_int(root, g_cvars[i].name, (int64_t)g_cvars[i].value.i);
             break;
         case CVAR_BOOL:
-            ikv_object_set_bool(cvars, g_cvars[i].name, g_cvars[i].value.b);
+            ikv_object_set_bool(root, g_cvars[i].name, g_cvars[i].value.b);
             break;
         case CVAR_STRING:
-            ikv_object_set_string(cvars, g_cvars[i].name, g_cvars[i].value.s);
+            ikv_object_set_string(root, g_cvars[i].name, g_cvars[i].value.s);
             break;
         default:
             break;
@@ -297,6 +301,24 @@ bool cvar_save(const char *filename)
     return ok;
 }
 
+static bool cvar_node_type_matches(const cvar_entry_t *cv, const ikv_node_t *n)
+{
+    if (!cv || !n)
+        return false;
+
+    switch (cv->type)
+    {
+    case CVAR_INT:
+        return n->type == IKV_INT;
+    case CVAR_BOOL:
+        return n->type == IKV_BOOL || n->type == IKV_INT;
+    case CVAR_STRING:
+        return n->type == IKV_STRING;
+    default:
+        return false;
+    }
+}
+
 bool cvar_load(const char *filename)
 {
     if (!filename || !filename[0])
@@ -306,8 +328,7 @@ bool cvar_load(const char *filename)
     if (!root)
         return false;
 
-    ikv_node_t *cvars = ikv_object_get(root, "cvars");
-    if (!cvars || cvars->type != IKV_OBJECT)
+    if (!ikv_root_is_named(root, "icvar"))
     {
         ikv_free(root);
         return false;
@@ -318,8 +339,11 @@ bool cvar_load(const char *filename)
         if (g_cvars[i].flags & CVAR_FLAG_NO_LOAD)
             continue;
 
-        ikv_node_t *n = ikv_object_get(cvars, g_cvars[i].name);
+        ikv_node_t *n = ikv_object_get(root, g_cvars[i].name);
         if (!n)
+            continue;
+
+        if (!cvar_node_type_matches(&g_cvars[i], n))
             continue;
 
         switch (g_cvars[i].type)
@@ -329,45 +353,25 @@ bool cvar_load(const char *filename)
             {
                 int32_t oldv = g_cvars[i].value.i;
                 int32_t newv = (int32_t)ikv_as_int(n);
-                if (oldv != newv)
+                if (oldv != newv && cvar_can_set((sv_cvar_key_t)i))
                 {
-                    if (cvar_can_set((sv_cvar_key_t)i))
-                    {
-                        g_cvars[i].value.i = newv;
-                        cvar_fire_changed((sv_cvar_key_t)i, &oldv, &g_cvars[i].value.i);
-                    }
+                    g_cvars[i].value.i = newv;
+                    cvar_fire_changed((sv_cvar_key_t)i, &oldv, &g_cvars[i].value.i);
                 }
             }
             break;
 
         case CVAR_BOOL:
-            if (n->type == IKV_BOOL)
+        {
+            bool oldv = g_cvars[i].value.b;
+            bool newv = (n->type == IKV_BOOL) ? ikv_as_bool(n) : (ikv_as_int(n) != 0);
+            if (oldv != newv && cvar_can_set((sv_cvar_key_t)i))
             {
-                bool oldv = g_cvars[i].value.b;
-                bool newv = ikv_as_bool(n);
-                if (oldv != newv)
-                {
-                    if (cvar_can_set((sv_cvar_key_t)i))
-                    {
-                        g_cvars[i].value.b = newv;
-                        cvar_fire_changed((sv_cvar_key_t)i, &oldv, &g_cvars[i].value.b);
-                    }
-                }
+                g_cvars[i].value.b = newv;
+                cvar_fire_changed((sv_cvar_key_t)i, &oldv, &g_cvars[i].value.b);
             }
-            else if (n->type == IKV_INT)
-            {
-                bool oldv = g_cvars[i].value.b;
-                bool newv = ikv_as_int(n) != 0;
-                if (oldv != newv)
-                {
-                    if (cvar_can_set((sv_cvar_key_t)i))
-                    {
-                        g_cvars[i].value.b = newv;
-                        cvar_fire_changed((sv_cvar_key_t)i, &oldv, &g_cvars[i].value.b);
-                    }
-                }
-            }
-            break;
+        }
+        break;
 
         case CVAR_STRING:
             if (n->type == IKV_STRING)
@@ -375,19 +379,16 @@ bool cvar_load(const char *filename)
                 const char *s = ikv_as_string(n);
                 const char *in = s ? s : "";
 
-                if (strncmp(g_cvars[i].value.s, in, sizeof(g_cvars[i].value.s)) != 0)
+                if (strncmp(g_cvars[i].value.s, in, sizeof(g_cvars[i].value.s)) != 0 && cvar_can_set((sv_cvar_key_t)i))
                 {
-                    if (cvar_can_set((sv_cvar_key_t)i))
-                    {
-                        char oldv[64];
-                        strncpy(oldv, g_cvars[i].value.s, sizeof(oldv) - 1);
-                        oldv[sizeof(oldv) - 1] = 0;
+                    char oldv[64];
+                    strncpy(oldv, g_cvars[i].value.s, sizeof(oldv) - 1);
+                    oldv[sizeof(oldv) - 1] = 0;
 
-                        strncpy(g_cvars[i].value.s, in, sizeof(g_cvars[i].value.s) - 1);
-                        g_cvars[i].value.s[sizeof(g_cvars[i].value.s) - 1] = 0;
+                    strncpy(g_cvars[i].value.s, in, sizeof(g_cvars[i].value.s) - 1);
+                    g_cvars[i].value.s[sizeof(g_cvars[i].value.s) - 1] = 0;
 
-                        cvar_fire_changed((sv_cvar_key_t)i, oldv, g_cvars[i].value.s);
-                    }
+                    cvar_fire_changed((sv_cvar_key_t)i, oldv, g_cvars[i].value.s);
                 }
             }
             break;

@@ -139,6 +139,8 @@ void delete_application(Application *app)
         LOG_WARN("Faild to save Config.");
     }
 
+    cvar_shutdown(); // has to shutdown first, calls cvar_changed_fn
+
     g_application.application_initalized = false;
 
     asset_manager_shutdown(&g_application.asset_manager);
@@ -148,8 +150,6 @@ void delete_application(Application *app)
     wm_shutdown(&g_application.window_manager);
 
     sv_shutdown();
-
-    cvar_shutdown();
 
     LOG_INFO("Shutdown Application");
     if (!g_application.status)

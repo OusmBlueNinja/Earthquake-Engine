@@ -504,7 +504,6 @@ static void worker_main(void *p)
             if (ok)
             {
                 d.asset = out;
-                LOG_DEBUG("Loaded asset: [%s](%s) ", asset_type_name(am, j.type), j.path);
             }
             else
             {
@@ -677,7 +676,6 @@ ihandle_t asset_manager_request(asset_manager_t *am, asset_type_t type, const ch
     }
     memcpy(j.path, path, n + 1);
 
-    LOG_DEBUG("Loading Asset: [%s](%s)", asset_type_name(am, type), path);
 
     if (!jobq_push(&am->jobs, &j))
     {
