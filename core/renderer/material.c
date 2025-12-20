@@ -77,8 +77,8 @@ material_t material_make_default(uint8_t shader_id)
     m.opacity = 1.0f;
 
     m.normal_strength = 1.0f;
-    m.height_scale = 0.05f;
-    m.height_steps = 16;
+    m.height_scale = 0.03f;
+    m.height_steps = 24;
 
     m.albedo_tex = ihandle_invalid();
     m.normal_tex = ihandle_invalid();

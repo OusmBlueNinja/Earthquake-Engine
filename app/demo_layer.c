@@ -150,9 +150,9 @@ static void demo_layer_shutdown(layer_t *layer)
     if (!s)
         return;
 
-    // material_save_file("C:/Users/spenc/Desktop/blue_metal_plate.imat", &s->mats[0]);
-    // material_save_file("C:/Users/spenc/Desktop/wood_chip_path.imat", &s->mats[1]);
-    // material_save_file("C:/Users/spenc/Desktop/rusty_metal_grid.imat", &s->mats[2]);
+    material_save_file("C:/Users/spenc/Desktop/blue_metal_plate.imat", &s->mats[0]);
+    material_save_file("C:/Users/spenc/Desktop/wood_chip_path.imat", &s->mats[1]);
+    material_save_file("C:/Users/spenc/Desktop/rusty_metal_grid.imat", &s->mats[2]);
 
     model_factory_shutdown(&s->mf);
 

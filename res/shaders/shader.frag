@@ -140,7 +140,10 @@ mat3 tbn_from_derivatives(vec3 N, vec3 P, vec2 UV)
 
     vec3 n = normalize(N);
     T = normalize(T - n * dot(n, T));
-    B = normalize(cross(n, T)) * (dot(cross(n, T), B) < 0.0 ? -1.0 : 1.0);
+
+    vec3 c = cross(n, T);
+    float s = (dot(c, B) < 0.0) ? -1.0 : 1.0;
+    B = normalize(c) * s;
 
     return mat3(T, B, n);
 }
@@ -159,32 +162,39 @@ vec2 parallax_uv(vec3 Nw, vec3 P, vec2 uv, vec3 viewDirW)
     int steps = clamp(u_HeightSteps, 4, 64);
 
     float layer = 1.0 / float(steps);
-    float depth = 0.0;
 
     vec2 dir = (Vt.xy / vz) * hs;
     vec2 delta = dir * layer;
 
     vec2 u = uv;
-    float h = texture(u_HeightTex, u).r;
+    vec2 prevU = u;
+
+    float depth = 0.0;
     float prevDepth = 0.0;
+
+    float h = 1.0 - texture(u_HeightTex, u).r;
     float prevH = h;
 
     for (int i = 0; i < steps; ++i)
     {
-        depth += layer;
-        u -= delta;
-        h = texture(u_HeightTex, u).r;
         if (depth >= h)
             break;
+
+        prevU = u;
         prevDepth = depth;
         prevH = h;
+
+        u += delta;
+        depth += layer;
+
+        h = 1.0 - texture(u_HeightTex, u).r;
     }
 
     float after = h - depth;
     float before = prevH - prevDepth;
     float w = before / (before - after + 1e-6);
 
-    return mix(u, u + delta, clamp(w, 0.0, 1.0));
+    return mix(u, prevU, clamp(w, 0.0, 1.0));
 }
 
 vec3 sample_normal_world(vec3 Nw, vec3 P, vec2 uv)
