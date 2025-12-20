@@ -43,6 +43,8 @@ target_include_directories(core PUBLIC
     "${CMAKE_SOURCE_DIR}/core/managers"
     "${CMAKE_SOURCE_DIR}/core/systems"
     "${CMAKE_SOURCE_DIR}/core/types"
+    "${CMAKE_SOURCE_DIR}/vendor"
+
 
 )
 

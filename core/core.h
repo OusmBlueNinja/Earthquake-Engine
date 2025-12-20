@@ -14,6 +14,7 @@
 
 #include "managers/window_manager.h"
 #include "managers/cvar.h"
+#include "managers/asset_manager/asset_manager.h"
 
 #include "renderer/renderer.h"
 
@@ -23,7 +24,7 @@
 #include "utils/hsv_to_rgb.h"
 #include "utils/macros.h"
 
-#define ENGINE_V "25.0.2a"
+#define ENGINE_V "25.0.2b"
 #define ENGINE_N "Earthquake"
 
 typedef struct ApplicationSpecification
@@ -53,6 +54,8 @@ typedef struct Application
     ApplicationSpecification *specification;
 
     window_manager window_manager;
+    asset_manager_t asset_manager;
+
     renderer_t renderer;
 
     bool application_initalized;

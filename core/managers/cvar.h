@@ -8,6 +8,8 @@ typedef enum
     SV_HOST,
     SV_PORT,
     CL_VSYNC,
+    CL_BLOOM,
+    CL_RENDER_DEBUG,
     SV_CVAR_COUNT
 } sv_cvar_key_t;
 

@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -121,7 +122,66 @@ static char *sh_read_text_file(const char *path)
     return buf;
 }
 
-static GLuint sh_compile(GLenum type, const char *src)
+static void sh_print_shader_log(GLuint shader, const char *stage, const char *label)
+{
+    GLint len = 0;
+    glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &len);
+    if (len <= 1)
+        return;
+
+    char *buf = (char *)malloc((size_t)len + 1);
+    if (!buf)
+        return;
+
+    glGetShaderInfoLog(shader, len, NULL, buf);
+    buf[len] = 0;
+
+    if (stage && label)
+        fprintf(stderr, "[GLSL] %s compile error (%s):\n%s\n", stage, label, buf);
+    else if (stage)
+        fprintf(stderr, "[GLSL] %s compile error:\n%s\n", stage, buf);
+    else
+        fprintf(stderr, "[GLSL] compile error:\n%s\n", buf);
+
+    free(buf);
+}
+
+static void sh_print_program_log(GLuint program, const char *label)
+{
+    GLint len = 0;
+    glGetProgramiv(program, GL_INFO_LOG_LENGTH, &len);
+    if (len <= 1)
+        return;
+
+    char *buf = (char *)malloc((size_t)len + 1);
+    if (!buf)
+        return;
+
+    glGetProgramInfoLog(program, len, NULL, buf);
+    buf[len] = 0;
+
+    if (label)
+        fprintf(stderr, "[GLSL] link error (%s):\n%s\n", label, buf);
+    else
+        fprintf(stderr, "[GLSL] link error:\n%s\n", buf);
+
+    free(buf);
+}
+
+static const char *sh_stage_name(GLenum type)
+{
+    if (type == GL_VERTEX_SHADER)
+        return "vertex";
+    if (type == GL_FRAGMENT_SHADER)
+        return "fragment";
+    if (type == GL_GEOMETRY_SHADER)
+        return "geometry";
+    if (type == GL_COMPUTE_SHADER)
+        return "compute";
+    return "shader";
+}
+
+static GLuint sh_compile_ex(GLenum type, const char *src, const char *label)
 {
     GLuint s = glCreateShader(type);
     glShaderSource(s, 1, &src, NULL);
@@ -131,13 +191,14 @@ static GLuint sh_compile(GLenum type, const char *src)
     glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
     if (!ok)
     {
+        sh_print_shader_log(s, sh_stage_name(type), label);
         glDeleteShader(s);
         return 0;
     }
     return s;
 }
 
-static bool sh_link_program(shader_t *shader, GLuint vs, GLuint fs, GLuint cs)
+static bool sh_link_program(shader_t *shader, GLuint vs, GLuint fs, GLuint cs, const char *label)
 {
     if (!shader)
         return false;
@@ -168,6 +229,7 @@ static bool sh_link_program(shader_t *shader, GLuint vs, GLuint fs, GLuint cs)
 
     if (!ok)
     {
+        sh_print_program_log(shader->program, label ? label : "program");
         glDeleteProgram(shader->program);
         shader->program = 0;
         shader->linked = false;
@@ -374,7 +436,7 @@ char *shader_preprocess_glsl(const char *src, const shader_t *shader)
     return out;
 }
 
-bool shader_load_from_source(shader_t *shader, const char *vertex_src, const char *fragment_src)
+static bool shader_load_from_source_labeled(shader_t *shader, const char *vertex_src, const char *fragment_src, const char *vp, const char *fp)
 {
     if (!shader || !vertex_src || !fragment_src)
         return false;
@@ -390,8 +452,8 @@ bool shader_load_from_source(shader_t *shader, const char *vertex_src, const cha
         return false;
     }
 
-    GLuint vs = sh_compile(GL_VERTEX_SHADER, v);
-    GLuint fs = sh_compile(GL_FRAGMENT_SHADER, f);
+    GLuint vs = sh_compile_ex(GL_VERTEX_SHADER, v, vp ? vp : "vertex");
+    GLuint fs = sh_compile_ex(GL_FRAGMENT_SHADER, f, fp ? fp : "fragment");
 
     free(v);
     free(f);
@@ -405,12 +467,17 @@ bool shader_load_from_source(shader_t *shader, const char *vertex_src, const cha
         return false;
     }
 
-    bool ok = sh_link_program(shader, vs, fs, 0);
+    bool ok = sh_link_program(shader, vs, fs, 0, "vertex+fragment");
 
     glDeleteShader(vs);
     glDeleteShader(fs);
 
     return ok;
+}
+
+bool shader_load_from_source(shader_t *shader, const char *vertex_src, const char *fragment_src)
+{
+    return shader_load_from_source_labeled(shader, vertex_src, fragment_src, "vertex", "fragment");
 }
 
 bool shader_load_from_files(shader_t *shader, const char *vertex_path, const char *fragment_path)
@@ -427,7 +494,7 @@ bool shader_load_from_files(shader_t *shader, const char *vertex_path, const cha
         return false;
     }
 
-    bool ok = shader_load_from_source(shader, vs, fs);
+    bool ok = shader_load_from_source_labeled(shader, vs, fs, vertex_path, fragment_path);
 
     free(vs);
     free(fs);
@@ -435,7 +502,7 @@ bool shader_load_from_files(shader_t *shader, const char *vertex_path, const cha
     return ok;
 }
 
-bool shader_load_compute_from_source(shader_t *shader, const char *compute_src)
+static bool shader_load_compute_from_source_labeled(shader_t *shader, const char *compute_src, const char *cp)
 {
     if (!shader || !compute_src)
         return false;
@@ -446,17 +513,22 @@ bool shader_load_compute_from_source(shader_t *shader, const char *compute_src)
     if (!c)
         return false;
 
-    GLuint cs = sh_compile(GL_COMPUTE_SHADER, c);
+    GLuint cs = sh_compile_ex(GL_COMPUTE_SHADER, c, cp ? cp : "compute");
     free(c);
 
     if (!cs)
         return false;
 
-    bool ok = sh_link_program(shader, 0, 0, cs);
+    bool ok = sh_link_program(shader, 0, 0, cs, "compute");
 
     glDeleteShader(cs);
 
     return ok;
+}
+
+bool shader_load_compute_from_source(shader_t *shader, const char *compute_src)
+{
+    return shader_load_compute_from_source_labeled(shader, compute_src, "compute");
 }
 
 bool shader_load_compute_from_file(shader_t *shader, const char *compute_path)
@@ -468,7 +540,7 @@ bool shader_load_compute_from_file(shader_t *shader, const char *compute_path)
     if (!cs)
         return false;
 
-    bool ok = shader_load_compute_from_source(shader, cs);
+    bool ok = shader_load_compute_from_source_labeled(shader, cs, compute_path);
     free(cs);
     return ok;
 }
@@ -490,13 +562,11 @@ unsigned int shader_get_program(const shader_t *shader)
     return shader ? shader->program : 0;
 }
 
-void shader_dispatch_compute(const shader_t *shader,
-                             unsigned int groups_x,
-                             unsigned int groups_y,
-                             unsigned int groups_z)
+void shader_dispatch_compute(const shader_t *shader, unsigned int groups_x, unsigned int groups_y, unsigned int groups_z)
 {
     if (!shader || !shader->linked || shader->program == 0)
         return;
+    glUseProgram(shader->program);
     glDispatchCompute(groups_x, groups_y, groups_z);
 }
 

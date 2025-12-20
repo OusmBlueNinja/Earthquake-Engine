@@ -1,0 +1,38 @@
+#pragma once
+#include <stdint.h>
+
+
+typedef enum asset_type_t
+{
+    ASSET_NONE = 0,
+    ASSET_IMAGE
+} asset_type_t;
+
+typedef enum asset_state_t
+{
+    ASSET_STATE_EMPTY = 0,
+    ASSET_STATE_LOADING = 1,
+    ASSET_STATE_READY = 2,
+    ASSET_STATE_FAILED = 3
+} asset_state_t;
+
+typedef struct asset_image_t
+{
+    uint32_t width;
+    uint32_t height;
+    uint32_t channels;
+    uint8_t *pixels;
+    uint32_t gl_handle;
+} asset_image_t;
+
+typedef union asset_any_u
+{
+    asset_image_t image;
+} asset_any_u;
+
+typedef struct asset_any_t
+{
+    asset_type_t type;
+    asset_state_t state;
+    asset_any_u as;
+} asset_any_t;

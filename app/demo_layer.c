@@ -4,8 +4,6 @@
 #include <string.h>
 #include <math.h>
 
-#include <GL/glew.h>
-
 #include "core.h"
 #include "renderer/renderer.h"
 #include "types/vec3.h"
@@ -14,10 +12,11 @@
 #include "renderer/model.h"
 #include "renderer/material.h"
 #include "renderer/light.h"
+#include "asset_manager/asset_manager.h"
 
 typedef struct demo_layer_state_t
 {
-    mesh_t *mesh;
+    model_factory_t mf;
 
     material_t *mats[3];
     model_t models[3];
@@ -31,101 +30,28 @@ typedef struct demo_layer_state_t
     int ready;
 } demo_layer_state_t;
 
-static mesh_t *mesh_create_cube(void)
-{
-    static const float v[] = {
-        -0.5f, -0.5f, 0.5f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
-        0.5f, -0.5f, 0.5f, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f,
-        0.5f, 0.5f, 0.5f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f,
-        -0.5f, 0.5f, 0.5f, 0.0f, 0.0f, 1.0f, 0.0f, 1.0f,
-
-        0.5f, -0.5f, -0.5f, 0.0f, 0.0f, -1.0f, 0.0f, 0.0f,
-        -0.5f, -0.5f, -0.5f, 0.0f, 0.0f, -1.0f, 1.0f, 0.0f,
-        -0.5f, 0.5f, -0.5f, 0.0f, 0.0f, -1.0f, 1.0f, 1.0f,
-        0.5f, 0.5f, -0.5f, 0.0f, 0.0f, -1.0f, 0.0f, 1.0f,
-
-        -0.5f, -0.5f, -0.5f, -1.0f, 0.0f, 0.0f, 0.0f, 0.0f,
-        -0.5f, -0.5f, 0.5f, -1.0f, 0.0f, 0.0f, 1.0f, 0.0f,
-        -0.5f, 0.5f, 0.5f, -1.0f, 0.0f, 0.0f, 1.0f, 1.0f,
-        -0.5f, 0.5f, -0.5f, -1.0f, 0.0f, 0.0f, 0.0f, 1.0f,
-
-        0.5f, -0.5f, 0.5f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f,
-        0.5f, -0.5f, -0.5f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f,
-        0.5f, 0.5f, -0.5f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f,
-        0.5f, 0.5f, 0.5f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f,
-
-        -0.5f, 0.5f, 0.5f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f,
-        0.5f, 0.5f, 0.5f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f,
-        0.5f, 0.5f, -0.5f, 0.0f, 1.0f, 0.0f, 1.0f, 1.0f,
-        -0.5f, 0.5f, -0.5f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f,
-
-        -0.5f, -0.5f, -0.5f, 0.0f, -1.0f, 0.0f, 0.0f, 0.0f,
-        0.5f, -0.5f, -0.5f, 0.0f, -1.0f, 0.0f, 1.0f, 0.0f,
-        0.5f, -0.5f, 0.5f, 0.0f, -1.0f, 0.0f, 1.0f, 1.0f,
-        -0.5f, -0.5f, 0.5f, 0.0f, -1.0f, 0.0f, 0.0f, 1.0f};
-
-    static const uint32_t i[] = {
-        0, 1, 2, 2, 3, 0,
-        4, 5, 6, 6, 7, 4,
-        8, 9, 10, 10, 11, 8,
-        12, 13, 14, 14, 15, 12,
-        16, 17, 18, 18, 19, 16,
-        20, 21, 22, 22, 23, 20};
-
-    mesh_t *m = (mesh_t *)calloc(1, sizeof(mesh_t));
-    if (!m)
-        return NULL;
-
-    glGenVertexArrays(1, &m->vao);
-    glBindVertexArray(m->vao);
-
-    glGenBuffers(1, &m->vbo);
-    glBindBuffer(GL_ARRAY_BUFFER, m->vbo);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(v), v, GL_STATIC_DRAW);
-
-    glGenBuffers(1, &m->ibo);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m->ibo);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(i), i, GL_STATIC_DRAW);
-
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void *)(0));
-    glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void *)(3 * sizeof(float)));
-    glEnableVertexAttribArray(2);
-    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void *)(6 * sizeof(float)));
-
-    glBindVertexArray(0);
-
-    m->index_count = (uint32_t)(sizeof(i) / sizeof(i[0]));
-    return m;
-}
-
-static void mesh_destroy(mesh_t *m)
-{
-    if (!m)
-        return;
-    if (m->ibo)
-        glDeleteBuffers(1, &m->ibo);
-    if (m->vbo)
-        glDeleteBuffers(1, &m->vbo);
-    if (m->vao)
-        glDeleteVertexArrays(1, &m->vao);
-    free(m);
-}
-
 static material_t *material_create_solid(uint8_t shader_id, vec3 albedo)
 {
     material_t *mat = (material_t *)calloc(1, sizeof(material_t));
     if (!mat)
         return NULL;
+
     mat->shader_id = shader_id;
     mat->albedo = albedo;
     mat->emissive = (vec3){0.0f, 0.0f, 0.0f};
     mat->roughness = 0.6f;
     mat->metallic = 0.1f;
     mat->opacity = 1.0f;
-    for (int k = 0; k < MATERIAL_TEXTURE_MAX; ++k)
-        mat->textures[k] = 0;
+
+    mat->albedo_tex = ihandle_invalid();
+    mat->normal_tex = ihandle_invalid();
+    mat->metallic_tex = ihandle_invalid();
+    mat->roughness_tex = ihandle_invalid();
+    mat->emissive_tex = ihandle_invalid();
+    mat->occlusion_tex = ihandle_invalid();
+    mat->height_tex = ihandle_invalid();
+    mat->custom_tex = ihandle_invalid();
+
     return mat;
 }
 
@@ -170,27 +96,31 @@ static void demo_layer_init(layer_t *layer)
 
     renderer_t *r = &layer->app->renderer;
 
-    s->cam = camera_create();
-    float aspect = (r->fb_size.y != 0) ? ((float)r->fb_size.x / (float)r->fb_size.y) : 1.0f;
-    camera_set_perspective(&s->cam, 60.0f * 0.017453292519943295f, aspect, 0.1f, 100.0f);
-
-    s->mesh = mesh_create_cube();
-    if (!s->mesh)
+    if (!model_factory_init(&s->mf))
     {
         s->ready = 0;
         return;
     }
 
-    s->mats[0] = material_create_solid(r->default_shader_id, (vec3){1.0f, 0.2f, 0.2f});
-    s->mats[1] = material_create_solid(r->default_shader_id, (vec3){0.2f, 1.0f, 0.2f});
-    s->mats[2] = material_create_solid(r->default_shader_id, (vec3){0.2f, 0.4f, 1.0f});
+    s->cam = camera_create();
+    {
+        float aspect = (r->fb_size.y != 0) ? ((float)r->fb_size.x / (float)r->fb_size.y) : 1.0f;
+        camera_set_perspective(&s->cam, 60.0f * 0.017453292519943295f, aspect, 0.1f, 100.0f);
+    }
 
-    s->models[0].mesh = s->mesh;
-    s->models[0].material = s->mats[0];
-    s->models[1].mesh = s->mesh;
-    s->models[1].material = s->mats[1];
-    s->models[2].mesh = s->mesh;
-    s->models[2].material = s->mats[2];
+    s->mats[0] = material_create_solid(r->default_shader_id, (vec3){1.0f,1.0f, 1.0f});
+    s->mats[1] = material_create_solid(r->default_shader_id, (vec3){1.0f,1.0f, 1.0f});
+    s->mats[2] = material_create_solid(r->default_shader_id, (vec3){1.0f,1.0f, 1.0f});
+
+    if (!s->mats[0] || !s->mats[1] || !s->mats[2])
+    {
+        s->ready = 0;
+        return;
+    }
+
+    s->models[0] = model_make_primitive(&s->mf, PRIM_CUBE, s->mats[0]);
+    s->models[1] = model_make_primitive(&s->mf, PRIM_CUBE, s->mats[1]);
+    s->models[2] = model_make_primitive(&s->mf, PRIM_CUBE, s->mats[2]);
 
     float spacing = 1.10f;
     float topY = 1.0f;
@@ -214,9 +144,35 @@ static void demo_layer_init(layer_t *layer)
     s->lights_point[0] = make_point((vec3){3.0f, 2.0f, 1.0f}, (vec3){1.0f, 0.85f, 0.75f}, 1.0f);
     s->lights_point[1] = make_point((vec3){3.0f, 0.5f, -1.5f}, (vec3){0.75f, 0.85f, 1.0f}, 1.0f);
 
-    vec3 spotPos = (vec3){0.0f, 0.0f, -5.0f};
-    vec3 spotDir = (vec3){0.0f, 0.0f, 1.0f};
-    s->light_spot = make_spot(spotPos, spotDir, (vec3){1.0f, 0.0f, 1.0f}, 1.0f);
+    {
+        vec3 spotPos = (vec3){0.0f, 0.0f, -5.0f};
+        vec3 spotDir = (vec3){0.0f, 0.0f, 1.0f};
+        s->light_spot = make_spot(spotPos, spotDir, (vec3){1.0f, 0.0f, 1.0f}, 5.0f);
+    }
+
+    s->mats[0]->albedo_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/blue_metal_plate_4k/textures/blue_metal_plate_diff_4k.png");
+    s->mats[0]->normal_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/blue_metal_plate_4k/textures/blue_metal_plate_nor_gl_4k.png");
+    s->mats[0]->roughness_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/blue_metal_plate_4k/textures/blue_metal_plate_rough_4k.png");
+    s->mats[0]->metallic_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/blue_metal_plate_4k/textures/blue_metal_plate_arm_4k.png");
+    s->mats[0]->occlusion_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/blue_metal_plate_4k/textures/blue_metal_plate_ao_4k.png");
+    s->mats[0]->height_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/blue_metal_plate_4k/textures/blue_metal_plate_disp_4k.png");
+    s->mats[0]->custom_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/blue_metal_plate_4k/textures/blue_metal_plate_arm_4k.png");
+
+    s->mats[1]->albedo_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/wood_chip_path_4k/textures/wood_chip_path_diff_4k.png");
+    s->mats[1]->normal_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/wood_chip_path_4k/textures/wood_chip_path_nor_gl_4k.png");
+    s->mats[1]->roughness_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/wood_chip_path_4k/textures/wood_chip_path_rough_4k.png");
+    s->mats[1]->metallic_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/wood_chip_path_4k/textures/wood_chip_path_arm_4k.png");
+    s->mats[1]->occlusion_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/wood_chip_path_4k/textures/wood_chip_path_ao_4k.png");
+    s->mats[1]->height_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/wood_chip_path_4k/textures/wood_chip_path_disp_4k.png");
+    s->mats[1]->custom_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/wood_chip_path_4k/textures/wood_chip_path_arm_4k.png");
+
+    s->mats[2]->albedo_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/rusty_metal_grid_4k/textures/rusty_metal_grid_diff_4k.png");
+    s->mats[2]->normal_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/rusty_metal_grid_4k/textures/rusty_metal_grid_nor_gl_4k.png");
+    s->mats[2]->roughness_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/rusty_metal_grid_4k/textures/rusty_metal_grid_rough_4k.png");
+    s->mats[2]->metallic_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/rusty_metal_grid_4k/textures/rusty_metal_grid_arm_4k.png");
+    s->mats[2]->occlusion_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/rusty_metal_grid_4k/textures/rusty_metal_grid_ao_4k.png");
+    s->mats[2]->height_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/rusty_metal_grid_4k/textures/rusty_metal_grid_disp_4k.png");
+    s->mats[2]->custom_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/rusty_metal_grid_4k/textures/rusty_metal_grid_arm_4k.png");
 
     s->ready = 1;
 }
@@ -229,7 +185,8 @@ static void demo_layer_shutdown(layer_t *layer)
 
     for (int i = 0; i < 3; ++i)
         material_destroy(s->mats[i]);
-    mesh_destroy(s->mesh);
+
+    model_factory_shutdown(&s->mf);
 
     free(s);
     layer->data = NULL;
@@ -243,8 +200,10 @@ static void demo_layer_update(layer_t *layer, float dt)
 
     renderer_t *r = &layer->app->renderer;
 
-    float aspect = (r->fb_size.y != 0) ? ((float)r->fb_size.x / (float)r->fb_size.y) : 1.0f;
-    camera_set_perspective(&s->cam, 60.0f * 0.017453292519943295f, aspect, 0.1f, 100.0f);
+    {
+        float aspect = (r->fb_size.y != 0) ? ((float)r->fb_size.x / (float)r->fb_size.y) : 1.0f;
+        camera_set_perspective(&s->cam, 60.0f * 0.017453292519943295f, aspect, 0.1f, 100.0f);
+    }
 
     static float t = 0.0f;
     t += dt;

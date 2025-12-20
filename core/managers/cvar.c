@@ -45,6 +45,8 @@ static cvar_entry_t g_cvars[SV_CVAR_COUNT] = {
     [SV_HOST] = {.name = "sv_host", .type = CVAR_STRING, .def.s = "0.0.0.0", .flags = CVAR_FLAG_READONLY | CVAR_FLAG_NO_LOAD},
     [SV_PORT] = {.name = "sv_port", .type = CVAR_INT, .def.i = 0, .flags = CVAR_FLAG_READONLY | CVAR_FLAG_NO_LOAD},
     [CL_VSYNC] = {.name = "cl_vsync", .type = CVAR_BOOL, .def.b = true, .flags = CVAR_FLAG_NONE},
+    [CL_BLOOM] = {.name = "cl_bloom", .type = CVAR_BOOL, .def.b = true, .flags = CVAR_FLAG_NONE},
+    [CL_RENDER_DEBUG] = {.name = "cl_render_debug", .type = CVAR_INT, .def.i = 0, .flags = CVAR_FLAG_NONE},
 };
 
 static void cvar_fire_changed(sv_cvar_key_t k, const void *oldv, const void *newv)
@@ -191,7 +193,10 @@ bool cvar_set_string_name(const char *name, const char *v)
 bool cvar_set_callback_key(sv_cvar_key_t key, cvar_changed_fn fn)
 {
     if (key >= SV_CVAR_COUNT)
+    {
+        LOG_ERROR("CVar '%d' does not exist", key);
         return false;
+    }
     g_cvars[key].on_changed = fn;
     return true;
 }
@@ -200,7 +205,10 @@ bool cvar_set_callback_name(const char *name, cvar_changed_fn fn)
 {
     sv_cvar_key_t k = find_key(name);
     if (k >= SV_CVAR_COUNT)
+    {
+        LOG_ERROR("CVar '%s' does not exist", name);
         return false;
+    }
     g_cvars[k].on_changed = fn;
     return true;
 }

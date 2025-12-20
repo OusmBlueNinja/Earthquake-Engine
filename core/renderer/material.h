@@ -1,20 +1,7 @@
 #pragma once
 #include <stdint.h>
-#include <stdbool.h>
 #include "types/vec3.h"
-
-typedef enum material_texture_slot_t
-{
-    MATERIAL_TEXTURE_ALBEDO = 0,
-    MATERIAL_TEXTURE_NORMAL,
-    MATERIAL_TEXTURE_METALLIC,
-    MATERIAL_TEXTURE_ROUGHNESS,
-    MATERIAL_TEXTURE_EMISSIVE,
-    MATERIAL_TEXTURE_OCCLUSION,
-    MATERIAL_TEXTURE_HEIGHT,
-    MATERIAL_TEXTURE_CUSTOM,
-    MATERIAL_TEXTURE_MAX
-} material_texture_slot_t;
+#include "handle.h"
 
 typedef struct material_t
 {
@@ -27,5 +14,14 @@ typedef struct material_t
     float metallic;
     float opacity;
 
-    uint32_t textures[MATERIAL_TEXTURE_MAX];
+    // handles are iHANDLE_TYPE_ASSET = 1
+    ihandle_t albedo_tex;
+    ihandle_t normal_tex;
+    ihandle_t metallic_tex;
+    ihandle_t roughness_tex;
+    ihandle_t emissive_tex;
+    ihandle_t occlusion_tex;
+    ihandle_t height_tex;
+    ihandle_t custom_tex;
+
 } material_t;

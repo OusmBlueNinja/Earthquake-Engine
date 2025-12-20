@@ -36,49 +36,6 @@ Application *create_application(ApplicationSpecification *specification)
     return &g_application;
 }
 
-void delete_application(Application *app)
-{
-    if (!app)
-    {
-        g_application.status = APP_STATUS_INVALID_APP;
-        return;
-    }
-    {
-        // shutdown Layers
-        layer_t *layer;
-        VECTOR_FOR_EACH(g_application.layers, layer_t, layer)
-        {
-            if (layer->shutdown)
-            {
-                LOG_INFO("Shutting Down Layer: '%s'", layer->name);
-
-                layer->shutdown(layer);
-            }
-        }
-    }
-
-    if (!cvar_save("./config.cfg"))
-    {
-        LOG_WARN("Faild to save Config.");
-    }
-
-    g_application.application_initalized = false;
-
-    R_shutdown(&g_application.renderer);
-
-    wm_shutdown(&g_application.window_manager);
-
-    sv_shutdown();
-
-    cvar_shutdown();
-
-    LOG_INFO("Shutdown Application");
-    if (!g_application.status)
-        LOG_OK("status: %d", g_application.status);
-    else
-        LOG_ERROR("error: '%s' (%d)", app_status_to_string(g_application.status), g_application.status);
-}
-
 void init_application(Application *app)
 {
     if (!app)
@@ -115,7 +72,7 @@ void init_application(Application *app)
         return;
     }
 
-    if (R_init(&g_application.renderer))
+    if (R_init(&g_application.renderer, &g_application.asset_manager))
     {
         g_application.status = APP_STATUS_FAILED_TO_INITALIZE_RENDERER;
         return;
@@ -131,6 +88,14 @@ void init_application(Application *app)
     {
         LOG_WARN("Faild to load Config.");
     }
+
+    asset_manager_desc_t desc = {0};
+    desc.worker_count = 4;
+    desc.max_inflight_jobs = 2048;
+    desc.handle_type = iHANDLE_TYPE_ASSET;
+
+    asset_manager_init(&g_application.asset_manager, &desc);
+
     {
         // Init Layers
         layer_t *layer;
@@ -148,10 +113,53 @@ void init_application(Application *app)
     loop_application();
 }
 
+void delete_application(Application *app)
+{
+    if (!app)
+    {
+        g_application.status = APP_STATUS_INVALID_APP;
+        return;
+    }
+    {
+        // shutdown Layers
+        layer_t *layer;
+        VECTOR_FOR_EACH(g_application.layers, layer_t, layer)
+        {
+            if (layer->shutdown)
+            {
+                LOG_INFO("Shutting Down Layer: '%s'", layer->name);
+
+                layer->shutdown(layer);
+            }
+        }
+    }
+
+    if (!cvar_save("./config.cfg"))
+    {
+        LOG_WARN("Faild to save Config.");
+    }
+
+    g_application.application_initalized = false;
+
+    asset_manager_shutdown(&g_application.asset_manager);
+
+    R_shutdown(&g_application.renderer);
+
+    wm_shutdown(&g_application.window_manager);
+
+    sv_shutdown();
+
+    cvar_shutdown();
+
+    LOG_INFO("Shutdown Application");
+    if (!g_application.status)
+        LOG_OK("status: %d", g_application.status);
+    else
+        LOG_ERROR("error: '%s' (%d)", app_status_to_string(g_application.status), g_application.status);
+}
 void loop_application(void)
 {
     double last_frame = wm_get_time();
-    double accum = 0.0;
     sv_start();
 
     while (!wm_should_close(&g_application.window_manager))
@@ -160,42 +168,35 @@ void loop_application(void)
         const double dt = now - last_frame;
         last_frame = now;
 
-        accum += dt;
-        if (accum >= 1.0)
-        {
-            LOG_DEBUG("dt: %.7f fps: %.1f", dt, 1.0f / dt);
-            accum = 0.0;
-        }
-
         wm_poll(&g_application.window_manager);
+
+        layer_t *layer;
+        VECTOR_FOR_EACH(g_application.layers, layer_t, layer)
         {
-            // Update Layers
-            layer_t *layer;
-            VECTOR_FOR_EACH(g_application.layers, layer_t, layer)
-            {
-                if (layer->update)
-                    layer->update(layer, dt);
-            }
+            if (layer->update)
+                layer->update(layer, (float)dt);
         }
 
-        R_resize(&g_application.renderer, g_application.window_manager.size);
+        asset_manager_pump(&g_application.asset_manager);
+
+        vec2i fb = wm_get_framebuffer_size(&g_application.window_manager);
+        R_resize(&g_application.renderer, fb);
+
         R_begin_frame(&g_application.renderer);
         {
-            // Draw Layers
-            layer_t *layer;
             VECTOR_FOR_EACH(g_application.layers, layer_t, layer)
             {
                 if (layer->draw)
                     layer->draw(layer);
             }
         }
-
         R_end_frame(&g_application.renderer);
 
+        wm_bind_framebuffer(&g_application.window_manager, R_get_final_fbo(&g_application.renderer), g_application.renderer.fb_size);
         wm_begin_frame(&g_application.window_manager);
-        wm_bind_framebuffer(&g_application.window_manager, R_get_color_texture(&g_application.renderer));
         wm_end_frame(&g_application.window_manager);
     }
+
     sv_stop();
 }
 

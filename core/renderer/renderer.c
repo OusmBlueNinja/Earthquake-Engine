@@ -1,12 +1,12 @@
 #include "renderer.h"
 #include "shader.h"
 #include "utils/logger.h"
-#include <string.h>
-#include <stdlib.h>
-#include <stdio.h>
-
+#include "utils/macros.h"
 #include "cvar.h"
 #include "core.h"
+
+#include <string.h>
+#include <stdlib.h>
 
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
@@ -19,38 +19,77 @@
 #include <GL/glew.h>
 #endif
 
+#ifndef MAX_LIGHTS
 #define MAX_LIGHTS 16
-#define STR1(x) #x
-#define STR(x) STR1(x)
+#endif
 
-static void R_create_targets(renderer_t *r)
+typedef struct gpu_light_t
 {
-    if (r->fbo)
-    {
-        glDeleteFramebuffers(1, &r->fbo);
-        glDeleteTextures(1, &r->color_tex);
-        glDeleteTextures(1, &r->depth_tex);
-    }
+    float position[4];
+    float direction[4];
+    float color[4];
+    float params[4];
+    int type;
+    int pad0;
+    int pad1;
+    int pad2;
+} gpu_light_t;
 
-    glGenFramebuffers(1, &r->fbo);
-    glBindFramebuffer(GL_FRAMEBUFFER, r->fbo);
+typedef struct gpu_lights_block_t
+{
+    int count;
+    int pad0;
+    int pad1;
+    int pad2;
+    gpu_light_t lights[MAX_LIGHTS];
+} gpu_lights_block_t;
 
-    glGenTextures(1, &r->color_tex);
-    glBindTexture(GL_TEXTURE_2D, r->color_tex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, r->fb_size.x, r->fb_size.y, 0, GL_RGBA, GL_UNSIGNED_BYTE, 0);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, r->color_tex, 0);
+static GLuint g_pp_fbo = 0;
+static GLuint g_black_tex = 0;
 
-    glGenTextures(1, &r->depth_tex);
-    glBindTexture(GL_TEXTURE_2D, r->depth_tex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH24_STENCIL8, r->fb_size.x, r->fb_size.y, 0, GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8, 0);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, r->depth_tex, 0);
+static void R_make_black_tex(void)
+{
+    if (g_black_tex)
+        return;
 
-    GLenum bufs[] = {GL_COLOR_ATTACHMENT0};
-    glDrawBuffers(1, bufs);
+    glGenTextures(1, &g_black_tex);
+    glBindTexture(GL_TEXTURE_2D, g_black_tex);
 
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    const float px[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, 1, 1, 0, GL_RGBA, GL_FLOAT, px);
+
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    glBindTexture(GL_TEXTURE_2D, 0);
+}
+
+static void R_clear_rgba16f_tex(GLuint tex)
+{
+    if (!tex)
+        return;
+    const float zero[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    glClearTexImage(tex, 0, GL_RGBA, GL_FLOAT, zero);
+}
+
+static void R_on_bloom_change(sv_cvar_key_t key, const void *old_state, const void *state)
+{
+    (void)key;
+    (void)old_state;
+    bool newb = *(const bool *)state;
+    get_application()->renderer.cfg.bloom = newb;
+}
+
+static void R_on_debug_mode_change(sv_cvar_key_t key, const void *old_state, const void *state)
+{
+    (void)key;
+    (void)old_state;
+    int newv = *(const int *)state;
+    if (newv < 0)
+        newv = 0;
+    get_application()->renderer.cfg.debug_mode = newv;
 }
 
 static shader_t *R_new_shader_from_files_with_defines(const char *vp, const char *fp)
@@ -75,41 +114,538 @@ static shader_t *R_new_shader_from_files_with_defines(const char *vp, const char
     return out;
 }
 
-int R_init(renderer_t *r)
+static void R_gl_delete_targets(renderer_t *r)
+{
+    if (r->scene_fbo)
+        glDeleteFramebuffers(1, &r->scene_fbo);
+    if (r->final_fbo)
+        glDeleteFramebuffers(1, &r->final_fbo);
+
+    if (r->scene_color_tex)
+        glDeleteTextures(1, &r->scene_color_tex);
+    if (r->final_color_tex)
+        glDeleteTextures(1, &r->final_color_tex);
+    if (r->depth_tex)
+        glDeleteTextures(1, &r->depth_tex);
+
+    r->scene_fbo = 0;
+    r->final_fbo = 0;
+    r->scene_color_tex = 0;
+    r->final_color_tex = 0;
+    r->depth_tex = 0;
+}
+
+static void R_create_targets(renderer_t *r)
+{
+    R_gl_delete_targets(r);
+
+    glGenFramebuffers(1, &r->scene_fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, r->scene_fbo);
+
+    glGenTextures(1, &r->scene_color_tex);
+    glBindTexture(GL_TEXTURE_2D, r->scene_color_tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, r->fb_size.x, r->fb_size.y, 0, GL_RGBA, GL_FLOAT, 0);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, r->scene_color_tex, 0);
+
+    glGenTextures(1, &r->depth_tex);
+    glBindTexture(GL_TEXTURE_2D, r->depth_tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, r->fb_size.x, r->fb_size.y, 0, GL_DEPTH_COMPONENT, GL_FLOAT, 0);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, r->depth_tex, 0);
+
+    {
+        GLenum bufs[] = {GL_COLOR_ATTACHMENT0};
+        glDrawBuffers(1, bufs);
+    }
+
+    {
+        GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+        if (status != GL_FRAMEBUFFER_COMPLETE)
+            LOG_ERROR("Renderer scene FBO incomplete: 0x%x", (unsigned)status);
+    }
+
+    glGenFramebuffers(1, &r->final_fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, r->final_fbo);
+
+    glGenTextures(1, &r->final_color_tex);
+    glBindTexture(GL_TEXTURE_2D, r->final_color_tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, r->fb_size.x, r->fb_size.y, 0, GL_RGBA, GL_FLOAT, 0);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, r->final_color_tex, 0);
+
+    {
+        GLenum bufs[] = {GL_COLOR_ATTACHMENT0};
+        glDrawBuffers(1, bufs);
+    }
+
+    {
+        GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+        if (status != GL_FRAMEBUFFER_COMPLETE)
+            LOG_ERROR("Renderer final FBO incomplete: 0x%x", (unsigned)status);
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+static uint32_t R_resolve_image_gl(const renderer_t *r, ihandle_t h)
+{
+    if (!r || !r->assets)
+        return 0;
+    if (!ihandle_is_valid(h))
+        return 0;
+
+    const asset_any_t *a = asset_manager_get_any(r->assets, h);
+    if (!a)
+        return 0;
+    if (a->type != ASSET_IMAGE)
+        return 0;
+    if (a->state != ASSET_STATE_READY)
+        return 0;
+
+    return a->as.image.gl_handle;
+}
+
+static void R_bind_image_slot(renderer_t *r, shader_t *s, const char *has_name, const char *sampler_name, int unit, ihandle_t h)
+{
+    uint32_t glh = R_resolve_image_gl(r, h);
+    glActiveTexture((GLenum)(GL_TEXTURE0 + (GLenum)unit));
+    if (glh)
+    {
+        glBindTexture(GL_TEXTURE_2D, glh);
+        shader_set_int(s, sampler_name, unit);
+        shader_set_int(s, has_name, 1);
+    }
+    else
+    {
+        glBindTexture(GL_TEXTURE_2D, 0);
+        shader_set_int(s, has_name, 0);
+    }
+}
+
+static void R_lights_ubo_init(renderer_t *r)
+{
+    glGenBuffers(1, &r->lights_ubo);
+    glBindBuffer(GL_UNIFORM_BUFFER, r->lights_ubo);
+    glBufferData(GL_UNIFORM_BUFFER, sizeof(gpu_lights_block_t), 0, GL_DYNAMIC_DRAW);
+    glBindBuffer(GL_UNIFORM_BUFFER, 0);
+}
+
+static void R_lights_ubo_shutdown(renderer_t *r)
+{
+    if (r->lights_ubo)
+        glDeleteBuffers(1, &r->lights_ubo);
+    r->lights_ubo = 0;
+}
+
+static void R_lights_ubo_upload(renderer_t *r)
+{
+    gpu_lights_block_t blk;
+    memset(&blk, 0, sizeof(blk));
+
+    uint32_t light_count = r->lights.size;
+    if (light_count > MAX_LIGHTS)
+        light_count = MAX_LIGHTS;
+    blk.count = (int)light_count;
+
+    for (uint32_t i = 0; i < light_count; i++)
+    {
+        light_t *l = (light_t *)vector_at(&r->lights, i);
+        gpu_light_t *g = &blk.lights[i];
+
+        g->position[0] = l->position.x;
+        g->position[1] = l->position.y;
+        g->position[2] = l->position.z;
+        g->position[3] = 1.0f;
+
+        g->direction[0] = l->direction.x;
+        g->direction[1] = l->direction.y;
+        g->direction[2] = l->direction.z;
+        g->direction[3] = 0.0f;
+
+        g->color[0] = l->color.x;
+        g->color[1] = l->color.y;
+        g->color[2] = l->color.z;
+        g->color[3] = 1.0f;
+
+        g->params[0] = l->intensity;
+        g->params[1] = l->radius;
+        g->params[2] = l->range;
+        g->params[3] = 0.0f;
+
+        g->type = (int)l->type;
+    }
+
+    glBindBuffer(GL_UNIFORM_BUFFER, r->lights_ubo);
+    glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(blk), &blk);
+    glBindBuffer(GL_UNIFORM_BUFFER, 0);
+}
+
+static uint32_t R_bloom_calc_mips(vec2i size, uint32_t req)
+{
+    uint32_t m = 0;
+    int w = size.x;
+    int h = size.y;
+    while (m < req && w > 1 && h > 1 && m < 16)
+    {
+        w >>= 1;
+        h >>= 1;
+        if (w < 2 || h < 2)
+            break;
+        m++;
+    }
+    if (m < 1)
+        m = 1;
+    return m;
+}
+
+static void R_bloom_alloc_tex(uint32_t *tex, int w, int h)
+{
+    glGenTextures(1, tex);
+    glBindTexture(GL_TEXTURE_2D, *tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, w, h, 0, GL_RGBA, GL_FLOAT, 0);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+}
+
+static void R_bloom_free_textures(renderer_t *r)
+{
+    for (uint32_t i = 0; i < 16; i++)
+    {
+        if (r->bloom.tex_down[i])
+            glDeleteTextures(1, &r->bloom.tex_down[i]);
+        if (r->bloom.tex_up[i])
+            glDeleteTextures(1, &r->bloom.tex_up[i]);
+        r->bloom.tex_down[i] = 0;
+        r->bloom.tex_up[i] = 0;
+    }
+    r->bloom.mips = 0;
+    r->bloom.base_size = (vec2i){0, 0};
+}
+
+static void R_bloom_free_shaders(renderer_t *r)
+{
+    if (r->bloom.cs_extract)
+    {
+        shader_destroy(r->bloom.cs_extract);
+        free(r->bloom.cs_extract);
+    }
+    if (r->bloom.cs_down)
+    {
+        shader_destroy(r->bloom.cs_down);
+        free(r->bloom.cs_down);
+    }
+    if (r->bloom.cs_up)
+    {
+        shader_destroy(r->bloom.cs_up);
+        free(r->bloom.cs_up);
+    }
+    if (r->bloom.post_present)
+    {
+        shader_destroy(r->bloom.post_present);
+        free(r->bloom.post_present);
+    }
+
+    r->bloom.cs_extract = 0;
+    r->bloom.cs_down = 0;
+    r->bloom.cs_up = 0;
+    r->bloom.post_present = 0;
+}
+
+static int R_bloom_init(renderer_t *r)
+{
+    if (!g_pp_fbo)
+        glGenFramebuffers(1, &g_pp_fbo);
+
+    if (!r->bloom.post_present)
+        r->bloom.post_present = R_new_shader_from_files_with_defines("res/shaders/post_present.vert", "res/shaders/post_present.frag");
+
+    if (!r->bloom.cs_extract)
+        r->bloom.cs_extract = R_new_shader_from_files_with_defines("res/shaders/post_present.vert", "res/shaders/bloom_extract.frag");
+    if (!r->bloom.cs_down)
+        r->bloom.cs_down = R_new_shader_from_files_with_defines("res/shaders/post_present.vert", "res/shaders/bloom_down.frag");
+    if (!r->bloom.cs_up)
+        r->bloom.cs_up = R_new_shader_from_files_with_defines("res/shaders/post_present.vert", "res/shaders/bloom_up.frag");
+
+    if (!r->bloom.post_present)
+        return 0;
+    if (!r->bloom.cs_extract || !r->bloom.cs_down || !r->bloom.cs_up)
+        return 0;
+
+    r->bloom.base_size = r->fb_size;
+    r->bloom.mips = R_bloom_calc_mips(r->fb_size, r->cfg.bloom_mips);
+
+    int w = r->fb_size.x;
+    int h = r->fb_size.y;
+
+    for (uint32_t i = 0; i < r->bloom.mips; i++)
+    {
+        w = (w > 1) ? (w >> 1) : 1;
+        h = (h > 1) ? (h >> 1) : 1;
+        if (w < 1) w = 1;
+        if (h < 1) h = 1;
+
+        R_bloom_alloc_tex(&r->bloom.tex_down[i], w, h);
+        R_bloom_alloc_tex(&r->bloom.tex_up[i], w, h);
+        R_clear_rgba16f_tex(r->bloom.tex_down[i]);
+        R_clear_rgba16f_tex(r->bloom.tex_up[i]);
+    }
+
+    r->cfg.bloom = cvar_get_bool_name("cl_bloom");
+    cvar_set_callback_name("cl_bloom", R_on_bloom_change);
+
+    r->cfg.debug_mode = cvar_get_int_name("cl_render_debug");
+    cvar_set_callback_name("cl_render_debug", R_on_debug_mode_change);
+
+    return 1;
+}
+
+static void R_bloom_ensure(renderer_t *r)
+{
+    uint32_t want_mips = R_bloom_calc_mips(r->fb_size, r->cfg.bloom_mips);
+    if (r->bloom.mips != 0 &&
+        r->bloom.base_size.x == r->fb_size.x &&
+        r->bloom.base_size.y == r->fb_size.y &&
+        r->bloom.mips == want_mips)
+        return;
+
+    R_bloom_free_textures(r);
+    r->bloom.base_size = r->fb_size;
+    r->bloom.mips = 0;
+
+    if (!R_bloom_init(r))
+        LOG_ERROR("Bloom init failed");
+}
+
+static void R_draw_fs_tri(renderer_t *r)
+{
+    glBindVertexArray(r->fs_vao);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindVertexArray(0);
+}
+
+static void R_pp_attach(GLuint tex)
+{
+    glBindFramebuffer(GL_FRAMEBUFFER, g_pp_fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+}
+
+static void R_pp_draw(renderer_t *r, int w, int h)
+{
+    glViewport(0, 0, w, h);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_CULL_FACE);
+    glDisable(GL_BLEND);
+    R_draw_fs_tri(r);
+}
+
+static void R_bloom_run(renderer_t *r)
+{
+    if (!r->cfg.bloom)
+        return;
+
+    R_bloom_ensure(r);
+    if (!r->bloom.mips)
+        return;
+
+    int base_w = r->fb_size.x;
+    int base_h = r->fb_size.y;
+    if (base_w < 2 || base_h < 2)
+        return;
+
+    int w0 = base_w >> 1;
+    int h0 = base_h >> 1;
+    if (w0 < 1) w0 = 1;
+    if (h0 < 1) h0 = 1;
+
+    R_clear_rgba16f_tex(r->bloom.tex_down[0]);
+
+    shader_bind(r->bloom.cs_extract);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, r->scene_color_tex);
+    shader_set_int(r->bloom.cs_extract, "u_Src", 0);
+    shader_set_float(r->bloom.cs_extract, "u_Threshold", r->cfg.bloom_threshold);
+    shader_set_float(r->bloom.cs_extract, "u_Knee", r->cfg.bloom_knee);
+
+    R_pp_attach(r->bloom.tex_down[0]);
+    R_pp_draw(r, w0, h0);
+
+    int w = w0;
+    int h = h0;
+
+    for (uint32_t i = 1; i < r->bloom.mips; i++)
+    {
+        int nw = w >> 1;
+        int nh = h >> 1;
+        if (nw < 1) nw = 1;
+        if (nh < 1) nh = 1;
+
+        R_clear_rgba16f_tex(r->bloom.tex_down[i]);
+
+        shader_bind(r->bloom.cs_down);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, r->bloom.tex_down[i - 1]);
+        shader_set_int(r->bloom.cs_down, "u_Src", 0);
+        shader_set_float(r->bloom.cs_down, "u_TexelX", 1.0f / (float)w);
+        shader_set_float(r->bloom.cs_down, "u_TexelY", 1.0f / (float)h);
+
+        R_pp_attach(r->bloom.tex_down[i]);
+        R_pp_draw(r, nw, nh);
+
+        w = nw;
+        h = nh;
+    }
+
+    for (uint32_t i = 0; i < r->bloom.mips; i++)
+        R_clear_rgba16f_tex(r->bloom.tex_up[i]);
+
+    uint32_t last = r->bloom.mips - 1;
+
+    {
+        int lw = base_w >> (int)(last + 1);
+        int lh = base_h >> (int)(last + 1);
+        if (lw < 1) lw = 1;
+        if (lh < 1) lh = 1;
+
+        glCopyImageSubData(
+            r->bloom.tex_down[last], GL_TEXTURE_2D, 0, 0, 0, 0,
+            r->bloom.tex_up[last], GL_TEXTURE_2D, 0, 0, 0, 0,
+            lw, lh, 1);
+    }
+
+    for (int i = (int)r->bloom.mips - 2; i >= 0; i--)
+    {
+        int dst_w = base_w >> (i + 1);
+        int dst_h = base_h >> (i + 1);
+
+        int low_w = base_w >> (i + 2);
+        int low_h = base_h >> (i + 2);
+
+        if (dst_w < 1) dst_w = 1;
+        if (dst_h < 1) dst_h = 1;
+        if (low_w < 1) low_w = 1;
+        if (low_h < 1) low_h = 1;
+
+        shader_bind(r->bloom.cs_up);
+
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, r->bloom.tex_up[i + 1]);
+        shader_set_int(r->bloom.cs_up, "u_Low", 0);
+
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, r->bloom.tex_down[i]);
+        shader_set_int(r->bloom.cs_up, "u_High", 1);
+
+        shader_set_float(r->bloom.cs_up, "u_TexelX", 1.0f / (float)low_w);
+        shader_set_float(r->bloom.cs_up, "u_TexelY", 1.0f / (float)low_h);
+        shader_set_float(r->bloom.cs_up, "u_Intensity", r->cfg.bloom_intensity);
+
+        R_pp_attach(r->bloom.tex_up[i]);
+        R_pp_draw(r, dst_w, dst_h);
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glEnable(GL_DEPTH_TEST);
+}
+
+static void R_composite_to_final(renderer_t *r)
+{
+    if (!r->bloom.post_present)
+        return;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, r->final_fbo);
+    glViewport(0, 0, r->fb_size.x, r->fb_size.y);
+
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_CULL_FACE);
+    glDisable(GL_BLEND);
+
+    shader_bind(r->bloom.post_present);
+
+    shader_set_int(r->bloom.post_present, "u_DebugMode", r->cfg.debug_mode);
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, r->scene_color_tex);
+    shader_set_int(r->bloom.post_present, "u_Scene", 0);
+
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, (r->cfg.bloom && r->bloom.mips) ? r->bloom.tex_up[0] : g_black_tex);
+    shader_set_int(r->bloom.post_present, "u_Bloom", 1);
+
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_2D, r->depth_tex);
+    shader_set_int(r->bloom.post_present, "u_Depth", 2);
+
+    shader_set_int(r->bloom.post_present, "u_EnableBloom", r->cfg.bloom ? 1 : 0);
+    shader_set_float(r->bloom.post_present, "u_BloomIntensity", r->cfg.bloom_intensity);
+
+    R_draw_fs_tri(r);
+
+    glEnable(GL_DEPTH_TEST);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+int R_init(renderer_t *r, asset_manager_t *assets)
 {
     if (!r)
         return 1;
 
+    memset(r, 0, sizeof(*r));
+    r->assets = assets;
+
+    r->cfg.bloom = cvar_get_bool_name("cl_bloom");
+    r->cfg.debug_mode = cvar_get_int_name("cl_render_debug");
+
+    r->cfg.bloom_threshold = 0.9f;
+    r->cfg.bloom_knee = 0.5f;
+    r->cfg.bloom_intensity = 0.2f;
+    r->cfg.bloom_mips = 6;
+
     r->clear_color = (vec4){0.05f, 0.05f, 0.06f, 1.0f};
     r->fb_size = (vec2i){1, 1};
-    r->fbo = 0;
-    r->color_tex = 0;
-    r->depth_tex = 0;
-    r->default_shader_id = 0;
 
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LEQUAL);
     glDisable(GL_CULL_FACE);
     glDisable(GL_BLEND);
 
+    glGenVertexArrays(1, &r->fs_vao);
+
+    R_make_black_tex();
     R_create_targets(r);
 
     r->lights = create_vector(light_t);
     r->models = create_vector(pushed_model_t);
     r->shaders = create_vector(shader_t *);
 
-    shader_t *default_shader = R_new_shader_from_files_with_defines(
-        "res/shaders/shader.vert",
-        "res/shaders/shader.frag");
+    shader_t *default_shader = R_new_shader_from_files_with_defines("res/shaders/shader.vert", "res/shaders/shader.frag");
     if (!default_shader)
-    {
-        LOG_ERROR("Failed to load default shader");
         return 1;
-    }
 
     r->default_shader_id = R_add_shader(r, default_shader);
 
-    LOG_DEBUG("Renderer initialized with framebuffer %u", r->fbo);
+    if (!model_factory_init(&r->model_factory))
+        return 1;
+
+    R_lights_ubo_init(r);
+
+    if (!R_bloom_init(r))
+        LOG_ERROR("Bloom init failed");
+
+    cvar_set_callback_name("cl_bloom", R_on_bloom_change);
+    cvar_set_callback_name("cl_render_debug", R_on_debug_mode_change);
+
     return 0;
 }
 
@@ -127,15 +663,37 @@ shader_t *R_get_shader(const renderer_t *r, uint8_t shader_id)
         return NULL;
     if (shader_id >= r->shaders.size)
         return NULL;
-
     shader_t **ps = (shader_t **)vector_at((vector_t *)&r->shaders, shader_id);
     return ps ? *ps : NULL;
+}
+
+const shader_t *R_get_shader_const(const renderer_t *r, uint8_t shader_id)
+{
+    return (const shader_t *)R_get_shader(r, shader_id);
+}
+
+uint32_t R_get_final_fbo(const renderer_t *r)
+{
+    if (!r)
+        return 0;
+    return r->final_fbo;
 }
 
 void R_shutdown(renderer_t *r)
 {
     if (!r)
         return;
+
+    R_bloom_free_textures(r);
+    R_bloom_free_shaders(r);
+
+    R_lights_ubo_shutdown(r);
+
+    if (r->fs_vao)
+        glDeleteVertexArrays(1, &r->fs_vao);
+    r->fs_vao = 0;
+
+    model_factory_shutdown(&r->model_factory);
 
     for (uint32_t i = 0; i < r->shaders.size; i++)
     {
@@ -151,26 +709,24 @@ void R_shutdown(renderer_t *r)
     vector_free(&r->lights);
     vector_free(&r->models);
 
-    glDeleteFramebuffers(1, &r->fbo);
-    glDeleteTextures(1, &r->color_tex);
-    glDeleteTextures(1, &r->depth_tex);
+    R_gl_delete_targets(r);
 
-    LOG_INFO("Renderer shutdown complete");
+    r->assets = NULL;
 }
 
 void R_resize(renderer_t *r, vec2i size)
 {
     if (!r)
         return;
-    if (size.x < 1)
-        size.x = 1;
-    if (size.y < 1)
-        size.y = 1;
+
+    if (size.x < 1) size.x = 1;
+    if (size.y < 1) size.y = 1;
     if (r->fb_size.x == size.x && r->fb_size.y == size.y)
         return;
 
     r->fb_size = size;
     R_create_targets(r);
+    R_bloom_ensure(r);
 }
 
 void R_set_clear_color(renderer_t *r, vec4 color)
@@ -188,7 +744,7 @@ void R_begin_frame(renderer_t *r)
     vector_clear(&r->lights);
     vector_clear(&r->models);
 
-    glBindFramebuffer(GL_FRAMEBUFFER, r->fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, r->scene_fbo);
     glViewport(0, 0, r->fb_size.x, r->fb_size.y);
     glClearColor(r->clear_color.x, r->clear_color.y, r->clear_color.z, r->clear_color.w);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -199,14 +755,17 @@ void R_end_frame(renderer_t *r)
     if (!r)
         return;
 
+    glBindFramebuffer(GL_FRAMEBUFFER, r->scene_fbo);
+    glViewport(0, 0, r->fb_size.x, r->fb_size.y);
+
+    R_lights_ubo_upload(r);
+    glBindBufferBase(GL_UNIFORM_BUFFER, 0, r->lights_ubo);
+
     uint32_t model_count = r->models.size;
-    uint32_t light_count = r->lights.size;
-    if (light_count > MAX_LIGHTS)
-        light_count = MAX_LIGHTS;
 
     for (uint32_t i = 0; i < model_count; i++)
     {
-        pushed_model_t *pm = vector_at(&r->models, i);
+        pushed_model_t *pm = (pushed_model_t *)vector_at(&r->models, i);
         if (!pm || !pm->model)
             continue;
 
@@ -232,9 +791,36 @@ void R_end_frame(renderer_t *r)
             shader_set_float(s, "u_Roughness", mat->roughness);
             shader_set_float(s, "u_Metallic", mat->metallic);
             shader_set_float(s, "u_Opacity", mat->opacity);
+
+            R_bind_image_slot(r, s, "u_HasAlbedoTex", "u_AlbedoTex", 0, mat->albedo_tex);
+            R_bind_image_slot(r, s, "u_HasNormalTex", "u_NormalTex", 1, mat->normal_tex);
+            R_bind_image_slot(r, s, "u_HasMetallicTex", "u_MetallicTex", 2, mat->metallic_tex);
+            R_bind_image_slot(r, s, "u_HasRoughnessTex", "u_RoughnessTex", 3, mat->roughness_tex);
+            R_bind_image_slot(r, s, "u_HasEmissiveTex", "u_EmissiveTex", 4, mat->emissive_tex);
+            R_bind_image_slot(r, s, "u_HasOcclusionTex", "u_OcclusionTex", 5, mat->occlusion_tex);
+            R_bind_image_slot(r, s, "u_HasHeightTex", "u_HeightTex", 6, mat->height_tex);
+            R_bind_image_slot(r, s, "u_HasCustomTex", "u_CustomTex", 7, mat->custom_tex);
         }
         else
         {
+            glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, 0);
+            glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, 0);
+            glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, 0);
+            glActiveTexture(GL_TEXTURE3); glBindTexture(GL_TEXTURE_2D, 0);
+            glActiveTexture(GL_TEXTURE4); glBindTexture(GL_TEXTURE_2D, 0);
+            glActiveTexture(GL_TEXTURE5); glBindTexture(GL_TEXTURE_2D, 0);
+            glActiveTexture(GL_TEXTURE6); glBindTexture(GL_TEXTURE_2D, 0);
+            glActiveTexture(GL_TEXTURE7); glBindTexture(GL_TEXTURE_2D, 0);
+
+            shader_set_int(s, "u_HasAlbedoTex", 0);
+            shader_set_int(s, "u_HasNormalTex", 0);
+            shader_set_int(s, "u_HasMetallicTex", 0);
+            shader_set_int(s, "u_HasRoughnessTex", 0);
+            shader_set_int(s, "u_HasEmissiveTex", 0);
+            shader_set_int(s, "u_HasOcclusionTex", 0);
+            shader_set_int(s, "u_HasHeightTex", 0);
+            shader_set_int(s, "u_HasCustomTex", 0);
+
             shader_set_vec3(s, "u_Albedo", (vec3){1.0f, 1.0f, 1.0f});
             shader_set_vec3(s, "u_Emissive", (vec3){0.0f, 0.0f, 0.0f});
             shader_set_float(s, "u_Roughness", 1.0f);
@@ -242,32 +828,13 @@ void R_end_frame(renderer_t *r)
             shader_set_float(s, "u_Opacity", 1.0f);
         }
 
-        shader_set_int(s, "u_LightCount", (int)light_count);
-        for (uint32_t l = 0; l < light_count; l++)
-        {
-            light_t *light = vector_at(&r->lights, l);
-
-            char buf[64];
-            snprintf(buf, 64, "u_Lights[%u].type", l);
-            shader_set_int(s, buf, (int)light->type);
-            snprintf(buf, 64, "u_Lights[%u].position", l);
-            shader_set_vec3(s, buf, light->position);
-            snprintf(buf, 64, "u_Lights[%u].direction", l);
-            shader_set_vec3(s, buf, light->direction);
-            snprintf(buf, 64, "u_Lights[%u].color", l);
-            shader_set_vec3(s, buf, light->color);
-            snprintf(buf, 64, "u_Lights[%u].intensity", l);
-            shader_set_float(s, buf, light->intensity);
-            snprintf(buf, 64, "u_Lights[%u].radius", l);
-            shader_set_float(s, buf, light->radius);
-            snprintf(buf, 64, "u_Lights[%u].range", l);
-            shader_set_float(s, buf, light->range);
-        }
-
         model_draw(pm->model);
     }
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    R_bloom_run(r);
+    R_composite_to_final(r);
 }
 
 void R_push_camera(renderer_t *r, const camera_t *cam)
@@ -290,14 +857,4 @@ void R_push_model(renderer_t *r, const model_t *model, mat4 model_matrix)
         return;
     pushed_model_t pm = {model, model_matrix};
     vector_push_back(&r->models, &pm);
-}
-
-uint32_t R_get_color_texture(const renderer_t *r)
-{
-    return r ? r->color_tex : 0;
-}
-
-uint32_t R_get_depth_texture(const renderer_t *r)
-{
-    return r ? r->depth_tex : 0;
 }
