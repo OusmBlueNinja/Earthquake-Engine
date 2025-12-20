@@ -29,18 +29,12 @@ typedef struct gpu_light_t
     float direction[4];
     float color[4];
     float params[4];
-    int type;
-    int pad0;
-    int pad1;
-    int pad2;
+    int meta[4];
 } gpu_light_t;
 
 typedef struct gpu_lights_block_t
 {
-    int count;
-    int pad0;
-    int pad1;
-    int pad2;
+    int header[4];
     gpu_light_t lights[MAX_LIGHTS];
 } gpu_lights_block_t;
 
@@ -266,7 +260,11 @@ static void R_lights_ubo_upload(renderer_t *r)
     uint32_t light_count = r->lights.size;
     if (light_count > MAX_LIGHTS)
         light_count = MAX_LIGHTS;
-    blk.count = (int)light_count;
+
+    blk.header[0] = (int)light_count;
+    blk.header[1] = 0;
+    blk.header[2] = 0;
+    blk.header[3] = 0;
 
     for (uint32_t i = 0; i < light_count; i++)
     {
@@ -293,7 +291,10 @@ static void R_lights_ubo_upload(renderer_t *r)
         g->params[2] = l->range;
         g->params[3] = 0.0f;
 
-        g->type = (int)l->type;
+        g->meta[0] = (int)l->type;
+        g->meta[1] = 0;
+        g->meta[2] = 0;
+        g->meta[3] = 0;
     }
 
     glBindBuffer(GL_UNIFORM_BUFFER, r->lights_ubo);
@@ -613,6 +614,9 @@ static void R_composite_to_final(renderer_t *r)
     shader_set_int(r->bloom.post_present, "u_EnableBloom", r->cfg.bloom ? 1 : 0);
     shader_set_float(r->bloom.post_present, "u_BloomIntensity", r->cfg.bloom_intensity);
 
+    shader_set_float(r->bloom.post_present, "u_Exposure", r->cfg.exposure);
+    shader_set_float(r->bloom.post_present, "u_OutputGamma", r->cfg.output_gamma);
+
     R_draw_fs_tri(r);
 
     glEnable(GL_DEPTH_TEST);
@@ -632,10 +636,19 @@ int R_init(renderer_t *r, asset_manager_t *assets)
 
     r->cfg.bloom_threshold = 1.0f;
     r->cfg.bloom_knee = 0.5f;
-    r->cfg.bloom_intensity = 0.15f;
+    r->cfg.bloom_intensity = 0.10f;
     r->cfg.bloom_mips = 6;
 
-    r->clear_color = (vec4){0.05f, 0.05f, 0.06f, 1.0f};
+    r->cfg.exposure = 1.0f;
+    r->cfg.output_gamma = 2.2f;
+    r->cfg.manual_srgb = 0;
+
+    r->cfg.alpha_test = 0;
+    r->cfg.alpha_cutoff = 0.5f;
+
+    r->cfg.height_invert = 0;
+
+    r->clear_color = (vec4){0.02f, 0.02f, 0.02f, 1.0f};
     r->fb_size = (vec2i){1, 1};
 
     glEnable(GL_DEPTH_TEST);
@@ -806,6 +819,11 @@ void R_end_frame(renderer_t *r)
         shader_set_mat4(s, "u_View", r->camera.view);
         shader_set_mat4(s, "u_Proj", r->camera.proj);
         shader_set_vec3(s, "u_CameraPos", r->camera.position);
+
+        shader_set_int(s, "u_HeightInvert", r->cfg.height_invert ? 1 : 0);
+        shader_set_int(s, "u_AlphaTest", r->cfg.alpha_test ? 1 : 0);
+        shader_set_float(s, "u_AlphaCutoff", r->cfg.alpha_cutoff);
+        shader_set_int(s, "u_ManualSRGB", r->cfg.manual_srgb ? 1 : 0);
 
         shader_set_int(s, "u_HasMaterial", mat ? 1 : 0);
 

@@ -20,6 +20,13 @@ typedef struct renderer_config_t
     float bloom_knee;
     float bloom_intensity;
     uint32_t bloom_mips;
+
+    float exposure;
+    float output_gamma;
+    int manual_srgb;
+    int alpha_test;
+    float alpha_cutoff;
+    int height_invert;
 } renderer_config_t;
 
 typedef struct pushed_model_t

@@ -114,7 +114,7 @@ static void demo_layer_init(layer_t *layer)
     {
         vec3 spotPos = (vec3){0.0f, 0.0f, -5.0f};
         vec3 spotDir = (vec3){0.0f, 0.0f, 1.0f};
-        s->light_spot = make_spot(spotPos, spotDir, (vec3){1.0f, 0.0f, 1.0f}, 10.0f);
+        s->light_spot = make_spot(spotPos, spotDir, (vec3){1.0f, 1.0f, 1.0f}, 10.0f);
     }
 
     s->mats[0].albedo_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/stone_pathway_02_4k/textures/stone_pathway_02_diff_4k.png");
