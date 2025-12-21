@@ -72,9 +72,9 @@ typedef struct renderer_t
     uint32_t final_color_tex;
     uint32_t depth_tex;
 
-    vector_t lights;
-    vector_t models;
-    vector_t shaders;
+    vector_t lights;  // vector<light_t>
+    vector_t models;  // vector<model_t
+    vector_t shaders; // vector<shader_t*>
 
     uint8_t default_shader_id;
 

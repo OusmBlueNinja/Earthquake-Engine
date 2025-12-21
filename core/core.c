@@ -157,6 +157,8 @@ void delete_application(Application *app)
     else
         LOG_ERROR("error: '%s' (%d)", app_status_to_string(g_application.status), g_application.status);
 }
+
+
 void loop_application(void)
 {
     double last_frame = wm_get_time();
@@ -179,8 +181,7 @@ void loop_application(void)
 
         asset_manager_pump(&g_application.asset_manager);
 
-        vec2i fb = wm_get_framebuffer_size(&g_application.window_manager);
-        R_resize(&g_application.renderer, fb);
+        R_resize(&g_application.renderer, wm_get_framebuffer_size(&g_application.window_manager));
 
         R_begin_frame(&g_application.renderer);
         {

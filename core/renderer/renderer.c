@@ -217,7 +217,7 @@ static uint32_t R_resolve_image_gl(const renderer_t *r, ihandle_t h)
         return 0;
     if (a->state != ASSET_STATE_READY)
         return 0;
-
+  
     return a->as.image.gl_handle;
 }
 
@@ -852,7 +852,7 @@ void R_end_frame(renderer_t *r)
 
             shader_set_int(s, "u_MaterialTexMask", (int)tex_mask);
         }
-        else
+        else 
         {
             for (int ti = 0; ti < 8; ++ti)
             {

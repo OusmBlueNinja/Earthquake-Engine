@@ -114,7 +114,7 @@ static void demo_layer_init(layer_t *layer)
     {
         vec3 spotPos = (vec3){0.0f, 0.0f, -5.0f};
         vec3 spotDir = (vec3){0.0f, 0.0f, 1.0f};
-        s->light_spot = make_spot(spotPos, spotDir, (vec3){1.0f, 1.0f, 1.0f}, 10.0f);
+        s->light_spot = make_spot(spotPos, spotDir, (vec3){1.0f, 0.0f, 1.0f}, 1.0f);
     }
 
     s->mats[0].albedo_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/stone_pathway_02_4k/textures/stone_pathway_02_diff_4k.png");
@@ -150,9 +150,9 @@ static void demo_layer_shutdown(layer_t *layer)
     if (!s)
         return;
 
-    material_save_file("C:/Users/spenc/Desktop/blue_metal_plate.imat", &s->mats[0]);
-    material_save_file("C:/Users/spenc/Desktop/wood_chip_path.imat", &s->mats[1]);
-    material_save_file("C:/Users/spenc/Desktop/rusty_metal_grid.imat", &s->mats[2]);
+    // material_save_file("C:/Users/spenc/Desktop/blue_metal_plate.imat", &s->mats[0]);
+    // material_save_file("C:/Users/spenc/Desktop/wood_chip_path.imat", &s->mats[1]);
+    // material_save_file("C:/Users/spenc/Desktop/rusty_metal_grid.imat", &s->mats[2]);
 
     model_factory_shutdown(&s->mf);
 
@@ -208,7 +208,6 @@ static void demo_layer_draw(layer_t *layer)
 layer_t create_demo_layer(void)
 {
     layer_t layer;
-    memset(&layer, 0, sizeof(layer));
     layer.name = "CubeStack :)";
     layer.init = demo_layer_init;
     layer.shutdown = demo_layer_shutdown;
