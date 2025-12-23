@@ -16,15 +16,6 @@ typedef enum asset_state_t
     ASSET_STATE_FAILED = 3
 } asset_state_t;
 
-typedef struct asset_image_t
-{
-    uint32_t width;
-    uint32_t height;
-    uint32_t channels;
-    uint8_t *pixels;
-    uint32_t gl_handle;
-} asset_image_t;
-
 typedef union asset_any_u
 {
     asset_image_t image;
