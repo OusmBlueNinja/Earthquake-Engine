@@ -231,13 +231,14 @@ static asset_material_t *R_resolve_material(const renderer_t *r, ihandle_t h)
     const asset_any_t *a = asset_manager_get_any(r->assets, h);
     if (!a)
         return NULL;
-    if (a->type != ASSET_IMAGE)
+    if (a->type != ASSET_MATERIAL)
         return NULL;
     if (a->state != ASSET_STATE_READY)
         return NULL;
 
     return &a->as.material;
 }
+
 
 static void R_bind_image_slot_mask(renderer_t *r, shader_t *s, const char *sampler_name, int unit, ihandle_t h, uint32_t bit, uint32_t *mask)
 {
