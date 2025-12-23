@@ -11,7 +11,8 @@
 #include "types/mat4.h"
 #include "renderer/camera.h"
 #include "renderer/model.h"
-#include "renderer/material.h"
+#include "asset_manager/asset_types/material.h"
+
 #include "renderer/light.h"
 #include "asset_manager/asset_manager.h"
 

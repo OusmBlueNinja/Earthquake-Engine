@@ -1,7 +1,7 @@
 #pragma once
 #include <stdint.h>
 #include <stdbool.h>
-#include "material.h"
+#include "asset_manager/asset_types/material.h"
 
 typedef struct mesh_t
 {

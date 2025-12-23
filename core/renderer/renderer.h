@@ -7,7 +7,7 @@
 #include "renderer/camera.h"
 #include "renderer/light.h"
 #include "renderer/model.h"
-#include "renderer/material.h"
+#include "asset_manager/asset_types/material.h"
 #include "asset_manager/asset_manager.h"
 #include "vector.h"
 #include "shader.h"
