@@ -38,5 +38,3 @@ bool material_from_ikv(const ikv_node_t *node, material_t *out);
 
 bool material_save_file(const char *path, const material_t *m);
 bool material_load_file(const char *path, material_t *out);
-
-
