@@ -540,6 +540,30 @@ bool asset_manager_register_module(asset_manager_t *am, asset_module_desc_t modu
     return true;
 }
 
+static bool asset_from_raw(asset_type_t type, const void *raw, asset_any_t *out)
+{
+    if (!raw || !out)
+        return false;
+
+    asset_zero(out);
+    out->type = type;
+    out->state = ASSET_STATE_LOADING;
+
+    switch (type)
+    {
+    case ASSET_IMAGE:
+        out->as.image = *(const asset_image_t *)raw;
+        return true;
+
+    case ASSET_MATERIAL:
+        out->as.material = *(const asset_material_t *)raw;
+        return true;
+
+    default:
+        return false;
+    }
+}
+
 static asset_slot_t *alloc_slot(asset_manager_t *am, asset_type_t type, ihandle_t *out_handle)
 {
     asset_slot_t s;
@@ -676,7 +700,6 @@ ihandle_t asset_manager_request(asset_manager_t *am, asset_type_t type, const ch
     }
     memcpy(j.path, path, n + 1);
 
-
     if (!jobq_push(&am->jobs, &j))
     {
         free(j.path);
@@ -685,6 +708,52 @@ ihandle_t asset_manager_request(asset_manager_t *am, asset_type_t type, const ch
             s->asset.state = ASSET_STATE_FAILED;
         return ihandle_invalid();
     }
+
+    return h;
+}
+
+ihandle_t asset_manager_submit_raw(asset_manager_t *am, asset_type_t type, const void *raw_asset)
+{
+    if (!am || !raw_asset || type == ASSET_NONE)
+        return ihandle_invalid();
+
+    mutex_lock_impl(&am->state_m);
+    uint32_t sd = am->shutting_down;
+    mutex_unlock_impl(&am->state_m);
+    if (sd)
+        return ihandle_invalid();
+
+    const asset_module_desc_t *mod = find_module_const(am, type);
+    if (!mod)
+        return ihandle_invalid();
+
+    ihandle_t h;
+    asset_slot_t *slot = alloc_slot(am, type, &h);
+    if (!slot)
+        return ihandle_invalid();
+
+    asset_any_t a;
+    if (!asset_from_raw(type, raw_asset, &a))
+    {
+        slot->asset.state = ASSET_STATE_FAILED;
+        return ihandle_invalid();
+    }
+
+    bool init_ok = true;
+    if (mod->init_fn)
+        init_ok = mod->init_fn(am, &a);
+
+    if (!init_ok)
+    {
+        asset_cleanup(am, &a);
+        asset_cleanup(am, &slot->asset);
+        slot->asset.state = ASSET_STATE_FAILED;
+        return ihandle_invalid();
+    }
+
+    asset_cleanup(am, &slot->asset);
+    a.state = ASSET_STATE_READY;
+    slot->asset = a;
 
     return h;
 }

@@ -7,7 +7,9 @@
 typedef enum asset_type_t
 {
     ASSET_NONE = 0,
-    ASSET_IMAGE
+    ASSET_IMAGE,
+    ASSET_MATERIAL,
+
 } asset_type_t;
 
 typedef enum asset_state_t
@@ -21,6 +23,7 @@ typedef enum asset_state_t
 typedef union asset_any_u
 {
     asset_image_t image;
+    asset_material_t material;
 } asset_any_u;
 
 typedef struct asset_any_t

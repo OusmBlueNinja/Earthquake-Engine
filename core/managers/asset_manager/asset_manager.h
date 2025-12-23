@@ -9,7 +9,6 @@
 
 #define iHANDLE_TYPE_ASSET 1
 
-
 typedef struct mutex_t
 {
     void *p;
@@ -109,6 +108,7 @@ void asset_manager_shutdown(asset_manager_t *am);
 bool asset_manager_register_module(asset_manager_t *am, asset_module_desc_t module);
 
 ihandle_t asset_manager_request(asset_manager_t *am, asset_type_t type, const char *path);
+ihandle_t asset_manager_submit_raw(asset_manager_t *am, asset_type_t type, const void *raw_asset);
 
 void asset_manager_pump(asset_manager_t *am);
 

@@ -221,6 +221,24 @@ static uint32_t R_resolve_image_gl(const renderer_t *r, ihandle_t h)
     return a->as.image.gl_handle;
 }
 
+static asset_material_t *R_resolve_material(const renderer_t *r, ihandle_t h)
+{
+    if (!r || !r->assets)
+        return NULL;
+    if (!ihandle_is_valid(h))
+        return NULL;
+
+    const asset_any_t *a = asset_manager_get_any(r->assets, h);
+    if (!a)
+        return NULL;
+    if (a->type != ASSET_IMAGE)
+        return NULL;
+    if (a->state != ASSET_STATE_READY)
+        return NULL;
+
+    return &a->as.material;
+}
+
 static void R_bind_image_slot_mask(renderer_t *r, shader_t *s, const char *sampler_name, int unit, ihandle_t h, uint32_t bit, uint32_t *mask)
 {
     uint32_t glh = R_resolve_image_gl(r, h);
@@ -807,7 +825,8 @@ void R_end_frame(renderer_t *r)
         if (!pm || !pm->model)
             continue;
 
-        material_t *mat = pm->model->material;
+        asset_material_t *mat = R_resolve_material(r, pm->model->material);
+
         uint8_t shader_id = mat ? mat->shader_id : r->default_shader_id;
         shader_t *s = R_get_shader(r, shader_id);
         if (!s)

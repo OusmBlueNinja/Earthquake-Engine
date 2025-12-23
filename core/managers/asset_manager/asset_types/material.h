@@ -6,7 +6,7 @@
 #include "handle.h"
 #include "ikv1.h"
 
-typedef struct material_t
+typedef struct asset_material_t
 {
     uint8_t shader_id;
     uint32_t flags;
@@ -29,12 +29,12 @@ typedef struct material_t
     ihandle_t occlusion_tex;
     ihandle_t height_tex;
     ihandle_t arm_tex;
-} material_t;
+} asset_material_t;
 
-material_t material_make_default(uint8_t shader_id);
+asset_material_t material_make_default(uint8_t shader_id);
 
-ikv_node_t *material_to_ikv(const material_t *m, const char *key);
-bool material_from_ikv(const ikv_node_t *node, material_t *out);
+ikv_node_t *material_to_ikv(const asset_material_t *m, const char *key);
+bool material_from_ikv(const ikv_node_t *node, asset_material_t *out);
 
-bool material_save_file(const char *path, const material_t *m);
-bool material_load_file(const char *path, material_t *out);
+bool material_save_file(const char *path, const asset_material_t *m);
+bool material_load_file(const char *path, asset_material_t *out);

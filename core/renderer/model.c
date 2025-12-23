@@ -253,7 +253,7 @@ mesh_t *model_factory_get_mesh(model_factory_t *mf, primitive_type_t prim)
     }
 }
 
-model_t model_make(mesh_t *mesh, material_t *material)
+model_t model_make(mesh_t *mesh, ihandle_t material)
 {
     model_t m;
     m.mesh = mesh;
@@ -261,7 +261,7 @@ model_t model_make(mesh_t *mesh, material_t *material)
     return m;
 }
 
-model_t model_make_primitive(model_factory_t *mf, primitive_type_t prim, material_t *material)
+model_t model_make_primitive(model_factory_t *mf, primitive_type_t prim, ihandle_t material)
 {
     return model_make(model_factory_get_mesh(mf, prim), material);
 }

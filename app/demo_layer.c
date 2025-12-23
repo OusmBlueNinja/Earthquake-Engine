@@ -20,7 +20,7 @@ typedef struct demo_layer_state_t
 {
     model_factory_t mf;
 
-    material_t mats[3];
+    ihandle_t mat_h[3];
     model_t models[3];
     mat4 model_m[3];
 
@@ -58,13 +58,13 @@ static light_t make_spot(vec3 pos, vec3 dir, vec3 color, float intensity)
     l.range = 100.0f;
     return l;
 }
-
 static void demo_layer_init(layer_t *layer)
 {
     demo_layer_state_t *s = (demo_layer_state_t *)calloc(1, sizeof(demo_layer_state_t));
     layer->data = s;
 
     renderer_t *r = &layer->app->renderer;
+    asset_manager_t *am = &layer->app->asset_manager;
 
     if (!model_factory_init(&s->mf))
     {
@@ -78,17 +78,45 @@ static void demo_layer_init(layer_t *layer)
         camera_set_perspective(&s->cam, 60.0f * 0.017453292519943295f, aspect, 0.1f, 100.0f);
     }
 
-    s->mats[0] = material_make_default(r->default_shader_id);
-    s->mats[1] = material_make_default(r->default_shader_id);
-    s->mats[2] = material_make_default(r->default_shader_id);
+    asset_material_t m0 = material_make_default(r->default_shader_id);
+    asset_material_t m1 = material_make_default(r->default_shader_id);
+    asset_material_t m2 = material_make_default(r->default_shader_id);
 
-    s->mats[0].albedo = (vec3){1.0f, 1.0f, 1.0f};
-    s->mats[1].albedo = (vec3){1.0f, 1.0f, 1.0f};
-    s->mats[2].albedo = (vec3){1.0f, 1.0f, 1.0f};
+    m0.albedo = (vec3){1.0f, 1.0f, 1.0f};
+    m1.albedo = (vec3){1.0f, 1.0f, 1.0f};
+    m2.albedo = (vec3){1.0f, 1.0f, 1.0f};
 
-    s->models[0] = model_make_primitive(&s->mf, PRIM_CUBE, &s->mats[0]);
-    s->models[1] = model_make_primitive(&s->mf, PRIM_CUBE, &s->mats[1]);
-    s->models[2] = model_make_primitive(&s->mf, PRIM_CUBE, &s->mats[2]);
+    m0.albedo_tex = asset_manager_request(am, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/stone_pathway_02_4k/textures/stone_pathway_02_diff_4k.png");
+    m0.normal_tex = asset_manager_request(am, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/stone_pathway_02_4k/textures/stone_pathway_02_nor_gl_4k.png");
+    m0.roughness_tex = asset_manager_request(am, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/stone_pathway_02_4k/textures/stone_pathway_02_rough_4k.png");
+    m0.metallic_tex = asset_manager_request(am, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/stone_pathway_02_4k/textures/stone_pathway_02_arm_4k.png");
+    m0.occlusion_tex = asset_manager_request(am, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/stone_pathway_02_4k/textures/stone_pathway_02_ao_4k.png");
+    m0.height_tex = asset_manager_request(am, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/stone_pathway_02_4k/textures/stone_pathway_02_disp_4k.png");
+    m0.arm_tex = asset_manager_request(am, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/stone_pathway_02_4k/textures/stone_pathway_02_arm_4k.png");
+
+    m1.albedo_tex = asset_manager_request(am, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/broken_brick_wall_4k/textures/broken_brick_wall_diff_4k.png");
+    m1.normal_tex = asset_manager_request(am, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/broken_brick_wall_4k/textures/broken_brick_wall_nor_gl_4k.png");
+    m1.roughness_tex = asset_manager_request(am, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/broken_brick_wall_4k/textures/broken_brick_wall_rough_4k.png");
+    m1.metallic_tex = asset_manager_request(am, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/broken_brick_wall_4k/textures/broken_brick_wall_arm_4k.png");
+    m1.occlusion_tex = asset_manager_request(am, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/broken_brick_wall_4k/textures/broken_brick_wall_ao_4k.png");
+    m1.height_tex = asset_manager_request(am, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/broken_brick_wall_4k/textures/broken_brick_wall_disp_4k.png");
+    m1.arm_tex = asset_manager_request(am, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/broken_brick_wall_4k/textures/broken_brick_wall_arm_4k.png");
+
+    m2.albedo_tex = asset_manager_request(am, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/rusty_metal_grid_4k/textures/rusty_metal_grid_diff_4k.png");
+    m2.normal_tex = asset_manager_request(am, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/rusty_metal_grid_4k/textures/rusty_metal_grid_nor_gl_4k.png");
+    m2.roughness_tex = asset_manager_request(am, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/rusty_metal_grid_4k/textures/rusty_metal_grid_rough_4k.png");
+    m2.metallic_tex = asset_manager_request(am, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/rusty_metal_grid_4k/textures/rusty_metal_grid_arm_4k.png");
+    m2.occlusion_tex = asset_manager_request(am, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/rusty_metal_grid_4k/textures/rusty_metal_grid_ao_4k.png");
+    m2.height_tex = asset_manager_request(am, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/rusty_metal_grid_4k/textures/rusty_metal_grid_disp_4k.png");
+    m2.arm_tex = asset_manager_request(am, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/rusty_metal_grid_4k/textures/rusty_metal_grid_arm_4k.png");
+
+    s->mat_h[0] = asset_manager_submit_raw(am, ASSET_MATERIAL, &m0);
+    s->mat_h[1] = asset_manager_submit_raw(am, ASSET_MATERIAL, &m1);
+    s->mat_h[2] = asset_manager_submit_raw(am, ASSET_MATERIAL, &m2);
+
+    s->models[0] = model_make_primitive(&s->mf, PRIM_CUBE, s->mat_h[0]);
+    s->models[1] = model_make_primitive(&s->mf, PRIM_CUBE, s->mat_h[1]);
+    s->models[2] = model_make_primitive(&s->mf, PRIM_CUBE, s->mat_h[2]);
 
     float spacing = 1.10f;
     float topY = 1.0f;
@@ -97,13 +125,9 @@ static void demo_layer_init(layer_t *layer)
     mat4 t1 = mat4_translate((vec3){spacing * 0.5f, 0.0f, 0.0f});
     mat4 t2 = mat4_translate((vec3){0.0f, topY, 0.0f});
 
-    float yaw0 = 0.25f;
-    float yaw1 = -0.35f;
-    float yaw2 = 0.55f;
-
-    mat4 r0 = mat4_rotate_y(yaw0);
-    mat4 r1 = mat4_rotate_y(yaw1);
-    mat4 r2 = mat4_rotate_y(yaw2);
+    mat4 r0 = mat4_rotate_y(0.25f);
+    mat4 r1 = mat4_rotate_y(-0.35f);
+    mat4 r2 = mat4_rotate_y(0.55f);
 
     s->model_m[0] = mat4_mul(t0, r0);
     s->model_m[1] = mat4_mul(t1, r1);
@@ -117,30 +141,6 @@ static void demo_layer_init(layer_t *layer)
         vec3 spotDir = (vec3){0.0f, 0.0f, 1.0f};
         s->light_spot = make_spot(spotPos, spotDir, (vec3){1.0f, 0.0f, 1.0f}, 1.0f);
     }
-
-    s->mats[0].albedo_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/stone_pathway_02_4k/textures/stone_pathway_02_diff_4k.png");
-    s->mats[0].normal_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/stone_pathway_02_4k/textures/stone_pathway_02_nor_gl_4k.png");
-    s->mats[0].roughness_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/stone_pathway_02_4k/textures/stone_pathway_02_rough_4k.png");
-    s->mats[0].metallic_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/stone_pathway_02_4k/textures/stone_pathway_02_arm_4k.png");
-    s->mats[0].occlusion_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/stone_pathway_02_4k/textures/stone_pathway_02_ao_4k.png");
-    s->mats[0].height_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/stone_pathway_02_4k/textures/stone_pathway_02_disp_4k.png");
-    s->mats[0].arm_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/stone_pathway_02_4k/textures/stone_pathway_02_arm_4k.png");
-
-    s->mats[1].albedo_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/broken_brick_wall_4k/textures/broken_brick_wall_diff_4k.png");
-    s->mats[1].normal_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/broken_brick_wall_4k/textures/broken_brick_wall_nor_gl_4k.png");
-    s->mats[1].roughness_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/broken_brick_wall_4k/textures/broken_brick_wall_rough_4k.png");
-    s->mats[1].metallic_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/broken_brick_wall_4k/textures/broken_brick_wall_arm_4k.png");
-    s->mats[1].occlusion_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/broken_brick_wall_4k/textures/broken_brick_wall_ao_4k.png");
-    s->mats[1].height_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/broken_brick_wall_4k/textures/broken_brick_wall_disp_4k.png");
-    s->mats[1].arm_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/broken_brick_wall_4k/textures/broken_brick_wall_arm_4k.png");
-
-    s->mats[2].albedo_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/rusty_metal_grid_4k/textures/rusty_metal_grid_diff_4k.png");
-    s->mats[2].normal_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/rusty_metal_grid_4k/textures/rusty_metal_grid_nor_gl_4k.png");
-    s->mats[2].roughness_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/rusty_metal_grid_4k/textures/rusty_metal_grid_rough_4k.png");
-    s->mats[2].metallic_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/rusty_metal_grid_4k/textures/rusty_metal_grid_arm_4k.png");
-    s->mats[2].occlusion_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/rusty_metal_grid_4k/textures/rusty_metal_grid_ao_4k.png");
-    s->mats[2].height_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/rusty_metal_grid_4k/textures/rusty_metal_grid_disp_4k.png");
-    s->mats[2].arm_tex = asset_manager_request(&layer->app->asset_manager, ASSET_IMAGE, "C:/Users/spenc/Pictures/textures/rusty_metal_grid_4k/textures/rusty_metal_grid_arm_4k.png");
 
     s->ready = 1;
 }

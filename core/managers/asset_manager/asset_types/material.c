@@ -63,9 +63,9 @@ static bool ikv_read_handle(const ikv_node_t *parent, const char *key, ihandle_t
     return true;
 }
 
-material_t material_make_default(uint8_t shader_id)
+asset_material_t material_make_default(uint8_t shader_id)
 {
-    material_t m;
+    asset_material_t m;
     memset(&m, 0, sizeof(m));
     m.shader_id = shader_id;
     m.flags = 0;
@@ -91,7 +91,7 @@ material_t material_make_default(uint8_t shader_id)
     return m;
 }
 
-ikv_node_t *material_to_ikv(const material_t *m, const char *key)
+ikv_node_t *material_to_ikv(const asset_material_t *m, const char *key)
 {
     ikv_node_t *root = ikv_create_object(key ? key : "material");
 
@@ -121,7 +121,7 @@ ikv_node_t *material_to_ikv(const material_t *m, const char *key)
     return root;
 }
 
-bool material_from_ikv(const ikv_node_t *node, material_t *out)
+bool material_from_ikv(const ikv_node_t *node, asset_material_t *out)
 {
     if (!node || node->type != IKV_OBJECT || !out)
         return false;
@@ -177,7 +177,7 @@ bool material_from_ikv(const ikv_node_t *node, material_t *out)
     return true;
 }
 
-bool material_save_file(const char *path, const material_t *m)
+bool material_save_file(const char *path, const asset_material_t *m)
 {
     ikv_node_t *root = material_to_ikv(m, "material");
     if (!root)
@@ -188,7 +188,7 @@ bool material_save_file(const char *path, const material_t *m)
     return ok;
 }
 
-bool material_load_file(const char *path, material_t *out)
+bool material_load_file(const char *path, asset_material_t *out)
 {
     ikv_node_t *root = ikv_parse_file(path);
     if (!root)
@@ -199,9 +199,9 @@ bool material_load_file(const char *path, material_t *out)
     return ok;
 }
 
-static material_t *material_create_solid(uint8_t shader_id, vec3 albedo)
+static asset_material_t *material_create_solid(uint8_t shader_id, vec3 albedo)
 {
-    material_t *mat = (material_t *)calloc(1, sizeof(material_t));
+    asset_material_t *mat = (asset_material_t *)calloc(1, sizeof(asset_material_t));
     if (!mat)
         return NULL;
 
