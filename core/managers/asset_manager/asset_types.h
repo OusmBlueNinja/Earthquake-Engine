@@ -1,6 +1,8 @@
 #pragma once
 #include <stdint.h>
 
+#include "asset_types/image.h"
+#include "asset_types/material.h"
 
 typedef enum asset_type_t
 {
