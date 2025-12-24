@@ -352,7 +352,6 @@ void shader_clear_defines(shader_t *shader)
     shader->define_count = 0;
     shader->define_capacity = 0;
 }
-
 char *shader_preprocess_glsl(const char *src, const shader_t *shader)
 {
     if (!src)
@@ -379,6 +378,9 @@ char *shader_preprocess_glsl(const char *src, const shader_t *shader)
     const char *p = src;
     while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n')
         p++;
+
+    if ((unsigned char)p[0] == 0xEF && (unsigned char)p[1] == 0xBB && (unsigned char)p[2] == 0xBF)
+        p += 3;
 
     size_t at = 0;
 
