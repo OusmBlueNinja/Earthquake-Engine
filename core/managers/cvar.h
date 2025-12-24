@@ -1,6 +1,25 @@
-#pragma once
+#ifndef CVAR_H
+#define CVAR_H
+
 #include <stdint.h>
 #include <stdbool.h>
+
+typedef enum
+{
+    CVAR_INT = 0,
+    CVAR_BOOL,
+    CVAR_FLOAT,
+    CVAR_STRING
+} cvar_type_t;
+
+typedef enum cvar_flag_t
+{
+    CVAR_FLAG_NONE = 0,
+    CVAR_FLAG_READONLY = 1 << 0,
+    CVAR_FLAG_NO_SAVE = 1 << 1,
+    CVAR_FLAG_NO_LOAD = 1 << 2,
+    CVAR_FLAG_CHEATS = 1 << 3
+} cvar_flag_t;
 
 typedef enum
 {
@@ -14,44 +33,53 @@ typedef enum
     CL_CPU_THREADS,
     CL_LOG_LEVEL,
 
-    SV_CVAR_COUNT,
+    CL_R_BLOOM_THRESHOLD,
+    CL_R_BLOOM_KNEE,
+    CL_R_BLOOM_INTENSITY,
+    CL_R_BLOOM_MIPS,
+
+    CL_R_EXPOSURE,
+    CL_R_OUTPUT_GAMMA,
+    CL_R_MANUAL_SRGB,
+
+    CL_R_ALPHA_TEST,
+    CL_R_ALPHA_CUTOFF,
+
+    CL_R_HEIGHT_INVERT,
+    CL_R_IBL_INTENSITY,
+
+    CL_R_SSR,
+    CL_R_SSR_INTENSITY,
+    CL_R_SSR_STEPS,
+    CL_R_SSR_STRIDE,
+    CL_R_SSR_THICKNESS,
+    CL_R_SSR_MAX_DIST,
+
+    SV_CVAR_COUNT
 } sv_cvar_key_t;
 
-typedef enum
-{
-    CVAR_INT = 0,
-    CVAR_BOOL,
-    CVAR_STRING
-} cvar_type_t;
-
-typedef enum cvar_flag_t
-{
-    CVAR_FLAG_NONE = 0,
-    CVAR_FLAG_READONLY = 1 << 0,
-    CVAR_FLAG_NO_SAVE = 1 << 1,
-    CVAR_FLAG_NO_LOAD = 1 << 2,
-    CVAR_FLAG_CHEATS = 1 << 3
-} cvar_flag_t;
-
-typedef void (*cvar_changed_fn)(sv_cvar_key_t key, const void *old_value, const void *new_value);
+typedef void (*cvar_changed_fn)(sv_cvar_key_t key, const void *old_state, const void *state);
 
 int cvar_init(void);
 void cvar_shutdown(void);
 
-int32_t cvar_get_int_name(const char *name);
-bool cvar_set_int_name(const char *name, int32_t v);
-
-bool cvar_get_bool_name(const char *name);
-bool cvar_set_bool_name(const char *name, bool v);
-
-const char *cvar_get_string_name(const char *name);
-bool cvar_set_string_name(const char *name, const char *v);
-
-bool cvar_save(const char *filename);
 bool cvar_load(const char *filename);
-
-bool cvar_set_callback_name(const char *name, cvar_changed_fn fn);
-bool cvar_set_callback_key(sv_cvar_key_t key, cvar_changed_fn fn);
+bool cvar_save(const char *filename);
 
 void cvar_set_cheats_permission(bool allowed);
 bool cvar_get_cheats_permission(void);
+
+int32_t cvar_get_int_name(const char *name);
+bool cvar_get_bool_name(const char *name);
+float cvar_get_float_name(const char *name);
+const char *cvar_get_string_name(const char *name);
+
+bool cvar_set_int_name(const char *name, int32_t v);
+bool cvar_set_bool_name(const char *name, bool v);
+bool cvar_set_float_name(const char *name, float v);
+bool cvar_set_string_name(const char *name, const char *v);
+
+bool cvar_set_callback_key(sv_cvar_key_t key, cvar_changed_fn fn);
+bool cvar_set_callback_name(const char *name, cvar_changed_fn fn);
+
+#endif

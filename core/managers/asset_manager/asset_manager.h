@@ -25,6 +25,7 @@ typedef struct thread_t
 typedef struct asset_slot_t
 {
     uint16_t generation;
+    uint16_t module_index;
     asset_any_t asset;
 } asset_slot_t;
 
@@ -32,6 +33,7 @@ typedef struct asset_job_t
 {
     ihandle_t handle;
     asset_type_t type;
+    uint8_t path_is_ptr;
     char *path;
 } asset_job_t;
 
@@ -39,6 +41,7 @@ typedef struct asset_done_t
 {
     ihandle_t handle;
     bool ok;
+    uint16_t module_index;
     asset_any_t asset;
 } asset_done_t;
 
@@ -65,7 +68,7 @@ typedef struct done_queue_t
 
 struct asset_manager_t;
 
-typedef bool (*asset_load_fn_t)(struct asset_manager_t *am, const char *path, asset_any_t *out_asset);
+typedef bool (*asset_load_fn_t)(asset_manager_t *am, const char *path, uint32_t path_is_ptr, asset_any_t *out_asset);
 typedef bool (*asset_init_fn_t)(struct asset_manager_t *am, asset_any_t *asset);
 typedef void (*asset_cleanup_fn_t)(struct asset_manager_t *am, asset_any_t *asset);
 typedef bool (*asset_save_fn_t)(struct asset_manager_t *am, asset_any_t asset, const char *path);
@@ -109,6 +112,7 @@ void asset_manager_shutdown(asset_manager_t *am);
 
 bool asset_manager_register_module(asset_manager_t *am, asset_module_desc_t module);
 
+ihandle_t asset_manager_request_ptr(asset_manager_t *am, asset_type_t type, void *ptr);
 ihandle_t asset_manager_request(asset_manager_t *am, asset_type_t type, const char *path);
 ihandle_t asset_manager_submit_raw(asset_manager_t *am, asset_type_t type, const void *raw_asset);
 

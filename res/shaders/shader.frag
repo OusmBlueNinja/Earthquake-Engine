@@ -1,5 +1,9 @@
 #version 460 core
 
+#ifndef MAX_LIGHTS
+#define MAX_LIGHTS 16
+#endif
+
 #define LIGHT_DIRECTIONAL 0
 #define LIGHT_POINT 1
 #define LIGHT_SPOT 2
@@ -58,8 +62,20 @@ uniform float u_AlphaCutoff;
 
 uniform int u_ManualSRGB;
 
-uniform float u_HeightBias;     // set to 0.5f by default
-uniform float u_HeightContrast; // set to 1.0f by default
+uniform float u_HeightBias;
+uniform float u_HeightContrast;
+
+uniform samplerCube u_IrradianceMap;
+uniform samplerCube u_PrefilterMap;
+uniform sampler2D u_BRDFLUT;
+uniform int u_HasIBL;
+uniform float u_IBLIntensity;
+
+uniform int u_IsTransparent;
+
+uniform sampler2D u_SceneColor;
+uniform vec2 u_SceneInvSize;
+uniform float u_Transmission;
 
 in vec3 v_FragPos;
 in vec3 v_Normal;
@@ -72,26 +88,14 @@ bool HAS(int bit)
     return (u_MaterialTexMask & bit) != 0;
 }
 
-float checker2(vec2 uv)
+float saturate(float x)
 {
-    vec2 c = floor(uv);
-    return mod(c.x + c.y, 2.0);
+    return clamp(x, 0.0, 1.0);
 }
 
-vec3 no_material_pattern(vec3 p, vec3 n)
+vec3 srgb_to_linear(vec3 c)
 {
-    vec3 an = abs(n);
-    an *= 1.0 / (an.x + an.y + an.z + 1e-6);
-
-    float scale = 6.0;
-
-    float cx = checker2(p.zy * scale);
-    float cy = checker2(p.xz * scale);
-    float cz = checker2(p.xy * scale);
-
-    float c = cx * an.x + cy * an.y + cz * an.z;
-
-    return mix(vec3(0.03), vec3(1.0, 0.0, 0.7), c);
+    return pow(max(c, vec3(0.0)), vec3(2.2));
 }
 
 float range_fade(float dist, float r)
@@ -146,11 +150,6 @@ mat3 tbn_from_derivatives(vec3 N, vec3 P, vec2 UV)
     return mat3(T, B, n);
 }
 
-vec3 srgb_to_linear(vec3 c)
-{
-    return pow(max(c, vec3(0.0)), vec3(2.2));
-}
-
 float height_sample_grad(vec2 uv, vec2 dUVdx, vec2 dUVdy)
 {
     float h = textureGrad(u_HeightTex, uv, dUVdx, dUVdy).r;
@@ -176,7 +175,6 @@ vec2 parallax_uv(vec3 Nw, vec3 P, vec2 uv0, vec3 viewDirW)
     if (Vt.z <= 0.0001) return uv0;
 
     float NdotV = clamp(Vt.z, 0.0, 1.0);
-
     float fade = smoothstep(0.35, 0.65, NdotV);
     if (fade <= 0.0) return uv0;
 
@@ -184,14 +182,12 @@ vec2 parallax_uv(vec3 Nw, vec3 P, vec2 uv0, vec3 viewDirW)
     vec2 dUVdy = dFdy(uv0);
 
     int maxSteps = clamp(u_HeightSteps, 8, 96);
-    int minSteps = 8;
-    int steps = int(mix(float(maxSteps), float(minSteps), NdotV));
+    int steps = int(mix(float(maxSteps), 8.0, NdotV));
 
     float vz = max(Vt.z, 0.20);
     vec2 dir = (Vt.xy / vz) * (hs * fade);
 
-    float maxShift = 0.08;
-    dir = clamp(dir, vec2(-maxShift), vec2(maxShift));
+    dir = clamp(dir, vec2(-0.08), vec2(0.08));
 
     float layer = 1.0 / float(steps);
     vec2 delta = dir * layer;
@@ -259,7 +255,7 @@ vec3 sample_emissive(vec2 uv)
     {
         vec3 t = texture(u_EmissiveTex, uv).rgb;
         if (u_ManualSRGB != 0) t = srgb_to_linear(t);
-        e += t;
+        e *= t;
     }
     return e;
 }
@@ -288,12 +284,6 @@ float sample_metallic(vec2 uv)
     return clamp(m, 0.0, 1.0);
 }
 
-vec3 fresnel_schlick(float cosTheta, vec3 F0)
-{
-    float ct = clamp(cosTheta, 0.0, 1.0);
-    return F0 + (1.0 - F0) * pow(1.0 - ct, 5.0);
-}
-
 float D_GGX(float NdotH, float a)
 {
     float a2 = a * a;
@@ -310,9 +300,26 @@ float G_Smith(float NdotV, float NdotL, float rough)
 {
     float r = rough + 1.0;
     float k = (r * r) / 8.0;
-    float gv = G_SchlickGGX(NdotV, k);
-    float gl = G_SchlickGGX(NdotL, k);
-    return gv * gl;
+    return G_SchlickGGX(NdotV, k) * G_SchlickGGX(NdotL, k);
+}
+
+vec3 fresnel_schlick(float cosTheta, vec3 F0)
+{
+    float ct = clamp(cosTheta, 0.0, 1.0);
+    return F0 + (1.0 - F0) * pow(1.0 - ct, 5.0);
+}
+
+vec3 fresnel_schlick_roughness(float cosTheta, vec3 F0, float rough)
+{
+    float ct = clamp(cosTheta, 0.0, 1.0);
+    vec3 Fr = max(vec3(1.0 - rough), F0);
+    return F0 + (Fr - F0) * pow(1.0 - ct, 5.0);
+}
+
+vec3 sample_scene_color(vec2 fragCoord)
+{
+    vec2 uv = fragCoord * u_SceneInvSize;
+    return texture(u_SceneColor, uv).rgb;
 }
 
 void main()
@@ -321,7 +328,23 @@ void main()
 
     if (u_HasMaterial == 0)
     {
-        FragColor = vec4(no_material_pattern(v_FragPos, Nw_geom), 1.0);
+        vec3 an = abs(Nw_geom);
+        an *= 1.0 / (an.x + an.y + an.z + 1e-6);
+
+        vec3 p = v_FragPos;
+        float scale = 6.0;
+        vec2 c0 = floor(p.zy * scale);
+        vec2 c1 = floor(p.xz * scale);
+        vec2 c2 = floor(p.xy * scale);
+
+        float cx = mod(c0.x + c0.y, 2.0);
+        float cy = mod(c1.x + c1.y, 2.0);
+        float cz = mod(c2.x + c2.y, 2.0);
+
+        float c = cx * an.x + cy * an.y + cz * an.z;
+        vec3 col = mix(vec3(0.03), vec3(1.0, 0.0, 0.7), c);
+
+        FragColor = vec4(col, 1.0);
         return;
     }
 
@@ -334,20 +357,20 @@ void main()
     vec3 base = clamp(albedoRGBA.rgb, 0.0, 100.0);
 
     float alpha = clamp(u_Opacity * albedoRGBA.a, 0.0, 1.0);
-    if (u_AlphaTest != 0 && alpha < u_AlphaCutoff)
+
+    bool doAlphaTest = (u_AlphaTest != 0) && (u_IsTransparent == 0);
+    if (doAlphaTest && alpha < u_AlphaCutoff)
         discard;
 
     float metallic = sample_metallic(uv);
     float rough = sample_roughness(uv);
-    vec3 emiss = sample_emissive(uv);
     float ao = sample_ao(uv);
+    vec3 emiss = sample_emissive(uv);
 
     vec3 Nw = sample_normal_world(Nw_geom, v_FragPos, uv);
 
     vec3 F0 = mix(vec3(0.04), base, metallic);
     vec3 albedoDiffuse = base * (1.0 - metallic);
-
-    vec3 ambient = albedoDiffuse * 0.03 * ao;
 
     vec3 Lo = vec3(0.0);
 
@@ -424,6 +447,46 @@ void main()
         Lo += (diffuse + specular) * radiance * NdotL;
     }
 
-    vec3 color = emiss + ambient + Lo;
-    FragColor = vec4(color, alpha);
+    vec3 ambient;
+
+    if (u_HasIBL != 0)
+    {
+        float NdotV = saturate(dot(Nw, Vw));
+        vec3 R = reflect(-Vw, Nw);
+
+        R.y = -R.y;
+
+        vec3 F = fresnel_schlick_roughness(NdotV, F0, rough);
+        vec3 kS = F;
+        vec3 kD = (vec3(1.0) - kS) * (1.0 - metallic);
+
+        vec3 irradiance = texture(u_IrradianceMap, Nw).rgb;
+        vec3 diffuseIBL = irradiance * albedoDiffuse;
+
+        int mips = textureQueryLevels(u_PrefilterMap);
+        float maxMip = float(max(mips - 1, 0));
+        float lod = rough * maxMip;
+
+        vec3 prefiltered = textureLod(u_PrefilterMap, R, lod).rgb;
+        vec2 brdf = texture(u_BRDFLUT, vec2(NdotV, rough)).rg;
+        vec3 specIBL = prefiltered * (F * brdf.x + brdf.y);
+
+        ambient = (kD * diffuseIBL + specIBL) * ao * u_IBLIntensity;
+    }
+    else
+    {
+        ambient = albedoDiffuse * 0.03 * ao;
+    }
+
+    vec3 shaded = emiss + ambient + Lo;
+
+    if (u_IsTransparent != 0)
+    {
+        vec3 scene = sample_scene_color(gl_FragCoord.xy);
+        vec3 outRgb = mix(scene, shaded, alpha);
+        FragColor = vec4(outRgb, alpha);
+        return;
+    }
+
+    FragColor = vec4(shaded, alpha);
 }

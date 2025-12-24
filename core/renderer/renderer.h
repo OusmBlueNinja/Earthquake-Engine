@@ -1,21 +1,28 @@
 #pragma once
 #include <stdint.h>
-#include <stdbool.h>
-
 #include "types/vec2i.h"
+#include "types/mat4.h"
 #include "types/vec4.h"
+#include "handle.h"
 #include "renderer/camera.h"
 #include "renderer/light.h"
-#include "asset_manager/asset_types/material.h"
-#include "asset_manager/asset_types/model.h"
 #include "asset_manager/asset_manager.h"
-#include "vector.h"
+#include "renderer/bloom.h"
+#include "renderer/ibl.h"
+#include "renderer/ssr.h"
 #include "shader.h"
 
-typedef struct renderer_config_t
+typedef struct pushed_model_t
 {
+    ihandle_t model;
+    mat4 model_matrix;
+} pushed_model_t;
+
+typedef struct renderer_cfg_t
+{
+    int bloom;
     int debug_mode;
-    bool bloom;
+
     float bloom_threshold;
     float bloom_knee;
     float bloom_intensity;
@@ -24,81 +31,74 @@ typedef struct renderer_config_t
     float exposure;
     float output_gamma;
     int manual_srgb;
+
     int alpha_test;
     float alpha_cutoff;
+
     int height_invert;
+    float ibl_intensity;
 
-    int deferred;
-    int gbuf_debug;
-} renderer_config_t;
-
-typedef struct pushed_model_t
-{
-    ihandle_t model;
-    ihandle_t material_override;
-    mat4 model_matrix;
-} pushed_model_t;
-
-typedef struct renderer_bloom_t
-{
-    uint32_t enabled;
-
-    uint32_t mips;
-    vec2i base_size;
-
-    uint32_t tex_down[16];
-    uint32_t tex_up[16];
-
-    uint32_t fbo_dummy;
-
-    shader_t *cs_extract;
-    shader_t *cs_down;
-    shader_t *cs_up;
-
-    shader_t *post_present;
-} renderer_bloom_t;
+    int ssr;
+    float ssr_intensity;
+    int ssr_steps;
+    float ssr_stride;
+    float ssr_thickness;
+    float ssr_max_dist;
+} renderer_cfg_t;
 
 typedef struct renderer_t
 {
     asset_manager_t *assets;
 
-    renderer_config_t cfg;
-
-    vec4 clear_color;
     vec2i fb_size;
+    vec4 clear_color;
+
+    renderer_cfg_t cfg;
+
+    camera_t camera;
+
+    vector_t lights;
+    vector_t models;
+    vector_t fwd_models;
+    vector_t shaders;
+
+    ihandle_t hdri_tex;
+
+    uint32_t instance_vbo;
+    vector_t inst_batches;
+    vector_t fwd_inst_batches;
+    vector_t inst_mats;
+
+    uint32_t fs_vao;
+    uint32_t lights_ubo;
 
     uint32_t gbuf_fbo;
     uint32_t light_fbo;
     uint32_t final_fbo;
 
-    uint32_t fs_vao;
-
     uint32_t gbuf_albedo;
     uint32_t gbuf_normal;
     uint32_t gbuf_material;
     uint32_t gbuf_depth;
+    uint32_t gbuf_emissive;
 
     uint32_t light_color_tex;
     uint32_t final_color_tex;
 
-    vector_t lights;
-    vector_t models;
-    vector_t shaders;
-
-    uint8_t default_shader_id;
     uint8_t gbuf_shader_id;
     uint8_t light_shader_id;
+    uint8_t default_shader_id;
+    uint8_t sky_shader_id;
+    uint8_t present_shader_id;
 
-    camera_t camera;
+    ibl_t ibl;
+    bloom_t bloom;
+    ssr_t ssr;
 
-    uint32_t lights_ubo;
-
-    renderer_bloom_t bloom;
 } renderer_t;
 
 int R_init(renderer_t *r, asset_manager_t *assets);
 void R_shutdown(renderer_t *r);
-
 void R_resize(renderer_t *r, vec2i size);
 void R_set_clear_color(renderer_t *r, vec4 color);
 
@@ -108,9 +108,13 @@ void R_end_frame(renderer_t *r);
 void R_push_camera(renderer_t *r, const camera_t *cam);
 void R_push_light(renderer_t *r, light_t light);
 void R_push_model(renderer_t *r, const ihandle_t model, mat4 model_matrix);
+void R_push_model_forward(renderer_t *r, const ihandle_t model, mat4 model_matrix);
+
+void R_push_hdri(renderer_t *r, ihandle_t tex);
 
 uint8_t R_add_shader(renderer_t *r, shader_t *shader);
 shader_t *R_get_shader(const renderer_t *r, uint8_t shader_id);
 const shader_t *R_get_shader_const(const renderer_t *r, uint8_t shader_id);
-
 uint32_t R_get_final_fbo(const renderer_t *r);
+
+shader_t *R_new_shader_from_files_with_defines(const char *vp, const char *fp);

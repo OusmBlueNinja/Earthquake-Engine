@@ -7,6 +7,8 @@
 
 #include "layer.h"
 
+#include "systems/event.h"
+
 #include "types/vec2.h"
 #include "types/vec2i.h"
 #include "types/vector.h"
@@ -65,6 +67,7 @@ typedef struct Application
     bool running;
 
     vector_t layers;
+    
 
 } Application;
 
@@ -76,7 +79,10 @@ void delete_application(Application *app);
 /* This starts the application and initalizes it */
 void init_application(Application *app);
 
+layer_t create_layer(const char *name);
 uint32_t push_layer(layer_t layer);
+
+void app_dispatch_event(Application *app, event_t *e);
 
 Application *get_application();
 

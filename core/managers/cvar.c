@@ -18,12 +18,14 @@ typedef struct
     {
         int32_t i;
         bool b;
+        float f;
         char s[64];
     } value;
     union
     {
         int32_t i;
         bool b;
+        float f;
         const char *s;
     } def;
 } cvar_entry_t;
@@ -43,14 +45,38 @@ static bool g_cheats_permission = false;
 
 static cvar_entry_t g_cvars[SV_CVAR_COUNT] = {
     [SV_CHEATS] = {.name = "sv_cheats", .type = CVAR_BOOL, .def.b = false, .flags = CVAR_FLAG_NO_LOAD | CVAR_FLAG_NO_SAVE},
-    [SV_MAX_PLAYERS] = {.name = "sv_max_players", .type = CVAR_INT, .def.i = 20, .flags = CVAR_FLAG_CHEATS | CVAR_FLAG_NO_LOAD},
+
+    [SV_MAX_PLAYERS] = {.name = "sv_max_players", .type = CVAR_INT, .def.i = 20, .flags = CVAR_FLAG_NO_LOAD},
     [SV_HOST] = {.name = "sv_host", .type = CVAR_STRING, .def.s = "0.0.0.0", .flags = CVAR_FLAG_READONLY | CVAR_FLAG_NO_LOAD},
     [SV_PORT] = {.name = "sv_port", .type = CVAR_INT, .def.i = 0, .flags = CVAR_FLAG_READONLY | CVAR_FLAG_NO_LOAD},
+
     [CL_VSYNC] = {.name = "cl_vsync", .type = CVAR_BOOL, .def.b = true, .flags = CVAR_FLAG_NONE},
     [CL_BLOOM] = {.name = "cl_bloom", .type = CVAR_BOOL, .def.b = true, .flags = CVAR_FLAG_NONE},
-    [CL_RENDER_DEBUG] = {.name = "cl_render_debug", .type = CVAR_INT, .def.i = 0, .flags = CVAR_FLAG_CHEATS},
+    [CL_RENDER_DEBUG] = {.name = "cl_render_debug", .type = CVAR_INT, .def.i = 0, .flags = CVAR_FLAG_NONE},
     [CL_CPU_THREADS] = {.name = "cl_cpu_threads", .type = CVAR_INT, .def.i = 1, .flags = CVAR_FLAG_READONLY | CVAR_FLAG_NO_LOAD},
     [CL_LOG_LEVEL] = {.name = "cl_log_level", .type = CVAR_INT, .def.i = LOG_LEVEL_INFO, .flags = CVAR_FLAG_NONE},
+
+    [CL_R_BLOOM_THRESHOLD] = {.name = "cl_r_bloom_threshold", .type = CVAR_FLOAT, .def.f = 1.0f, .flags = CVAR_FLAG_NONE},
+    [CL_R_BLOOM_KNEE] = {.name = "cl_r_bloom_knee", .type = CVAR_FLOAT, .def.f = 0.5f, .flags = CVAR_FLAG_NONE},
+    [CL_R_BLOOM_INTENSITY] = {.name = "cl_r_bloom_intensity", .type = CVAR_FLOAT, .def.f = 0.10f, .flags = CVAR_FLAG_NONE},
+    [CL_R_BLOOM_MIPS] = {.name = "cl_r_bloom_mips", .type = CVAR_INT, .def.i = 6, .flags = CVAR_FLAG_NONE},
+
+    [CL_R_EXPOSURE] = {.name = "cl_r_exposure", .type = CVAR_FLOAT, .def.f = 1.0f, .flags = CVAR_FLAG_NONE},
+    [CL_R_OUTPUT_GAMMA] = {.name = "cl_r_output_gamma", .type = CVAR_FLOAT, .def.f = 2.2f, .flags = CVAR_FLAG_NONE},
+    [CL_R_MANUAL_SRGB] = {.name = "cl_r_manual_srgb", .type = CVAR_BOOL, .def.b = false, .flags = CVAR_FLAG_NONE},
+
+    [CL_R_ALPHA_TEST] = {.name = "cl_r_alpha_test", .type = CVAR_BOOL, .def.b = false, .flags = CVAR_FLAG_NONE},
+    [CL_R_ALPHA_CUTOFF] = {.name = "cl_r_alpha_cutoff", .type = CVAR_FLOAT, .def.f = 0.5f, .flags = CVAR_FLAG_NONE},
+
+    [CL_R_HEIGHT_INVERT] = {.name = "cl_r_height_invert", .type = CVAR_BOOL, .def.b = false, .flags = CVAR_FLAG_NONE},
+    [CL_R_IBL_INTENSITY] = {.name = "cl_r_ibl_intensity", .type = CVAR_FLOAT, .def.f = 0.9f, .flags = CVAR_FLAG_NONE},
+
+    [CL_R_SSR] = {.name = "cl_r_ssr", .type = CVAR_BOOL, .def.b = false, .flags = CVAR_FLAG_NONE},
+    [CL_R_SSR_INTENSITY] = {.name = "cl_r_ssr_intensity", .type = CVAR_FLOAT, .def.f = 1.0f, .flags = CVAR_FLAG_NONE},
+    [CL_R_SSR_STEPS] = {.name = "cl_r_ssr_steps", .type = CVAR_INT, .def.i = 64, .flags = CVAR_FLAG_NONE},
+    [CL_R_SSR_STRIDE] = {.name = "cl_r_ssr_stride", .type = CVAR_FLOAT, .def.f = 0.15f, .flags = CVAR_FLAG_NONE},
+    [CL_R_SSR_THICKNESS] = {.name = "cl_r_ssr_thickness", .type = CVAR_FLOAT, .def.f = 0.2f, .flags = CVAR_FLAG_NONE},
+    [CL_R_SSR_MAX_DIST] = {.name = "cl_r_ssr_max_dist", .type = CVAR_FLOAT, .def.f = 50.0f, .flags = CVAR_FLAG_NONE},
 };
 
 void cvar_set_cheats_permission(bool allowed)
@@ -68,7 +94,7 @@ static bool cvar_cheats_enabled(void)
     return g_cvars[SV_CHEATS].type == CVAR_BOOL ? g_cvars[SV_CHEATS].value.b : false;
 }
 
-static bool cvar_can_set(sv_cvar_key_t k)
+static bool cvar_can_set_internal(sv_cvar_key_t k, bool bypass_cheats)
 {
     if (k >= SV_CVAR_COUNT)
         return false;
@@ -79,7 +105,7 @@ static bool cvar_can_set(sv_cvar_key_t k)
     if (k == SV_CHEATS && !g_cheats_permission)
         return false;
 
-    if (g_cvars[k].flags & CVAR_FLAG_CHEATS)
+    if (!bypass_cheats && (g_cvars[k].flags & CVAR_FLAG_CHEATS))
     {
         if (!cvar_cheats_enabled() && k != SV_CHEATS)
             return false;
@@ -88,6 +114,11 @@ static bool cvar_can_set(sv_cvar_key_t k)
     }
 
     return true;
+}
+
+static bool cvar_can_set(sv_cvar_key_t k)
+{
+    return cvar_can_set_internal(k, false);
 }
 
 static void cvar_fire_changed(sv_cvar_key_t k, const void *oldv, const void *newv)
@@ -142,6 +173,9 @@ int cvar_init(void)
         case CVAR_BOOL:
             g_cvars[i].value.b = g_cvars[i].def.b;
             break;
+        case CVAR_FLOAT:
+            g_cvars[i].value.f = g_cvars[i].def.f;
+            break;
         case CVAR_STRING:
             strncpy(g_cvars[i].value.s, g_cvars[i].def.s ? g_cvars[i].def.s : "", sizeof(g_cvars[i].value.s) - 1);
             g_cvars[i].value.s[sizeof(g_cvars[i].value.s) - 1] = 0;
@@ -165,6 +199,12 @@ bool cvar_get_bool_name(const char *name)
 {
     sv_cvar_key_t k = find_key(name);
     return k < SV_CVAR_COUNT && g_cvars[k].type == CVAR_BOOL ? g_cvars[k].value.b : false;
+}
+
+float cvar_get_float_name(const char *name)
+{
+    sv_cvar_key_t k = find_key(name);
+    return k < SV_CVAR_COUNT && g_cvars[k].type == CVAR_FLOAT ? g_cvars[k].value.f : 0.0f;
 }
 
 const char *cvar_get_string_name(const char *name)
@@ -206,6 +246,24 @@ bool cvar_set_bool_name(const char *name, bool v)
 
     g_cvars[k].value.b = v;
     cvar_fire_changed(k, &oldv, &g_cvars[k].value.b);
+    return true;
+}
+
+bool cvar_set_float_name(const char *name, float v)
+{
+    sv_cvar_key_t k = find_key(name);
+    if (k >= SV_CVAR_COUNT || g_cvars[k].type != CVAR_FLOAT)
+        return false;
+
+    if (!cvar_can_set(k))
+        return false;
+
+    float oldv = g_cvars[k].value.f;
+    if (oldv == v)
+        return true;
+
+    g_cvars[k].value.f = v;
+    cvar_fire_changed(k, &oldv, &g_cvars[k].value.f);
     return true;
 }
 
@@ -289,6 +347,9 @@ bool cvar_save(const char *filename)
         case CVAR_BOOL:
             ikv_object_set_bool(root, g_cvars[i].name, g_cvars[i].value.b);
             break;
+        case CVAR_FLOAT:
+            ikv_object_set_float(root, g_cvars[i].name, (double)g_cvars[i].value.f);
+            break;
         case CVAR_STRING:
             ikv_object_set_string(root, g_cvars[i].name, g_cvars[i].value.s);
             break;
@@ -313,6 +374,8 @@ static bool cvar_node_type_matches(const cvar_entry_t *cv, const ikv_node_t *n)
         return n->type == IKV_INT;
     case CVAR_BOOL:
         return n->type == IKV_BOOL || n->type == IKV_INT;
+    case CVAR_FLOAT:
+        return n->type == IKV_FLOAT || n->type == IKV_INT;
     case CVAR_STRING:
         return n->type == IKV_STRING;
     default:
@@ -347,6 +410,8 @@ bool cvar_load(const char *filename)
         if (!cvar_node_type_matches(&g_cvars[i], n))
             continue;
 
+        sv_cvar_key_t key = (sv_cvar_key_t)i;
+
         switch (g_cvars[i].type)
         {
         case CVAR_INT:
@@ -354,10 +419,10 @@ bool cvar_load(const char *filename)
             {
                 int32_t oldv = g_cvars[i].value.i;
                 int32_t newv = (int32_t)ikv_as_int(n);
-                if (oldv != newv && cvar_can_set((sv_cvar_key_t)i))
+                if (oldv != newv && cvar_can_set_internal(key, true))
                 {
                     g_cvars[i].value.i = newv;
-                    cvar_fire_changed((sv_cvar_key_t)i, &oldv, &g_cvars[i].value.i);
+                    cvar_fire_changed(key, &oldv, &g_cvars[i].value.i);
                 }
             }
             break;
@@ -366,10 +431,26 @@ bool cvar_load(const char *filename)
         {
             bool oldv = g_cvars[i].value.b;
             bool newv = (n->type == IKV_BOOL) ? ikv_as_bool(n) : (ikv_as_int(n) != 0);
-            if (oldv != newv && cvar_can_set((sv_cvar_key_t)i))
+            if (oldv != newv && cvar_can_set_internal(key, true))
             {
                 g_cvars[i].value.b = newv;
-                cvar_fire_changed((sv_cvar_key_t)i, &oldv, &g_cvars[i].value.b);
+                cvar_fire_changed(key, &oldv, &g_cvars[i].value.b);
+            }
+        }
+        break;
+
+        case CVAR_FLOAT:
+        {
+            float oldv = g_cvars[i].value.f;
+            float newv = 0.0f;
+            if (n->type == IKV_FLOAT)
+                newv = (float)ikv_as_float(n);
+            else
+                newv = (float)ikv_as_int(n);
+            if (oldv != newv && cvar_can_set_internal(key, true))
+            {
+                g_cvars[i].value.f = newv;
+                cvar_fire_changed(key, &oldv, &g_cvars[i].value.f);
             }
         }
         break;
@@ -380,7 +461,7 @@ bool cvar_load(const char *filename)
                 const char *s = ikv_as_string(n);
                 const char *in = s ? s : "";
 
-                if (strncmp(g_cvars[i].value.s, in, sizeof(g_cvars[i].value.s)) != 0 && cvar_can_set((sv_cvar_key_t)i))
+                if (strncmp(g_cvars[i].value.s, in, sizeof(g_cvars[i].value.s)) != 0 && cvar_can_set_internal(key, true))
                 {
                     char oldv[64];
                     strncpy(oldv, g_cvars[i].value.s, sizeof(oldv) - 1);
@@ -389,7 +470,7 @@ bool cvar_load(const char *filename)
                     strncpy(g_cvars[i].value.s, in, sizeof(g_cvars[i].value.s) - 1);
                     g_cvars[i].value.s[sizeof(g_cvars[i].value.s) - 1] = 0;
 
-                    cvar_fire_changed((sv_cvar_key_t)i, oldv, g_cvars[i].value.s);
+                    cvar_fire_changed(key, oldv, g_cvars[i].value.s);
                 }
             }
             break;

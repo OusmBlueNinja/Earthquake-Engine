@@ -7,9 +7,11 @@
 #include "asset_manager/asset_manager.h"
 #include "asset_manager/asset_types/material.h"
 
-static bool asset_material_load(asset_manager_t *am, const char *path, asset_any_t *out_asset)
+static bool asset_material_load(asset_manager_t *am, const char *path, uint32_t path_is_ptr, asset_any_t *out_asset)
 {
     (void)am;
+    if (path_is_ptr)
+        return false;
 
     asset_material_t m;
     if (!material_load_file(path, &m))

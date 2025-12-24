@@ -37,3 +37,8 @@ static inline vec3 vec3_norm(vec3 v)
     vec3 r = {v.x / l, v.y / l, v.z / l};
     return r;
 }
+
+static inline float vec3_dot(vec3 a, vec3 b)
+{
+    return a.x * b.x + a.y * b.y + a.z * b.z;
+}

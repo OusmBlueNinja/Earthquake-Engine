@@ -5,6 +5,7 @@
 #include "asset_image.h"
 #include "asset_material.h"
 #include "asset_model.h"
+#include "asset_model_gltf.h"
 
 #define REGISTER_ASSET_MODULE(am, module_fn)                                              \
     do                                                                                    \
@@ -19,6 +20,8 @@
 static inline void register_asset_modules(asset_manager_t *am)
 {
     REGISTER_ASSET_MODULE(am, asset_module_image);
+
     REGISTER_ASSET_MODULE(am, asset_module_material);
     REGISTER_ASSET_MODULE(am, asset_module_model);
+    REGISTER_ASSET_MODULE(am, asset_module_model_gltf);
 }

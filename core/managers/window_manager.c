@@ -5,6 +5,7 @@
 #include "utils/logger.h"
 #include "cvar.h"
 #include "core.h"
+#include "event.h"
 
 static void wm_error_callback(int error, const char *description)
 {
@@ -18,6 +19,89 @@ static void wm_on_vsync_change(sv_cvar_key_t key, const void *old_state, const v
     bool newb = *(const bool *)state;
     LOG_DEBUG("cl_vsync: %d -> %d", oldb, newb);
     wm_set_vsync(&get_application()->window_manager, newb);
+}
+
+static void wm_dispatch(event_t *e)
+{
+    Application *app = get_application();
+    if (!app || !e)
+        return;
+    app_dispatch_event(app, e);
+}
+
+static void wm_glfw_framebuffer_size(GLFWwindow *window, int width, int height)
+{
+    (void)window;
+    event_t e = {0};
+    e.type = EV_WINDOW_RESIZE;
+    e.as.window_resize.w = width;
+    e.as.window_resize.h = height;
+    wm_dispatch(&e);
+}
+
+static void wm_glfw_window_close(GLFWwindow *window)
+{
+    (void)window;
+    event_t e = {0};
+    e.type = EV_WINDOW_CLOSE;
+    wm_dispatch(&e);
+}
+
+static void wm_glfw_cursor_pos(GLFWwindow *window, double x, double y)
+{
+    (void)window;
+    event_t e = {0};
+    e.type = EV_MOUSE_MOVE;
+    e.as.mouse_move.x = x;
+    e.as.mouse_move.y = y;
+    wm_dispatch(&e);
+}
+
+static void wm_glfw_mouse_button(GLFWwindow *window, int button, int action, int mods)
+{
+    (void)window;
+
+    double x = 0.0, y = 0.0;
+    glfwGetCursorPos(window, &x, &y);
+
+    event_t e = {0};
+    e.type = (action == GLFW_PRESS) ? EV_MOUSE_BUTTON_DOWN : EV_MOUSE_BUTTON_UP;
+    e.as.mouse_button.button = button;
+    e.as.mouse_button.mods = mods;
+    e.as.mouse_button.x = x;
+    e.as.mouse_button.y = y;
+    wm_dispatch(&e);
+}
+
+static void wm_glfw_scroll(GLFWwindow *window, double dx, double dy)
+{
+    (void)window;
+    event_t e = {0};
+    e.type = EV_MOUSE_SCROLL;
+    e.as.mouse_scroll.dx = dx;
+    e.as.mouse_scroll.dy = dy;
+    wm_dispatch(&e);
+}
+
+static void wm_glfw_key(GLFWwindow *window, int key, int scancode, int action, int mods)
+{
+    (void)window;
+    event_t e = {0};
+    e.type = (action == GLFW_PRESS || action == GLFW_REPEAT) ? EV_KEY_DOWN : EV_KEY_UP;
+    e.as.key.key = key;
+    e.as.key.scancode = scancode;
+    e.as.key.mods = mods;
+    e.as.key.repeat = (action == GLFW_REPEAT);
+    wm_dispatch(&e);
+}
+
+static void wm_glfw_char(GLFWwindow *window, unsigned int codepoint)
+{
+    (void)window;
+    event_t e = {0};
+    e.type = EV_CHAR;
+    e.as.ch.codepoint = codepoint;
+    wm_dispatch(&e);
 }
 
 int wm_init(window_manager *wm)
@@ -68,6 +152,14 @@ int wm_init(window_manager *wm)
 
     wm_set_vsync(wm, cvar_get_bool_name("cl_vsync"));
     cvar_set_callback_name("cl_vsync", wm_on_vsync_change);
+
+    glfwSetFramebufferSizeCallback(wm->window, wm_glfw_framebuffer_size);
+    glfwSetWindowCloseCallback(wm->window, wm_glfw_window_close);
+    glfwSetCursorPosCallback(wm->window, wm_glfw_cursor_pos);
+    glfwSetMouseButtonCallback(wm->window, wm_glfw_mouse_button);
+    glfwSetScrollCallback(wm->window, wm_glfw_scroll);
+    glfwSetKeyCallback(wm->window, wm_glfw_key);
+    glfwSetCharCallback(wm->window, wm_glfw_char);
 
     vec2i fb = wm_get_framebuffer_size(wm);
     glViewport(0, 0, fb.x, fb.y);

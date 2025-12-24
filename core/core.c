@@ -87,8 +87,11 @@ void init_application(Application *app)
     {
         LOG_WARN("Faild to load Config.");
     }
+
     log_set_level(cvar_get_int_name("cl_log_level"));
-    cvar_set_int_name("cl_cpu_threads", threads_get_cpu_logical_count());
+    cvar_set_int_name("cl_cpu_threads", 16); //! threads_get_cpu_logical_count()
+
+    LOG_INFO("Logical Processors: %d", cvar_get_int_name("cl_cpu_threads"));
 
     asset_manager_desc_t desc = {0};
     desc.worker_count = cvar_get_int_name("cl_cpu_threads");
@@ -131,6 +134,8 @@ void delete_application(Application *app)
                 LOG_INFO("Shutting Down Layer: '%s'", layer->name);
 
                 layer->shutdown(layer);
+
+                free(layer->name);
             }
         }
     }
@@ -193,12 +198,33 @@ void loop_application(void)
         }
         R_end_frame(&g_application.renderer);
 
-        wm_bind_framebuffer(&g_application.window_manager, R_get_final_fbo(&g_application.renderer), g_application.renderer.fb_size);
         wm_begin_frame(&g_application.window_manager);
+        wm_bind_framebuffer(&g_application.window_manager, R_get_final_fbo(&g_application.renderer), g_application.renderer.fb_size);
+
         wm_end_frame(&g_application.window_manager);
     }
 
     sv_stop();
+}
+
+layer_t create_layer(const char *name)
+{
+    layer_t layer = (layer_t){0};
+
+    if (!name)
+        name = "Unnamed Layer";
+
+    size_t n = strlen(name);
+    layer.name = (char *)malloc(n + 1);
+    if (layer.name)
+    {
+        memcpy(layer.name, name, n);
+        layer.name[n] = 0;
+    }
+
+    layer.app = get_application();
+
+    return layer;
 }
 
 uint32_t push_layer(layer_t layer)
@@ -208,6 +234,39 @@ uint32_t push_layer(layer_t layer)
     layer.app = &g_application;
     vector_push_back(&g_application.layers, &layer);
     return layer.id;
+}
+
+void app_dispatch_event(Application *app, event_t *e)
+{
+    if (!app || !e)
+        return;
+
+    vector_t *v = &app->layers;
+    if (!v->data)
+        return;
+    if (v->element_size != sizeof(layer_t))
+        return;
+    if (v->size == 0)
+        return;
+
+    layer_t *layers = (layer_t *)v->data;
+
+    for (uint32_t i = v->size; i-- > 0;)
+    {
+        layer_t *layer = &layers[i];
+
+        if (!layer->on_event)
+            continue;
+
+        if (layer->on_event(layer, e))
+        {
+            e->handled = true;
+            return;
+        }
+
+        if (e->handled)
+            return;
+    }
 }
 
 Application *get_application()

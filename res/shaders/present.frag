@@ -5,6 +5,7 @@ in vec2 v_UV;
 uniform sampler2D u_Scene;
 uniform sampler2D u_Bloom;
 uniform sampler2D u_Depth;
+
 uniform int u_EnableBloom;
 uniform float u_BloomIntensity;
 uniform int u_DebugMode;
@@ -38,10 +39,19 @@ void main()
 
     if (u_DebugMode == 1) { FragColor = vec4(bloom, 1.0); return; }
     if (u_DebugMode == 2) { FragColor = vec4(scene, 1.0); return; }
+
     if (u_DebugMode == 3)
     {
         float d = texture(u_Depth, uv).r;
         FragColor = vec4(vec3(d), 1.0);
+        return;
+    }
+
+    if (u_DebugMode == 4)
+    {
+        float d = texture(u_Depth, uv).r;
+        float bg = step(0.999999, d);
+        FragColor = vec4(bg, 0.0, 1.0 - bg, 1.0);
         return;
     }
 

@@ -695,9 +695,7 @@ static void mdl_vao_setup_model_vertex(void)
         2, 2, GL_FLOAT, GL_FALSE,
         (GLsizei)sizeof(model_vertex_t),
         (void *)offsetof(model_vertex_t, u));
-
 }
-
 
 typedef struct mdl_mtl_entry_t
 {
@@ -937,8 +935,11 @@ static void mdl_free_mtl_entries(vector_t *entries)
     vector_impl_free(entries);
 }
 
-static bool asset_model_load(asset_manager_t *am, const char *path, asset_any_t *out_asset)
+static bool asset_model_load(asset_manager_t *am, const char *path, uint32_t path_is_ptr, asset_any_t *out_asset)
 {
+    if (path_is_ptr)
+        return false;
+
     if (!mdl_obj_quick_verify(path))
         return false;
 

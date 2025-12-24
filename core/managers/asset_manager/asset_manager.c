@@ -1,3 +1,4 @@
+/* asset_manager.c */
 #include "asset_manager.h"
 #include "loaders/register_modules.h"
 
@@ -268,15 +269,22 @@ static void asset_zero(asset_any_t *a)
     a->state = ASSET_STATE_EMPTY;
 }
 
-static asset_module_desc_t *find_module(asset_manager_t *am, asset_type_t type)
+static const asset_module_desc_t *asset_manager_get_module_by_index(const asset_manager_t *am, uint32_t idx)
+{
+    if (!am || idx >= am->modules.size)
+        return NULL;
+    return (const asset_module_desc_t *)vector_impl_at((vector_t *)&am->modules, idx);
+}
+
+static uint32_t asset_manager_find_first_module_index(const asset_manager_t *am, asset_type_t type)
 {
     for (uint32_t i = 0; i < am->modules.size; ++i)
     {
-        asset_module_desc_t *m = (asset_module_desc_t *)vector_impl_at(&am->modules, i);
-        if (m->type == type)
-            return m;
+        const asset_module_desc_t *m = (const asset_module_desc_t *)vector_impl_at((vector_t *)&am->modules, i);
+        if (m && m->type == type)
+            return i;
     }
-    return NULL;
+    return 0xFFFFFFFFu;
 }
 
 static const asset_module_desc_t *find_module_const(const asset_manager_t *am, asset_type_t type)
@@ -284,7 +292,7 @@ static const asset_module_desc_t *find_module_const(const asset_manager_t *am, a
     for (uint32_t i = 0; i < am->modules.size; ++i)
     {
         const asset_module_desc_t *m = (const asset_module_desc_t *)vector_impl_at((vector_t *)&am->modules, i);
-        if (m->type == type)
+        if (m && m->type == type)
             return m;
     }
     return NULL;
@@ -298,14 +306,30 @@ static const char *asset_type_name(const asset_manager_t *am, asset_type_t type)
     return "ASSET_UNKNOWN";
 }
 
-static void asset_cleanup(asset_manager_t *am, asset_any_t *a)
+static void asset_cleanup_by_module(asset_manager_t *am, asset_any_t *a, uint16_t module_index)
 {
     if (!a)
         return;
-    asset_module_desc_t *m = find_module(am, a->type);
+
+    const asset_module_desc_t *m = NULL;
+    if (module_index != 0xFFFFu)
+        m = asset_manager_get_module_by_index(am, module_index);
+
+    if (!m || m->type != a->type)
+        m = find_module_const(am, a->type);
+
     if (m && m->cleanup_fn)
         m->cleanup_fn(am, a);
+
     asset_zero(a);
+}
+
+static void slot_cleanup(asset_manager_t *am, asset_slot_t *s)
+{
+    if (!s)
+        return;
+    asset_cleanup_by_module(am, &s->asset, s->module_index);
+    s->module_index = 0xFFFFu;
 }
 
 static bool slot_valid_locked(asset_manager_t *am, ihandle_t h, asset_slot_t **out_slot)
@@ -348,7 +372,8 @@ static void jobq_destroy(job_queue_t *q)
         for (uint32_t i = 0; i < q->count; ++i)
         {
             uint32_t idx = (q->head + i) % q->cap;
-            free(q->buf[idx].path);
+            if (!q->buf[idx].path_is_ptr)
+                free(q->buf[idx].path);
         }
         free(q->buf);
     }
@@ -363,8 +388,10 @@ static void jobq_drain(job_queue_t *q)
     while (q->count > 0)
     {
         asset_job_t *j = &q->buf[q->head];
-        free(j->path);
+        if (!j->path_is_ptr)
+            free(j->path);
         j->path = NULL;
+        j->path_is_ptr = 0;
         q->head = (q->head + 1) % q->cap;
         q->count--;
     }
@@ -467,6 +494,40 @@ typedef struct worker_ctx_t
     asset_manager_t *am;
 } worker_ctx_t;
 
+static bool asset_try_load_any(asset_manager_t *am, asset_type_t type, const char *path, uint32_t path_is_ptr, asset_any_t *out_asset, uint16_t *out_module_index)
+{
+    if (!am || !out_asset || !out_module_index)
+        return false;
+
+    if (!path)
+        return false;
+
+    if (!path_is_ptr && (!path[0]))
+        return false;
+
+    *out_module_index = 0xFFFFu;
+    asset_zero(out_asset);
+
+    for (uint32_t i = 0; i < am->modules.size; ++i)
+    {
+        const asset_module_desc_t *m = (const asset_module_desc_t *)vector_impl_at(&am->modules, i);
+        if (!m || m->type != type || !m->load_fn)
+            continue;
+
+        asset_any_t tmp;
+        asset_zero(&tmp);
+
+        if (m->load_fn(am, path, path_is_ptr, &tmp))
+        {
+            *out_asset = tmp;
+            *out_module_index = (uint16_t)i;
+            return true;
+        }
+    }
+
+    return false;
+}
+
 static void worker_main(void *p)
 {
     worker_ctx_t *ctx = (worker_ctx_t *)p;
@@ -484,7 +545,8 @@ static void worker_main(void *p)
 
         if (sd)
         {
-            free(j.path);
+            if (!j.path_is_ptr)
+                free(j.path);
             break;
         }
 
@@ -492,28 +554,30 @@ static void worker_main(void *p)
         memset(&d, 0, sizeof(d));
         d.handle = j.handle;
         d.ok = false;
+        d.module_index = 0xFFFFu;
         asset_zero(&d.asset);
 
-        asset_module_desc_t *mod = find_module(am, j.type);
-        if (mod && mod->load_fn)
+        asset_any_t out;
+        uint16_t midx = 0xFFFFu;
+
+        bool ok = asset_try_load_any(am, j.type, j.path, j.path_is_ptr, &out, &midx);
+        d.ok = ok;
+        d.module_index = midx;
+
+        if (ok)
         {
-            asset_any_t out;
-            asset_zero(&out);
-
-            bool ok = mod->load_fn(am, j.path, &out);
-            d.ok = ok;
-
-            if (ok)
-                d.asset = out;
-            else
-                LOG_ERROR("Failed to load asset: [%s](%s)", asset_type_name(am, j.type), j.path);
+            d.asset = out;
         }
         else
         {
-            LOG_ERROR("No loader registered for asset: [%s]'%s'", asset_type_name(am, j.type), j.path);
+            if (j.path_is_ptr)
+                LOG_ERROR("Failed to load asset: [%s](%p)", asset_type_name(am, j.type), (void *)j.path);
+            else
+                LOG_ERROR("Failed to load asset: [%s](%s)", asset_type_name(am, j.type), j.path);
         }
 
-        free(j.path);
+        if (!j.path_is_ptr)
+            free(j.path);
         doneq_push(&am->done, &d);
     }
 
@@ -526,13 +590,6 @@ bool asset_manager_register_module(asset_manager_t *am, asset_module_desc_t modu
         return false;
     if (!module.load_fn && !module.init_fn && !module.cleanup_fn)
         return false;
-
-    asset_module_desc_t *existing = find_module(am, module.type);
-    if (existing)
-    {
-        *existing = module;
-        return true;
-    }
 
     vector_impl_push_back(&am->modules, &module);
     return true;
@@ -565,6 +622,7 @@ static asset_slot_t *alloc_slot_locked(asset_manager_t *am, asset_type_t type, i
     asset_slot_t s;
     memset(&s, 0, sizeof(s));
     s.generation = 1;
+    s.module_index = 0xFFFFu;
     asset_zero(&s.asset);
     s.asset.type = type;
     s.asset.state = ASSET_STATE_LOADING;
@@ -648,13 +706,13 @@ void asset_manager_shutdown(asset_manager_t *am)
 
     asset_done_t d;
     while (doneq_pop(&am->done, &d))
-        asset_cleanup(am, &d.asset);
+        asset_cleanup_by_module(am, &d.asset, d.module_index);
 
     mutex_lock_impl(&am->state_m);
     for (uint32_t i = 0; i < am->slots.size; ++i)
     {
         asset_slot_t *s = (asset_slot_t *)vector_impl_at(&am->slots, i);
-        asset_cleanup(am, &s->asset);
+        slot_cleanup(am, s);
     }
     mutex_unlock_impl(&am->state_m);
 
@@ -686,8 +744,10 @@ ihandle_t asset_manager_request(asset_manager_t *am, asset_type_t type, const ch
     mutex_unlock_impl(&am->state_m);
 
     asset_job_t j;
+    memset(&j, 0, sizeof(j));
     j.handle = h;
     j.type = type;
+    j.path_is_ptr = 0;
 
     size_t n = strlen(path);
     j.path = (char *)malloc(n + 1);
@@ -696,7 +756,10 @@ ihandle_t asset_manager_request(asset_manager_t *am, asset_type_t type, const ch
         mutex_lock_impl(&am->state_m);
         asset_slot_t *s = NULL;
         if (slot_valid_locked(am, h, &s))
+        {
             s->asset.state = ASSET_STATE_FAILED;
+            s->module_index = 0xFFFFu;
+        }
         mutex_unlock_impl(&am->state_m);
         return ihandle_invalid();
     }
@@ -709,7 +772,51 @@ ihandle_t asset_manager_request(asset_manager_t *am, asset_type_t type, const ch
         mutex_lock_impl(&am->state_m);
         asset_slot_t *s = NULL;
         if (slot_valid_locked(am, h, &s))
+        {
             s->asset.state = ASSET_STATE_FAILED;
+            s->module_index = 0xFFFFu;
+        }
+        mutex_unlock_impl(&am->state_m);
+
+        return ihandle_invalid();
+    }
+
+    return h;
+}
+
+ihandle_t asset_manager_request_ptr(asset_manager_t *am, asset_type_t type, void *ptr)
+{
+    if (!am || !ptr)
+        return ihandle_invalid();
+
+    mutex_lock_impl(&am->state_m);
+    uint32_t sd = am->shutting_down;
+    if (sd)
+    {
+        mutex_unlock_impl(&am->state_m);
+        return ihandle_invalid();
+    }
+
+    ihandle_t h;
+    alloc_slot_locked(am, type, &h);
+    mutex_unlock_impl(&am->state_m);
+
+    asset_job_t j;
+    memset(&j, 0, sizeof(j));
+    j.handle = h;
+    j.type = type;
+    j.path = (char *)ptr;
+    j.path_is_ptr = 1;
+
+    if (!jobq_push(&am->jobs, &j))
+    {
+        mutex_lock_impl(&am->state_m);
+        asset_slot_t *s = NULL;
+        if (slot_valid_locked(am, h, &s))
+        {
+            s->asset.state = ASSET_STATE_FAILED;
+            s->module_index = 0xFFFFu;
+        }
         mutex_unlock_impl(&am->state_m);
 
         return ihandle_invalid();
@@ -731,8 +838,8 @@ ihandle_t asset_manager_submit_raw(asset_manager_t *am, asset_type_t type, const
         return ihandle_invalid();
     }
 
-    const asset_module_desc_t *mod = find_module_const(am, type);
-    if (!mod)
+    uint32_t midx32 = asset_manager_find_first_module_index(am, type);
+    if (midx32 == 0xFFFFFFFFu)
     {
         mutex_unlock_impl(&am->state_m);
         return ihandle_invalid();
@@ -750,30 +857,34 @@ ihandle_t asset_manager_submit_raw(asset_manager_t *am, asset_type_t type, const
     {
         mutex_lock_impl(&am->state_m);
         slot->asset.state = ASSET_STATE_FAILED;
+        slot->module_index = 0xFFFFu;
         mutex_unlock_impl(&am->state_m);
         return ihandle_invalid();
     }
 
+    const asset_module_desc_t *mod = asset_manager_get_module_by_index(am, midx32);
     bool init_ok = true;
-    if (mod->init_fn)
+    if (mod && mod->init_fn)
         init_ok = mod->init_fn(am, &a);
 
     if (!init_ok)
     {
-        asset_cleanup(am, &a);
+        asset_cleanup_by_module(am, &a, (uint16_t)midx32);
 
         mutex_lock_impl(&am->state_m);
-        asset_cleanup(am, &slot->asset);
+        slot_cleanup(am, slot);
         slot->asset.state = ASSET_STATE_FAILED;
+        slot->module_index = 0xFFFFu;
         mutex_unlock_impl(&am->state_m);
 
         return ihandle_invalid();
     }
 
     mutex_lock_impl(&am->state_m);
-    asset_cleanup(am, &slot->asset);
+    slot_cleanup(am, slot);
     a.state = ASSET_STATE_READY;
     slot->asset = a;
+    slot->module_index = (uint16_t)midx32;
     mutex_unlock_impl(&am->state_m);
 
     return h;
@@ -794,7 +905,7 @@ void asset_manager_pump(asset_manager_t *am)
 
         if (!ok_slot)
         {
-            asset_cleanup(am, &d.asset);
+            asset_cleanup_by_module(am, &d.asset, d.module_index);
             continue;
         }
 
@@ -808,24 +919,26 @@ void asset_manager_pump(asset_manager_t *am)
             if (slot_valid_locked(am, d.handle, &slot))
             {
                 old = slot->asset;
+                slot_cleanup(am, slot);
                 asset_zero(&slot->asset);
                 slot->asset.state = ASSET_STATE_FAILED;
+                slot->module_index = 0xFFFFu;
             }
             mutex_unlock_impl(&am->state_m);
 
-            asset_cleanup(am, &old);
-            asset_cleanup(am, &d.asset);
+            asset_cleanup_by_module(am, &old, 0xFFFFu);
+            asset_cleanup_by_module(am, &d.asset, d.module_index);
             continue;
         }
 
-        asset_module_desc_t *mod = find_module(am, d.asset.type);
+        const asset_module_desc_t *mod = asset_manager_get_module_by_index(am, d.module_index);
         bool init_ok = true;
         if (mod && mod->init_fn)
             init_ok = mod->init_fn(am, &d.asset);
 
         if (!init_ok)
         {
-            asset_cleanup(am, &d.asset);
+            asset_cleanup_by_module(am, &d.asset, d.module_index);
 
             asset_any_t old;
             asset_zero(&old);
@@ -835,12 +948,14 @@ void asset_manager_pump(asset_manager_t *am)
             if (slot_valid_locked(am, d.handle, &slot))
             {
                 old = slot->asset;
+                slot_cleanup(am, slot);
                 asset_zero(&slot->asset);
                 slot->asset.state = ASSET_STATE_FAILED;
+                slot->module_index = 0xFFFFu;
             }
             mutex_unlock_impl(&am->state_m);
 
-            asset_cleanup(am, &old);
+            asset_cleanup_by_module(am, &old, 0xFFFFu);
             continue;
         }
 
@@ -852,13 +967,15 @@ void asset_manager_pump(asset_manager_t *am)
         if (slot_valid_locked(am, d.handle, &slot))
         {
             old = slot->asset;
+            slot_cleanup(am, slot);
             d.asset.state = ASSET_STATE_READY;
             slot->asset = d.asset;
+            slot->module_index = d.module_index;
             asset_zero(&d.asset);
         }
         mutex_unlock_impl(&am->state_m);
 
-        asset_cleanup(am, &old);
+        asset_cleanup_by_module(am, &old, 0xFFFFu);
     }
 }
 
