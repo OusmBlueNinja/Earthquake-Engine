@@ -6,10 +6,13 @@
 #include "handle.h"
 #include "ikv1.h"
 
+typedef struct asset_manager_t asset_manager_t;
+
 typedef struct asset_material_t
 {
     uint8_t shader_id;
     uint32_t flags;
+    char *name;
 
     vec3 albedo;
     vec3 emissive;
@@ -37,4 +40,6 @@ ikv_node_t *material_to_ikv(const asset_material_t *m, const char *key);
 bool material_from_ikv(const ikv_node_t *node, asset_material_t *out);
 
 bool material_save_file(const char *path, const asset_material_t *m);
+
 bool material_load_file(const char *path, asset_material_t *out);
+bool material_load_file_any(asset_manager_t *am, const char *path, const char *want_name, asset_material_t *out);

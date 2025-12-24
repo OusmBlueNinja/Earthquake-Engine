@@ -8,11 +8,19 @@ typedef struct
     float z;
 } vec3;
 
-static inline vec3 vec3_sub(vec3 a, vec3 b)
+static inline vec3 vec3_add(vec3 a, vec3 b) { return (vec3){a.x + b.x, a.y + b.y, a.z + b.z}; }
+static inline vec3 vec3_sub(vec3 a, vec3 b) { return (vec3){a.x - b.x, a.y - b.y, a.z - b.z}; }
+static inline vec3 vec3_mul(vec3 a, vec3 b)
 {
-    vec3 r = {a.x - b.x, a.y - b.y, a.z - b.z};
+    vec3 r;
+    r.x = a.x * b.x;
+    r.y = a.y * b.y;
+    r.z = a.z * b.z;
     return r;
 }
+
+static inline vec3 vec3_mul_f(vec3 a, float s) { return (vec3){a.x * s, a.y * s, a.z * s}; }
+static inline float vec3_len(vec3 a) { return sqrtf(a.x * a.x + a.y * a.y + a.z * a.z); }
 
 static inline vec3 vec3_cross(vec3 a, vec3 b)
 {

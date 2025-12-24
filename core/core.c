@@ -57,7 +57,6 @@ void init_application(Application *app)
     }
 
     log_enable_colors(g_application.specification->terminal_colors);
-
     LOG_INFO("Starting Application");
 
     if (cvar_init())
@@ -88,9 +87,11 @@ void init_application(Application *app)
     {
         LOG_WARN("Faild to load Config.");
     }
+    log_set_level(cvar_get_int_name("cl_log_level"));
+    cvar_set_int_name("cl_cpu_threads", threads_get_cpu_logical_count());
 
     asset_manager_desc_t desc = {0};
-    desc.worker_count = threads_get_cpu_logical_count();
+    desc.worker_count = cvar_get_int_name("cl_cpu_threads");
     desc.max_inflight_jobs = g_application.specification->am_max_inflight_jobs;
     desc.handle_type = iHANDLE_TYPE_ASSET;
 
@@ -157,7 +158,6 @@ void delete_application(Application *app)
     else
         LOG_ERROR("error: '%s' (%d)", app_status_to_string(g_application.status), g_application.status);
 }
-
 
 void loop_application(void)
 {

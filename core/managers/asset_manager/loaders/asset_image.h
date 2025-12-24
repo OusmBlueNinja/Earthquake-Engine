@@ -82,7 +82,7 @@ static bool asset_image_init(asset_manager_t *am, asset_any_t *asset)
     img->gl_handle = (uint32_t)tex;
     free(img->pixels);
     img->pixels = NULL;
-
+    LOG_DEBUG("Loaded texture %d", tex);
     return true;
 }
 

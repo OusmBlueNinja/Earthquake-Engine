@@ -17,6 +17,7 @@ typedef struct win_mutex_t
 {
     SRWLOCK l;
 } win_mutex_t;
+
 typedef struct win_cond_t
 {
     CONDITION_VARIABLE cv;
@@ -133,6 +134,7 @@ typedef struct posix_mutex_t
 {
     pthread_mutex_t m;
 } posix_mutex_t;
+
 typedef struct posix_cond_t
 {
     pthread_cond_t c;
@@ -306,7 +308,7 @@ static void asset_cleanup(asset_manager_t *am, asset_any_t *a)
     asset_zero(a);
 }
 
-static bool slot_valid(const asset_manager_t *am, ihandle_t h, asset_slot_t **out_slot)
+static bool slot_valid_locked(asset_manager_t *am, ihandle_t h, asset_slot_t **out_slot)
 {
     if (!ihandle_is_valid(h))
         return false;
@@ -502,13 +504,9 @@ static void worker_main(void *p)
             d.ok = ok;
 
             if (ok)
-            {
                 d.asset = out;
-            }
             else
-            {
                 LOG_ERROR("Failed to load asset: [%s](%s)", asset_type_name(am, j.type), j.path);
-            }
         }
         else
         {
@@ -554,17 +552,15 @@ static bool asset_from_raw(asset_type_t type, const void *raw, asset_any_t *out)
     case ASSET_IMAGE:
         out->as.image = *(const asset_image_t *)raw;
         return true;
-
     case ASSET_MATERIAL:
         out->as.material = *(const asset_material_t *)raw;
         return true;
-
     default:
         return false;
     }
 }
 
-static asset_slot_t *alloc_slot(asset_manager_t *am, asset_type_t type, ihandle_t *out_handle)
+static asset_slot_t *alloc_slot_locked(asset_manager_t *am, asset_type_t type, ihandle_t *out_handle)
 {
     asset_slot_t s;
     memset(&s, 0, sizeof(s));
@@ -654,11 +650,13 @@ void asset_manager_shutdown(asset_manager_t *am)
     while (doneq_pop(&am->done, &d))
         asset_cleanup(am, &d.asset);
 
+    mutex_lock_impl(&am->state_m);
     for (uint32_t i = 0; i < am->slots.size; ++i)
     {
         asset_slot_t *s = (asset_slot_t *)vector_impl_at(&am->slots, i);
         asset_cleanup(am, &s->asset);
     }
+    mutex_unlock_impl(&am->state_m);
 
     jobq_destroy(&am->jobs);
     doneq_destroy(&am->done);
@@ -677,13 +675,15 @@ ihandle_t asset_manager_request(asset_manager_t *am, asset_type_t type, const ch
 
     mutex_lock_impl(&am->state_m);
     uint32_t sd = am->shutting_down;
-    mutex_unlock_impl(&am->state_m);
-
     if (sd)
+    {
+        mutex_unlock_impl(&am->state_m);
         return ihandle_invalid();
+    }
 
     ihandle_t h;
-    alloc_slot(am, type, &h);
+    alloc_slot_locked(am, type, &h);
+    mutex_unlock_impl(&am->state_m);
 
     asset_job_t j;
     j.handle = h;
@@ -693,9 +693,11 @@ ihandle_t asset_manager_request(asset_manager_t *am, asset_type_t type, const ch
     j.path = (char *)malloc(n + 1);
     if (!j.path)
     {
+        mutex_lock_impl(&am->state_m);
         asset_slot_t *s = NULL;
-        if (slot_valid(am, h, &s))
+        if (slot_valid_locked(am, h, &s))
             s->asset.state = ASSET_STATE_FAILED;
+        mutex_unlock_impl(&am->state_m);
         return ihandle_invalid();
     }
     memcpy(j.path, path, n + 1);
@@ -703,9 +705,13 @@ ihandle_t asset_manager_request(asset_manager_t *am, asset_type_t type, const ch
     if (!jobq_push(&am->jobs, &j))
     {
         free(j.path);
+
+        mutex_lock_impl(&am->state_m);
         asset_slot_t *s = NULL;
-        if (slot_valid(am, h, &s))
+        if (slot_valid_locked(am, h, &s))
             s->asset.state = ASSET_STATE_FAILED;
+        mutex_unlock_impl(&am->state_m);
+
         return ihandle_invalid();
     }
 
@@ -719,23 +725,32 @@ ihandle_t asset_manager_submit_raw(asset_manager_t *am, asset_type_t type, const
 
     mutex_lock_impl(&am->state_m);
     uint32_t sd = am->shutting_down;
-    mutex_unlock_impl(&am->state_m);
     if (sd)
+    {
+        mutex_unlock_impl(&am->state_m);
         return ihandle_invalid();
+    }
 
     const asset_module_desc_t *mod = find_module_const(am, type);
     if (!mod)
+    {
+        mutex_unlock_impl(&am->state_m);
         return ihandle_invalid();
+    }
 
     ihandle_t h;
-    asset_slot_t *slot = alloc_slot(am, type, &h);
+    asset_slot_t *slot = alloc_slot_locked(am, type, &h);
+    mutex_unlock_impl(&am->state_m);
+
     if (!slot)
         return ihandle_invalid();
 
     asset_any_t a;
     if (!asset_from_raw(type, raw_asset, &a))
     {
+        mutex_lock_impl(&am->state_m);
         slot->asset.state = ASSET_STATE_FAILED;
+        mutex_unlock_impl(&am->state_m);
         return ihandle_invalid();
     }
 
@@ -746,14 +761,20 @@ ihandle_t asset_manager_submit_raw(asset_manager_t *am, asset_type_t type, const
     if (!init_ok)
     {
         asset_cleanup(am, &a);
+
+        mutex_lock_impl(&am->state_m);
         asset_cleanup(am, &slot->asset);
         slot->asset.state = ASSET_STATE_FAILED;
+        mutex_unlock_impl(&am->state_m);
+
         return ihandle_invalid();
     }
 
+    mutex_lock_impl(&am->state_m);
     asset_cleanup(am, &slot->asset);
     a.state = ASSET_STATE_READY;
     slot->asset = a;
+    mutex_unlock_impl(&am->state_m);
 
     return h;
 }
@@ -766,8 +787,12 @@ void asset_manager_pump(asset_manager_t *am)
     asset_done_t d;
     while (doneq_pop(&am->done, &d))
     {
+        mutex_lock_impl(&am->state_m);
         asset_slot_t *slot = NULL;
-        if (!slot_valid(am, d.handle, &slot))
+        bool ok_slot = slot_valid_locked(am, d.handle, &slot);
+        mutex_unlock_impl(&am->state_m);
+
+        if (!ok_slot)
         {
             asset_cleanup(am, &d.asset);
             continue;
@@ -775,13 +800,25 @@ void asset_manager_pump(asset_manager_t *am)
 
         if (!d.ok)
         {
-            asset_cleanup(am, &slot->asset);
-            slot->asset.state = ASSET_STATE_FAILED;
+            asset_any_t old;
+            asset_zero(&old);
+
+            mutex_lock_impl(&am->state_m);
+            slot = NULL;
+            if (slot_valid_locked(am, d.handle, &slot))
+            {
+                old = slot->asset;
+                asset_zero(&slot->asset);
+                slot->asset.state = ASSET_STATE_FAILED;
+            }
+            mutex_unlock_impl(&am->state_m);
+
+            asset_cleanup(am, &old);
+            asset_cleanup(am, &d.asset);
             continue;
         }
 
         asset_module_desc_t *mod = find_module(am, d.asset.type);
-
         bool init_ok = true;
         if (mod && mod->init_fn)
             init_ok = mod->init_fn(am, &d.asset);
@@ -789,21 +826,54 @@ void asset_manager_pump(asset_manager_t *am)
         if (!init_ok)
         {
             asset_cleanup(am, &d.asset);
-            asset_cleanup(am, &slot->asset);
-            slot->asset.state = ASSET_STATE_FAILED;
+
+            asset_any_t old;
+            asset_zero(&old);
+
+            mutex_lock_impl(&am->state_m);
+            slot = NULL;
+            if (slot_valid_locked(am, d.handle, &slot))
+            {
+                old = slot->asset;
+                asset_zero(&slot->asset);
+                slot->asset.state = ASSET_STATE_FAILED;
+            }
+            mutex_unlock_impl(&am->state_m);
+
+            asset_cleanup(am, &old);
             continue;
         }
 
-        asset_cleanup(am, &slot->asset);
-        d.asset.state = ASSET_STATE_READY;
-        slot->asset = d.asset;
+        asset_any_t old;
+        asset_zero(&old);
+
+        mutex_lock_impl(&am->state_m);
+        slot = NULL;
+        if (slot_valid_locked(am, d.handle, &slot))
+        {
+            old = slot->asset;
+            d.asset.state = ASSET_STATE_READY;
+            slot->asset = d.asset;
+            asset_zero(&d.asset);
+        }
+        mutex_unlock_impl(&am->state_m);
+
+        asset_cleanup(am, &old);
     }
 }
 
 const asset_any_t *asset_manager_get_any(const asset_manager_t *am, ihandle_t h)
 {
-    asset_slot_t *slot = NULL;
-    if (!slot_valid(am, h, &slot))
+    if (!am)
         return NULL;
-    return &slot->asset;
+
+    asset_manager_t *am_mut = (asset_manager_t *)am;
+
+    mutex_lock_impl(&am_mut->state_m);
+    asset_slot_t *slot = NULL;
+    bool ok = slot_valid_locked(am_mut, h, &slot);
+    const asset_any_t *ret = ok ? &slot->asset : NULL;
+    mutex_unlock_impl(&am_mut->state_m);
+
+    return ret;
 }

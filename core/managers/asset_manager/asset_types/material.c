@@ -1,6 +1,7 @@
 #include "material.h"
 #include <string.h>
 #include <stdlib.h>
+#include "utils/strdup.h"
 
 static void ikv_write_vec3(ikv_node_t *parent, const char *key, vec3 v)
 {
@@ -69,6 +70,8 @@ asset_material_t material_make_default(uint8_t shader_id)
     memset(&m, 0, sizeof(m));
     m.shader_id = shader_id;
     m.flags = 0;
+    m.name = dup_cstr("iDefMat");
+
 
     m.albedo = (vec3){1.0f, 1.0f, 1.0f};
     m.emissive = (vec3){0.0f, 0.0f, 0.0f};
@@ -207,6 +210,7 @@ static asset_material_t *material_create_solid(uint8_t shader_id, vec3 albedo)
 
     mat->shader_id = shader_id;
     mat->flags = 0;
+    strcpy(mat->name, "iSolidMat");
 
     mat->albedo = albedo;
     mat->emissive = (vec3){0.0f, 0.0f, 0.0f};

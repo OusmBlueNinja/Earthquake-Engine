@@ -6,8 +6,8 @@
 #include "types/vec4.h"
 #include "renderer/camera.h"
 #include "renderer/light.h"
-#include "renderer/model.h"
 #include "asset_manager/asset_types/material.h"
+#include "asset_manager/asset_types/model.h"
 #include "asset_manager/asset_manager.h"
 #include "vector.h"
 #include "shader.h"
@@ -31,7 +31,8 @@ typedef struct renderer_config_t
 
 typedef struct pushed_model_t
 {
-    const model_t *model;
+    ihandle_t model;
+    ihandle_t material_override;
     mat4 model_matrix;
 } pushed_model_t;
 
@@ -82,8 +83,6 @@ typedef struct renderer_t
 
     uint32_t lights_ubo;
 
-    model_factory_t model_factory;
-
     renderer_bloom_t bloom;
 } renderer_t;
 
@@ -98,7 +97,7 @@ void R_end_frame(renderer_t *r);
 
 void R_push_camera(renderer_t *r, const camera_t *cam);
 void R_push_light(renderer_t *r, light_t light);
-void R_push_model(renderer_t *r, const model_t *model, mat4 model_matrix);
+void R_push_model(renderer_t *r, const ihandle_t model, mat4 model_matrix);
 
 uint8_t R_add_shader(renderer_t *r, shader_t *shader);
 shader_t *R_get_shader(const renderer_t *r, uint8_t shader_id);

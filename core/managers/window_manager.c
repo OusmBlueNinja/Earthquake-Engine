@@ -72,6 +72,9 @@ int wm_init(window_manager *wm)
     vec2i fb = wm_get_framebuffer_size(wm);
     glViewport(0, 0, fb.x, fb.y);
 
+    LOG_DEBUG("GL: %s", (const char *)glGetString(GL_VERSION));
+    LOG_DEBUG("GLSL: %s", (const char *)glGetString(GL_SHADING_LANGUAGE_VERSION));
+
     LOG_OK("Created Window");
     return 0;
 }

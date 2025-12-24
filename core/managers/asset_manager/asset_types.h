@@ -3,12 +3,14 @@
 
 #include "asset_types/image.h"
 #include "asset_types/material.h"
+#include "asset_types/model.h"
 
 typedef enum asset_type_t
 {
     ASSET_NONE = 0,
     ASSET_IMAGE,
     ASSET_MATERIAL,
+    ASSET_MODEL,
 
 } asset_type_t;
 
@@ -24,6 +26,8 @@ typedef union asset_any_u
 {
     asset_image_t image;
     asset_material_t material;
+    asset_model_t model;
+    model_raw_t model_raw;
 } asset_any_u;
 
 typedef struct asset_any_t

@@ -236,24 +236,44 @@ static asset_material_t *R_resolve_material(const renderer_t *r, ihandle_t h)
     if (a->state != ASSET_STATE_READY)
         return NULL;
 
-    return &a->as.material;
+    return (asset_material_t *)&a->as.material;
 }
 
+static asset_model_t *R_resolve_model(const renderer_t *r, ihandle_t h)
+{
+    if (!r || !r->assets)
+        return NULL;
+    if (!ihandle_is_valid(h))
+        return NULL;
+
+    const asset_any_t *a = asset_manager_get_any(r->assets, h);
+    if (!a)
+        return NULL;
+    if (a->type != ASSET_MODEL)
+        return NULL;
+    if (a->state != ASSET_STATE_READY)
+        return NULL;
+
+    return (asset_model_t *)&a->as.model;
+}
 
 static void R_bind_image_slot_mask(renderer_t *r, shader_t *s, const char *sampler_name, int unit, ihandle_t h, uint32_t bit, uint32_t *mask)
 {
     uint32_t glh = R_resolve_image_gl(r, h);
+
     glActiveTexture((GLenum)(GL_TEXTURE0 + (GLenum)unit));
+
     if (glh)
     {
         glBindTexture(GL_TEXTURE_2D, glh);
-        shader_set_int(s, sampler_name, unit);
         *mask |= bit;
     }
     else
     {
-        glBindTexture(GL_TEXTURE_2D, 0);
+        glBindTexture(GL_TEXTURE_2D, g_black_tex);
     }
+
+    shader_set_int(s, sampler_name, unit);
 }
 
 static void R_lights_ubo_init(renderer_t *r)
@@ -642,6 +662,57 @@ static void R_composite_to_final(renderer_t *r)
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
+static void R_apply_material_or_default(renderer_t *r, shader_t *s, asset_material_t *mat)
+{
+    shader_set_int(s, "u_HasMaterial", mat ? 1 : 0);
+
+    if (mat)
+    {
+        shader_set_vec3(s, "u_Albedo", mat->albedo);
+        shader_set_vec3(s, "u_Emissive", mat->emissive);
+        shader_set_float(s, "u_Roughness", mat->roughness);
+        shader_set_float(s, "u_Metallic", mat->metallic);
+        shader_set_float(s, "u_Opacity", mat->opacity);
+
+        shader_set_float(s, "u_NormalStrength", mat->normal_strength);
+        shader_set_float(s, "u_HeightScale", mat->height_scale);
+        shader_set_int(s, "u_HeightSteps", mat->height_steps);
+
+        uint32_t tex_mask = 0;
+
+        R_bind_image_slot_mask(r, s, "u_AlbedoTex", 0, mat->albedo_tex, MAT_TEX_ALBEDO, &tex_mask);
+        R_bind_image_slot_mask(r, s, "u_NormalTex", 1, mat->normal_tex, MAT_TEX_NORMAL, &tex_mask);
+        R_bind_image_slot_mask(r, s, "u_MetallicTex", 2, mat->metallic_tex, MAT_TEX_METALLIC, &tex_mask);
+        R_bind_image_slot_mask(r, s, "u_RoughnessTex", 3, mat->roughness_tex, MAT_TEX_ROUGHNESS, &tex_mask);
+        R_bind_image_slot_mask(r, s, "u_EmissiveTex", 4, mat->emissive_tex, MAT_TEX_EMISSIVE, &tex_mask);
+        R_bind_image_slot_mask(r, s, "u_OcclusionTex", 5, mat->occlusion_tex, MAT_TEX_OCCLUSION, &tex_mask);
+        R_bind_image_slot_mask(r, s, "u_HeightTex", 6, mat->height_tex, MAT_TEX_HEIGHT, &tex_mask);
+        R_bind_image_slot_mask(r, s, "u_ArmTex", 7, mat->arm_tex, MAT_TEX_ARM, &tex_mask);
+
+        shader_set_int(s, "u_MaterialTexMask", (int)tex_mask);
+    }
+    else
+    {
+        for (int ti = 0; ti < 8; ++ti)
+        {
+            glActiveTexture((GLenum)(GL_TEXTURE0 + (GLenum)ti));
+            glBindTexture(GL_TEXTURE_2D, 0);
+        }
+
+        shader_set_int(s, "u_MaterialTexMask", 0);
+
+        shader_set_vec3(s, "u_Albedo", (vec3){1.0f, 1.0f, 1.0f});
+        shader_set_vec3(s, "u_Emissive", (vec3){0.0f, 0.0f, 0.0f});
+        shader_set_float(s, "u_Roughness", 1.0f);
+        shader_set_float(s, "u_Metallic", 0.0f);
+        shader_set_float(s, "u_Opacity", 1.0f);
+
+        shader_set_float(s, "u_NormalStrength", 1.0f);
+        shader_set_float(s, "u_HeightScale", 0.0f);
+        shader_set_int(s, "u_HeightSteps", 0);
+    }
+}
+
 int R_init(renderer_t *r, asset_manager_t *assets)
 {
     if (!r)
@@ -689,9 +760,6 @@ int R_init(renderer_t *r, asset_manager_t *assets)
         return 1;
 
     r->default_shader_id = R_add_shader(r, default_shader);
-
-    if (!model_factory_init(&r->model_factory))
-        return 1;
 
     R_lights_ubo_init(r);
 
@@ -747,8 +815,6 @@ void R_shutdown(renderer_t *r)
     if (r->fs_vao)
         glDeleteVertexArrays(1, &r->fs_vao);
     r->fs_vao = 0;
-
-    model_factory_shutdown(&r->model_factory);
 
     for (uint32_t i = 0; i < r->shaders.size; i++)
     {
@@ -812,88 +878,61 @@ void R_end_frame(renderer_t *r)
     if (!r)
         return;
 
+    glEnable(GL_DEPTH_TEST);
+    glDepthMask(GL_TRUE);
+    glDisable(GL_BLEND);
+
+    glEnable(GL_CULL_FACE);
+    glCullFace(GL_BACK);
+    glFrontFace(GL_CCW);
+
     glBindFramebuffer(GL_FRAMEBUFFER, r->scene_fbo);
     glViewport(0, 0, r->fb_size.x, r->fb_size.y);
 
     R_lights_ubo_upload(r);
     glBindBufferBase(GL_UNIFORM_BUFFER, 0, r->lights_ubo);
 
-    uint32_t model_count = r->models.size;
-
-    for (uint32_t i = 0; i < model_count; i++)
+    for (uint32_t i = 0; i < r->models.size; i++)
     {
         pushed_model_t *pm = (pushed_model_t *)vector_at(&r->models, i);
-        if (!pm || !pm->model)
+        if (!pm)
             continue;
 
-        asset_material_t *mat = R_resolve_material(r, pm->model->material);
-
-        uint8_t shader_id = mat ? mat->shader_id : r->default_shader_id;
-        shader_t *s = R_get_shader(r, shader_id);
-        if (!s)
+        asset_model_t *mdl = R_resolve_model(r, pm->model);
+        if (!mdl)
             continue;
 
-        shader_bind(s);
-
-        shader_set_mat4(s, "u_Model", pm->model_matrix);
-        shader_set_mat4(s, "u_View", r->camera.view);
-        shader_set_mat4(s, "u_Proj", r->camera.proj);
-        shader_set_vec3(s, "u_CameraPos", r->camera.position);
-
-        shader_set_int(s, "u_HeightInvert", r->cfg.height_invert ? 1 : 0);
-        shader_set_int(s, "u_AlphaTest", r->cfg.alpha_test ? 1 : 0);
-        shader_set_float(s, "u_AlphaCutoff", r->cfg.alpha_cutoff);
-        shader_set_int(s, "u_ManualSRGB", r->cfg.manual_srgb ? 1 : 0);
-
-        shader_set_int(s, "u_HasMaterial", mat ? 1 : 0);
-
-        if (mat)
+        for (uint32_t mi = 0; mi < mdl->meshes.size; ++mi)
         {
-            shader_set_vec3(s, "u_Albedo", mat->albedo);
-            shader_set_vec3(s, "u_Emissive", mat->emissive);
-            shader_set_float(s, "u_Roughness", mat->roughness);
-            shader_set_float(s, "u_Metallic", mat->metallic);
-            shader_set_float(s, "u_Opacity", mat->opacity);
+            mesh_t *mesh = (mesh_t *)vector_at((vector_t *)&mdl->meshes, mi);
+            if (!mesh || !mesh->vao || !mesh->index_count)
+                continue;
 
-            shader_set_float(s, "u_NormalStrength", mat->normal_strength);
-            shader_set_float(s, "u_HeightScale", mat->height_scale);
-            shader_set_int(s, "u_HeightSteps", mat->height_steps);
+            asset_material_t *mat = R_resolve_material(r, mesh->material);
 
-            uint32_t tex_mask = 0;
+            uint8_t shader_id = mat ? mat->shader_id : r->default_shader_id;
+            shader_t *s = R_get_shader(r, shader_id);
+            if (!s)
+                continue;
 
-            R_bind_image_slot_mask(r, s, "u_AlbedoTex", 0, mat->albedo_tex, MAT_TEX_ALBEDO, &tex_mask);
-            R_bind_image_slot_mask(r, s, "u_NormalTex", 1, mat->normal_tex, MAT_TEX_NORMAL, &tex_mask);
-            R_bind_image_slot_mask(r, s, "u_MetallicTex", 2, mat->metallic_tex, MAT_TEX_METALLIC, &tex_mask);
-            R_bind_image_slot_mask(r, s, "u_RoughnessTex", 3, mat->roughness_tex, MAT_TEX_ROUGHNESS, &tex_mask);
-            R_bind_image_slot_mask(r, s, "u_EmissiveTex", 4, mat->emissive_tex, MAT_TEX_EMISSIVE, &tex_mask);
-            R_bind_image_slot_mask(r, s, "u_OcclusionTex", 5, mat->occlusion_tex, MAT_TEX_OCCLUSION, &tex_mask);
-            R_bind_image_slot_mask(r, s, "u_HeightTex", 6, mat->height_tex, MAT_TEX_HEIGHT, &tex_mask);
-            R_bind_image_slot_mask(r, s, "u_ArmTex", 7, mat->arm_tex, MAT_TEX_ARM, &tex_mask);
+            shader_bind(s);
 
-            shader_set_int(s, "u_MaterialTexMask", (int)tex_mask);
+            shader_set_mat4(s, "u_Model", pm->model_matrix);
+            shader_set_mat4(s, "u_View", r->camera.view);
+            shader_set_mat4(s, "u_Proj", r->camera.proj);
+            shader_set_vec3(s, "u_CameraPos", r->camera.position);
+
+            shader_set_int(s, "u_HeightInvert", r->cfg.height_invert ? 1 : 0);
+            shader_set_int(s, "u_AlphaTest", r->cfg.alpha_test ? 1 : 0);
+            shader_set_float(s, "u_AlphaCutoff", r->cfg.alpha_cutoff);
+            shader_set_int(s, "u_ManualSRGB", r->cfg.manual_srgb ? 1 : 0);
+
+            R_apply_material_or_default(r, s, mat);
+
+            glBindVertexArray(mesh->vao);
+            glDrawElements(GL_TRIANGLES, (GLsizei)mesh->index_count, GL_UNSIGNED_INT, 0);
+            glBindVertexArray(0);
         }
-        else
-        {
-            for (int ti = 0; ti < 8; ++ti)
-            {
-                glActiveTexture((GLenum)(GL_TEXTURE0 + (GLenum)ti));
-                glBindTexture(GL_TEXTURE_2D, 0);
-            }
-
-            shader_set_int(s, "u_MaterialTexMask", 0);
-
-            shader_set_vec3(s, "u_Albedo", (vec3){1.0f, 1.0f, 1.0f});
-            shader_set_vec3(s, "u_Emissive", (vec3){0.0f, 0.0f, 0.0f});
-            shader_set_float(s, "u_Roughness", 1.0f);
-            shader_set_float(s, "u_Metallic", 0.0f);
-            shader_set_float(s, "u_Opacity", 1.0f);
-
-            shader_set_float(s, "u_NormalStrength", 1.0f);
-            shader_set_float(s, "u_HeightScale", 0.0f);
-            shader_set_int(s, "u_HeightSteps", 0);
-        }
-
-        model_draw(pm->model);
     }
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -916,10 +955,17 @@ void R_push_light(renderer_t *r, light_t light)
     vector_push_back(&r->lights, &light);
 }
 
-void R_push_model(renderer_t *r, const model_t *model, mat4 model_matrix)
+void R_push_model(renderer_t *r, const ihandle_t model, mat4 model_matrix)
 {
-    if (!r || !model)
+    if (!r)
         return;
-    pushed_model_t pm = {model, model_matrix};
+    if (!ihandle_is_valid(model))
+        return;
+
+    pushed_model_t pm;
+    memset(&pm, 0, sizeof(pm));
+    pm.model = model;
+    pm.model_matrix = model_matrix;
+
     vector_push_back(&r->models, &pm);
 }

@@ -68,6 +68,7 @@ struct asset_manager_t;
 typedef bool (*asset_load_fn_t)(struct asset_manager_t *am, const char *path, asset_any_t *out_asset);
 typedef bool (*asset_init_fn_t)(struct asset_manager_t *am, asset_any_t *asset);
 typedef void (*asset_cleanup_fn_t)(struct asset_manager_t *am, asset_any_t *asset);
+typedef bool (*asset_save_fn_t)(struct asset_manager_t *am, asset_any_t asset, const char *path);
 
 typedef struct asset_module_desc_t
 {
@@ -76,6 +77,7 @@ typedef struct asset_module_desc_t
     asset_load_fn_t load_fn;
     asset_init_fn_t init_fn;
     asset_cleanup_fn_t cleanup_fn;
+    asset_save_fn_t save_fn;
 } asset_module_desc_t;
 
 typedef struct asset_manager_desc_t

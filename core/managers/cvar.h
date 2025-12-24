@@ -12,7 +12,9 @@ typedef enum
     CL_BLOOM,
     CL_RENDER_DEBUG,
     CL_CPU_THREADS,
-    SV_CVAR_COUNT
+    CL_LOG_LEVEL,
+
+    SV_CVAR_COUNT,
 } sv_cvar_key_t;
 
 typedef enum

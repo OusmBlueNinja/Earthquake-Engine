@@ -1,9 +1,5 @@
 #version 460 core
 
-#ifndef MAX_LIGHTS
-#define MAX_LIGHTS 16
-#endif
-
 #define LIGHT_DIRECTIONAL 0
 #define LIGHT_POINT 1
 #define LIGHT_SPOT 2
@@ -61,6 +57,9 @@ uniform int u_AlphaTest;
 uniform float u_AlphaCutoff;
 
 uniform int u_ManualSRGB;
+
+uniform float u_HeightBias;     // set to 0.5f by default
+uniform float u_HeightContrast; // set to 1.0f by default
 
 in vec3 v_FragPos;
 in vec3 v_Normal;
@@ -152,59 +151,84 @@ vec3 srgb_to_linear(vec3 c)
     return pow(max(c, vec3(0.0)), vec3(2.2));
 }
 
-float height_sample(vec2 uv)
+float height_sample_grad(vec2 uv, vec2 dUVdx, vec2 dUVdy)
 {
-    float h = texture(u_HeightTex, uv).r;
-    return (u_HeightInvert != 0) ? (1.0 - h) : h;
+    float h = textureGrad(u_HeightTex, uv, dUVdx, dUVdy).r;
+    if (u_HeightInvert != 0) h = 1.0 - h;
+
+    float b = clamp(u_HeightBias, 0.0, 1.0);
+    float c = max(u_HeightContrast, 0.0);
+    h = clamp((h - b) * c + b, 0.0, 1.0);
+
+    return h;
 }
 
-vec2 parallax_uv(vec3 Nw, vec3 P, vec2 uv, vec3 viewDirW)
+vec2 parallax_uv(vec3 Nw, vec3 P, vec2 uv0, vec3 viewDirW)
 {
-    if (!HAS(MAT_TEX_HEIGHT)) return uv;
+    if (!HAS(MAT_TEX_HEIGHT)) return uv0;
 
     float hs = max(u_HeightScale, 0.0);
-    if (hs <= 0.0) return uv;
+    if (hs <= 0.0) return uv0;
 
-    mat3 TBN = tbn_from_derivatives(Nw, P, uv);
+    mat3 TBN = tbn_from_derivatives(Nw, P, uv0);
     vec3 Vt = normalize(transpose(TBN) * viewDirW);
 
-    float vz = max(abs(Vt.z), 0.08);
-    int steps = clamp(u_HeightSteps, 4, 64);
+    if (Vt.z <= 0.0001) return uv0;
+
+    float NdotV = clamp(Vt.z, 0.0, 1.0);
+
+    float fade = smoothstep(0.35, 0.65, NdotV);
+    if (fade <= 0.0) return uv0;
+
+    vec2 dUVdx = dFdx(uv0);
+    vec2 dUVdy = dFdy(uv0);
+
+    int maxSteps = clamp(u_HeightSteps, 8, 96);
+    int minSteps = 8;
+    int steps = int(mix(float(maxSteps), float(minSteps), NdotV));
+
+    float vz = max(Vt.z, 0.20);
+    vec2 dir = (Vt.xy / vz) * (hs * fade);
+
+    float maxShift = 0.08;
+    dir = clamp(dir, vec2(-maxShift), vec2(maxShift));
 
     float layer = 1.0 / float(steps);
-
-    vec2 dir = (Vt.xy / vz) * hs;
     vec2 delta = dir * layer;
 
-    vec2 u = uv;
-    vec2 prevU = u;
+    vec2 uv = uv0;
+    vec2 prevUV = uv;
 
     float depth = 0.0;
     float prevDepth = 0.0;
 
-    float h = height_sample(u);
+    float h = height_sample_grad(uv, dUVdx, dUVdy);
     float prevH = h;
 
     for (int i = 0; i < steps; ++i)
     {
-        if (depth >= h)
-            break;
+        if (depth >= h) break;
 
-        prevU = u;
+        prevUV = uv;
         prevDepth = depth;
         prevH = h;
 
-        u += delta;
+        uv += delta;
         depth += layer;
 
-        h = height_sample(u);
+        h = height_sample_grad(uv, dUVdx, dUVdy);
     }
 
     float after = h - depth;
     float before = prevH - prevDepth;
     float w = before / (before - after + 1e-6);
 
-    return mix(u, prevU, clamp(w, 0.0, 1.0));
+    vec2 uvHit = mix(uv, prevUV, clamp(w, 0.0, 1.0));
+
+    if (any(lessThan(uvHit, vec2(0.0))) || any(greaterThan(uvHit, vec2(1.0))))
+        return uv0;
+
+    return uvHit;
 }
 
 vec3 sample_normal_world(vec3 Nw, vec3 P, vec2 uv)
@@ -223,10 +247,9 @@ vec3 sample_normal_world(vec3 Nw, vec3 P, vec2 uv)
 
 vec4 sample_albedo_rgba(vec2 uv)
 {
-    vec4 a = vec4(u_Albedo, 1.0);
-    if (HAS(MAT_TEX_ALBEDO)) a *= texture(u_AlbedoTex, uv);
-    if (u_ManualSRGB != 0) a.rgb = srgb_to_linear(a.rgb);
-    return a;
+    vec4 tex = HAS(MAT_TEX_ALBEDO) ? texture(u_AlbedoTex, uv) : vec4(1.0);
+    if (u_ManualSRGB != 0) tex.rgb = srgb_to_linear(tex.rgb);
+    return vec4(tex.rgb * u_Albedo, tex.a);
 }
 
 vec3 sample_emissive(vec2 uv)
@@ -304,7 +327,8 @@ void main()
 
     vec3 Vw = normalize(u_CameraPos - v_FragPos);
 
-    vec2 uv = parallax_uv(Nw_geom, v_FragPos, v_TexCoord, Vw);
+    vec2 uv = v_TexCoord;
+    uv = parallax_uv(Nw_geom, v_FragPos, uv, Vw);
 
     vec4 albedoRGBA = sample_albedo_rgba(uv);
     vec3 base = clamp(albedoRGBA.rgb, 0.0, 100.0);
@@ -351,15 +375,12 @@ void main()
             float dl2 = dot(d, d);
             if (dl2 < 1e-8) d = vec3(0.0, -1.0, 0.0);
             Ldir = normalize(-d);
-            atten = 1.0;
-            spot = 1.0;
         }
         else
         {
             vec3 V = lightPos - v_FragPos;
             float dist2 = dot(V, V);
-            if (dist2 < 1e-8)
-                continue;
+            if (dist2 < 1e-8) continue;
 
             float invDist = inversesqrt(dist2);
             float dist = dist2 * invDist;
@@ -367,49 +388,42 @@ void main()
             Ldir = V * invDist;
 
             float reach = (type == LIGHT_SPOT) ? max(range, 1e-4) : max(radius, 1e-4);
-
-            float fade = range_fade(dist, reach);
-            atten = fade;
-
-            if (atten <= 0.0)
-                continue;
+            atten = range_fade(dist, reach);
+            if (atten <= 0.0) continue;
 
             if (type == LIGHT_SPOT)
             {
                 spot = spot_factor(v_FragPos, lightPos, lightDirRaw, max(radius, 1e-4), max(range, 1e-4));
-                if (spot <= 0.0)
-                    continue;
+                if (spot <= 0.0) continue;
             }
         }
 
         float NdotL = max(dot(Nw, Ldir), 0.0);
-        if (NdotL <= 0.0)
-            continue;
+        if (NdotL <= 0.0) continue;
 
         vec3 radiance = lightColor * (intensity * atten * spot);
 
         vec3 H = normalize(Vw + Ldir);
 
-        float NdotV = max(dot(Nw, Vw), 0.0);
+        float NdotVw = max(dot(Nw, Vw), 0.0);
         float NdotH = max(dot(Nw, H), 0.0);
         float VdotH = max(dot(Vw, H), 0.0);
 
         float a = max(rough * rough, 0.02);
 
         float D = D_GGX(NdotH, a);
-        float G = G_Smith(NdotV, NdotL, rough);
+        float G = G_Smith(NdotVw, NdotL, rough);
         vec3 F = fresnel_schlick(VdotH, F0);
 
         vec3 kS = F;
         vec3 kD = (vec3(1.0) - kS) * (1.0 - metallic);
 
         vec3 diffuse = (kD * albedoDiffuse) / 3.14159265;
-        vec3 specular = (D * G) * F / max(4.0 * NdotV * NdotL, 1e-6);
+        vec3 specular = (D * G) * F / max(4.0 * NdotVw * NdotL, 1e-6);
 
         Lo += (diffuse + specular) * radiance * NdotL;
     }
 
     vec3 color = emiss + ambient + Lo;
-
     FragColor = vec4(color, alpha);
 }
