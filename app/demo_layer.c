@@ -5,10 +5,12 @@
 #include <math.h>
 
 #include "core.h"
+#include "cvar.h"
 #include "renderer/renderer.h"
 #include "types/vec3.h"
 #include "types/mat4.h"
 #include "renderer/camera.h"
+#include "renderer/light.h"
 #include "asset_manager/asset_manager.h"
 #include "asset_manager/asset_types/model.h"
 #include "systems/event.h"
@@ -21,6 +23,7 @@
 #endif
 
 #define TREE_COUNT 500
+#define MOVING_LIGHTS 24
 
 static float demo_clampf(float x, float lo, float hi)
 {
@@ -119,6 +122,17 @@ static mat4 demo_transform_trs(vec3 t, float yaw, vec3 s)
     return mat4_mul(T, mat4_mul(R, S));
 }
 
+typedef struct moving_light_t
+{
+    float radius;
+    float speed;
+    float phase;
+    float height;
+    float intensity;
+    float range;
+    vec3 color;
+} moving_light_t;
+
 typedef struct demo_layer_state_t
 {
     ihandle_t tree_model_h;
@@ -149,6 +163,9 @@ typedef struct demo_layer_state_t
 
     float move_speed;
     float boost_mult;
+
+    float t;
+    moving_light_t lights[MOVING_LIGHTS];
 } demo_layer_state_t;
 
 static void demo_layer_apply_camera(demo_layer_state_t *s, renderer_t *r)
@@ -291,6 +308,26 @@ static void demo_spawn_trees_disk(vector_t *out, uint32_t count, float radius, f
     }
 }
 
+static void demo_init_moving_lights(demo_layer_state_t *s)
+{
+    for (int i = 0; i < MOVING_LIGHTS; ++i)
+    {
+        float a = (float)i / (float)MOVING_LIGHTS;
+
+        s->lights[i].radius = demo_frand_range(10.0f, 55.0f);
+        s->lights[i].speed = demo_frand_range(0.25f, 1.10f) * (demo_frand01() < 0.5f ? -1.0f : 1.0f);
+        s->lights[i].phase = demo_frand_range(0.0f, 6.283185307179586f);
+        s->lights[i].height = demo_frand_range(1.2f, 3.5f);
+        s->lights[i].intensity = demo_frand_range(1.0f, 10.0f);
+        s->lights[i].range = demo_frand_range(10.0f, 28.0f);
+
+        float r = 0.5f + 0.5f * cosf(6.283185307179586f * (a + 0.00f));
+        float g = 0.5f + 0.5f * cosf(6.283185307179586f * (a + 0.33f));
+        float b = 0.5f + 0.5f * cosf(6.283185307179586f * (a + 0.66f));
+        s->lights[i].color = (vec3){r, g, b};
+    }
+}
+
 static void demo_layer_init(layer_t *layer)
 {
     demo_layer_state_t *s = (demo_layer_state_t *)calloc(1, sizeof(demo_layer_state_t));
@@ -317,11 +354,16 @@ static void demo_layer_init(layer_t *layer)
     demo_layer_apply_camera(s, r);
 
     s->tree_model_h = asset_manager_request(am, ASSET_MODEL, "C:/Users/spenc/Desktop/tree_small_02_4k.gltf/tree_small_02_4k.gltf");
-    s->hdri_h = asset_manager_request(am, ASSET_IMAGE, "C:/Users/spenc/Desktop/barnaslingan_01_4k.hdr");
+    //s->hdri_h = asset_manager_request(am, ASSET_IMAGE, "C:/Users/spenc/Desktop/barnaslingan_01_4k.hdr");
 
     srand(1337u);
 
     demo_spawn_trees_disk(&s->tree_instances, TREE_COUNT, 60.0f, 0.0f, 0.75f, 1.15f);
+
+    demo_init_moving_lights(s);
+    s->t = 0.0f;
+
+    cvar_set_float_name("cl_r_ibl_intensity", 0.2f);
 
     s->ready = 1;
 }
@@ -345,6 +387,8 @@ static void demo_layer_update(layer_t *layer, float dt)
         return;
 
     renderer_t *r = &layer->app->renderer;
+
+    s->t += dt;
 
     float move = s->move_speed * s->boost_mult * dt;
 
@@ -384,6 +428,26 @@ static void demo_layer_draw(layer_t *layer)
 
     R_push_camera(r, &s->cam);
     R_push_hdri(r, s->hdri_h);
+
+    for (int i = 0; i < MOVING_LIGHTS; ++i)
+    {
+        moving_light_t *L = &s->lights[i];
+
+        float a = L->phase + s->t * L->speed;
+        float x = cosf(a) * L->radius;
+        float z = sinf(a) * L->radius;
+
+        light_t lt = {0};
+
+        lt.type = LIGHT_POINT;
+        lt.position = (vec3){x, L->height, z};
+        lt.direction = (vec3){0.0f, -1.0f, 0.0f};
+        lt.color = L->color;
+        lt.intensity = L->intensity;
+        lt.range = L->range;
+
+        R_push_light(r, lt);
+    }
 
     for (uint32_t i = 0; i < s->tree_instances.size; ++i)
     {

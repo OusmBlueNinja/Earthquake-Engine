@@ -1069,5 +1069,8 @@ static asset_module_desc_t asset_module_model(void)
     m.load_fn = asset_model_load;
     m.init_fn = asset_model_init;
     m.cleanup_fn = asset_model_cleanup;
+
+    m.save_blob_fn = NULL;
+    m.blob_free_fn = NULL;
     return m;
 }

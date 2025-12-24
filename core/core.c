@@ -89,7 +89,7 @@ void init_application(Application *app)
     }
 
     log_set_level(cvar_get_int_name("cl_log_level"));
-    cvar_set_int_name("cl_cpu_threads", 16); //! threads_get_cpu_logical_count()
+    cvar_force_set_int_name("cl_cpu_threads", threads_get_cpu_logical_count());
 
     LOG_INFO("Logical Processors: %d", cvar_get_int_name("cl_cpu_threads"));
 

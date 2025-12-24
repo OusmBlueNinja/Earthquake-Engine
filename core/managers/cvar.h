@@ -79,6 +79,11 @@ bool cvar_set_bool_name(const char *name, bool v);
 bool cvar_set_float_name(const char *name, float v);
 bool cvar_set_string_name(const char *name, const char *v);
 
+bool cvar_force_set_int_name(const char *name, int32_t v);
+bool cvar_force_set_bool_name(const char *name, bool v);
+bool cvar_force_set_float_name(const char *name, float v);
+bool cvar_force_set_string_name(const char *name, const char *v);
+
 bool cvar_set_callback_key(sv_cvar_key_t key, cvar_changed_fn fn);
 bool cvar_set_callback_name(const char *name, cvar_changed_fn fn);
 

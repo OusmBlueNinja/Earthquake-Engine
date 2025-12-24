@@ -66,12 +66,26 @@ typedef struct done_queue_t
     mutex_t m;
 } done_queue_t;
 
+typedef struct asset_blob_t
+{
+    uint8_t *data;
+    uint32_t size;
+    uint32_t align;
+    uint32_t uncompressed_size;
+    uint8_t codec;
+    uint8_t flags;
+    uint16_t reserved;
+} asset_blob_t;
+
 struct asset_manager_t;
+typedef struct asset_manager_t asset_manager_t;
 
 typedef bool (*asset_load_fn_t)(asset_manager_t *am, const char *path, uint32_t path_is_ptr, asset_any_t *out_asset);
-typedef bool (*asset_init_fn_t)(struct asset_manager_t *am, asset_any_t *asset);
-typedef void (*asset_cleanup_fn_t)(struct asset_manager_t *am, asset_any_t *asset);
-typedef bool (*asset_save_fn_t)(struct asset_manager_t *am, asset_any_t asset, const char *path);
+typedef bool (*asset_init_fn_t)(asset_manager_t *am, asset_any_t *asset);
+typedef void (*asset_cleanup_fn_t)(asset_manager_t *am, asset_any_t *asset);
+
+typedef bool (*asset_save_blob_fn_t)(asset_manager_t *am, ihandle_t h, const asset_any_t *asset, asset_blob_t *out_blob);
+typedef void (*asset_blob_free_fn_t)(asset_manager_t *am, asset_blob_t *blob);
 
 typedef struct asset_module_desc_t
 {
@@ -80,7 +94,8 @@ typedef struct asset_module_desc_t
     asset_load_fn_t load_fn;
     asset_init_fn_t init_fn;
     asset_cleanup_fn_t cleanup_fn;
-    asset_save_fn_t save_fn;
+    asset_save_blob_fn_t save_blob_fn;
+    asset_blob_free_fn_t blob_free_fn;
 } asset_module_desc_t;
 
 typedef struct asset_manager_desc_t
@@ -119,6 +134,9 @@ ihandle_t asset_manager_submit_raw(asset_manager_t *am, asset_type_t type, const
 void asset_manager_pump(asset_manager_t *am);
 
 const asset_any_t *asset_manager_get_any(const asset_manager_t *am, ihandle_t h);
+
+bool asset_manager_build_pack(asset_manager_t *am, uint8_t **out_data, uint32_t *out_size);
+void asset_manager_free_pack(uint8_t *data);
 
 static inline const asset_image_t *asset_manager_get_image(const asset_manager_t *am, ihandle_t h)
 {

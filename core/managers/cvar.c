@@ -94,12 +94,12 @@ static bool cvar_cheats_enabled(void)
     return g_cvars[SV_CHEATS].type == CVAR_BOOL ? g_cvars[SV_CHEATS].value.b : false;
 }
 
-static bool cvar_can_set_internal(sv_cvar_key_t k, bool bypass_cheats)
+static bool cvar_can_set_internal(sv_cvar_key_t k, bool bypass_cheats, bool bypass_readonly)
 {
     if (k >= SV_CVAR_COUNT)
         return false;
 
-    if (g_cvars[k].flags & CVAR_FLAG_READONLY)
+    if (!bypass_readonly && (g_cvars[k].flags & CVAR_FLAG_READONLY))
         return false;
 
     if (k == SV_CHEATS && !g_cheats_permission)
@@ -118,7 +118,7 @@ static bool cvar_can_set_internal(sv_cvar_key_t k, bool bypass_cheats)
 
 static bool cvar_can_set(sv_cvar_key_t k)
 {
-    return cvar_can_set_internal(k, false);
+    return cvar_can_set_internal(k, false, false);
 }
 
 static void cvar_fire_changed(sv_cvar_key_t k, const void *oldv, const void *newv)
@@ -213,13 +213,13 @@ const char *cvar_get_string_name(const char *name)
     return k < SV_CVAR_COUNT && g_cvars[k].type == CVAR_STRING ? g_cvars[k].value.s : "";
 }
 
-bool cvar_set_int_name(const char *name, int32_t v)
+static bool cvar_set_int_name_ex(const char *name, int32_t v, bool bypass_cheats, bool bypass_readonly)
 {
     sv_cvar_key_t k = find_key(name);
     if (k >= SV_CVAR_COUNT || g_cvars[k].type != CVAR_INT)
         return false;
 
-    if (!cvar_can_set(k))
+    if (!cvar_can_set_internal(k, bypass_cheats, bypass_readonly))
         return false;
 
     int32_t oldv = g_cvars[k].value.i;
@@ -231,13 +231,13 @@ bool cvar_set_int_name(const char *name, int32_t v)
     return true;
 }
 
-bool cvar_set_bool_name(const char *name, bool v)
+static bool cvar_set_bool_name_ex(const char *name, bool v, bool bypass_cheats, bool bypass_readonly)
 {
     sv_cvar_key_t k = find_key(name);
     if (k >= SV_CVAR_COUNT || g_cvars[k].type != CVAR_BOOL)
         return false;
 
-    if (!cvar_can_set(k))
+    if (!cvar_can_set_internal(k, bypass_cheats, bypass_readonly))
         return false;
 
     bool oldv = g_cvars[k].value.b;
@@ -249,13 +249,13 @@ bool cvar_set_bool_name(const char *name, bool v)
     return true;
 }
 
-bool cvar_set_float_name(const char *name, float v)
+static bool cvar_set_float_name_ex(const char *name, float v, bool bypass_cheats, bool bypass_readonly)
 {
     sv_cvar_key_t k = find_key(name);
     if (k >= SV_CVAR_COUNT || g_cvars[k].type != CVAR_FLOAT)
         return false;
 
-    if (!cvar_can_set(k))
+    if (!cvar_can_set_internal(k, bypass_cheats, bypass_readonly))
         return false;
 
     float oldv = g_cvars[k].value.f;
@@ -267,13 +267,13 @@ bool cvar_set_float_name(const char *name, float v)
     return true;
 }
 
-bool cvar_set_string_name(const char *name, const char *v)
+static bool cvar_set_string_name_ex(const char *name, const char *v, bool bypass_cheats, bool bypass_readonly)
 {
     sv_cvar_key_t k = find_key(name);
     if (k >= SV_CVAR_COUNT || g_cvars[k].type != CVAR_STRING)
         return false;
 
-    if (!cvar_can_set(k))
+    if (!cvar_can_set_internal(k, bypass_cheats, bypass_readonly))
         return false;
 
     const char *in = v ? v : "";
@@ -289,6 +289,46 @@ bool cvar_set_string_name(const char *name, const char *v)
 
     cvar_fire_changed(k, oldv, g_cvars[k].value.s);
     return true;
+}
+
+bool cvar_set_int_name(const char *name, int32_t v)
+{
+    return cvar_set_int_name_ex(name, v, false, false);
+}
+
+bool cvar_set_bool_name(const char *name, bool v)
+{
+    return cvar_set_bool_name_ex(name, v, false, false);
+}
+
+bool cvar_set_float_name(const char *name, float v)
+{
+    return cvar_set_float_name_ex(name, v, false, false);
+}
+
+bool cvar_set_string_name(const char *name, const char *v)
+{
+    return cvar_set_string_name_ex(name, v, false, false);
+}
+
+bool cvar_force_set_int_name(const char *name, int32_t v)
+{
+    return cvar_set_int_name_ex(name, v, true, true);
+}
+
+bool cvar_force_set_bool_name(const char *name, bool v)
+{
+    return cvar_set_bool_name_ex(name, v, true, true);
+}
+
+bool cvar_force_set_float_name(const char *name, float v)
+{
+    return cvar_set_float_name_ex(name, v, true, true);
+}
+
+bool cvar_force_set_string_name(const char *name, const char *v)
+{
+    return cvar_set_string_name_ex(name, v, true, true);
 }
 
 bool cvar_set_callback_key(sv_cvar_key_t key, cvar_changed_fn fn)
@@ -419,7 +459,7 @@ bool cvar_load(const char *filename)
             {
                 int32_t oldv = g_cvars[i].value.i;
                 int32_t newv = (int32_t)ikv_as_int(n);
-                if (oldv != newv && cvar_can_set_internal(key, true))
+                if (oldv != newv && cvar_can_set_internal(key, true, true))
                 {
                     g_cvars[i].value.i = newv;
                     cvar_fire_changed(key, &oldv, &g_cvars[i].value.i);
@@ -431,7 +471,7 @@ bool cvar_load(const char *filename)
         {
             bool oldv = g_cvars[i].value.b;
             bool newv = (n->type == IKV_BOOL) ? ikv_as_bool(n) : (ikv_as_int(n) != 0);
-            if (oldv != newv && cvar_can_set_internal(key, true))
+            if (oldv != newv && cvar_can_set_internal(key, true, true))
             {
                 g_cvars[i].value.b = newv;
                 cvar_fire_changed(key, &oldv, &g_cvars[i].value.b);
@@ -447,7 +487,7 @@ bool cvar_load(const char *filename)
                 newv = (float)ikv_as_float(n);
             else
                 newv = (float)ikv_as_int(n);
-            if (oldv != newv && cvar_can_set_internal(key, true))
+            if (oldv != newv && cvar_can_set_internal(key, true, true))
             {
                 g_cvars[i].value.f = newv;
                 cvar_fire_changed(key, &oldv, &g_cvars[i].value.f);
@@ -461,7 +501,7 @@ bool cvar_load(const char *filename)
                 const char *s = ikv_as_string(n);
                 const char *in = s ? s : "";
 
-                if (strncmp(g_cvars[i].value.s, in, sizeof(g_cvars[i].value.s)) != 0 && cvar_can_set_internal(key, true))
+                if (strncmp(g_cvars[i].value.s, in, sizeof(g_cvars[i].value.s)) != 0 && cvar_can_set_internal(key, true, true))
                 {
                     char oldv[64];
                     strncpy(oldv, g_cvars[i].value.s, sizeof(oldv) - 1);

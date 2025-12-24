@@ -1,9 +1,9 @@
-/* asset_manager.c */
 #include "asset_manager.h"
 #include "loaders/register_modules.h"
 
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
 
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
@@ -588,7 +588,7 @@ bool asset_manager_register_module(asset_manager_t *am, asset_module_desc_t modu
 {
     if (module.type == ASSET_NONE)
         return false;
-    if (!module.load_fn && !module.init_fn && !module.cleanup_fn)
+    if (!module.load_fn && !module.init_fn && !module.cleanup_fn && !module.save_blob_fn)
         return false;
 
     vector_impl_push_back(&am->modules, &module);
@@ -993,4 +993,243 @@ const asset_any_t *asset_manager_get_any(const asset_manager_t *am, ihandle_t h)
     mutex_unlock_impl(&am_mut->state_m);
 
     return ret;
+}
+
+typedef struct pack_hdr_t
+{
+    uint32_t magic;
+    uint16_t version;
+    uint16_t reserved0;
+    uint32_t toc_count;
+    uint32_t toc_offset;
+    uint32_t data_offset;
+    uint32_t file_size;
+} pack_hdr_t;
+
+typedef struct pack_toc_t
+{
+    uint64_t key;
+    uint16_t type;
+    uint16_t variant;
+    uint32_t flags;
+    uint32_t offset;
+    uint32_t size;
+    uint32_t uncompressed_size;
+    uint8_t codec;
+    uint8_t reserved1;
+    uint16_t reserved2;
+} pack_toc_t;
+
+typedef struct buf_t
+{
+    uint8_t *p;
+    uint32_t size;
+    uint32_t cap;
+} buf_t;
+
+static bool buf_reserve(buf_t *b, uint32_t add)
+{
+    uint32_t need = b->size + add;
+    if (need <= b->cap)
+        return true;
+    uint32_t nc = b->cap ? b->cap : 4096u;
+    while (nc < need)
+        nc = nc + (nc >> 1) + 1024u;
+    uint8_t *np = (uint8_t *)realloc(b->p, (size_t)nc);
+    if (!np)
+        return false;
+    b->p = np;
+    b->cap = nc;
+    return true;
+}
+
+static bool buf_push_bytes(buf_t *b, const void *src, uint32_t n)
+{
+    if (!buf_reserve(b, n))
+        return false;
+    memcpy(b->p + b->size, src, (size_t)n);
+    b->size += n;
+    return true;
+}
+
+static bool buf_push_zero(buf_t *b, uint32_t n)
+{
+    if (!buf_reserve(b, n))
+        return false;
+    memset(b->p + b->size, 0, (size_t)n);
+    b->size += n;
+    return true;
+}
+
+static bool buf_align(buf_t *b, uint32_t align)
+{
+    if (align == 0)
+        return true;
+    uint32_t m = align - 1u;
+    uint32_t pad = (uint32_t)((align - (b->size & m)) & m);
+    if (pad)
+        return buf_push_zero(b, pad);
+    return true;
+}
+
+static void handle_hex_triplet(char out[64], ihandle_t h)
+{
+    snprintf(out, 64, "%08X:%04X:%04X", (unsigned)h.value, (unsigned)h.type, (unsigned)h.meta);
+}
+
+bool asset_manager_build_pack(asset_manager_t *am, uint8_t **out_data, uint32_t *out_size)
+{
+    if (!am || !out_data || !out_size)
+        return false;
+
+    *out_data = NULL;
+    *out_size = 0;
+
+    vector_t tocs = vector_impl_create_vector(sizeof(pack_toc_t));
+
+    buf_t data;
+    memset(&data, 0, sizeof(data));
+
+    pack_hdr_t hdr;
+    memset(&hdr, 0, sizeof(hdr));
+    hdr.magic = 0x4B434150u;
+    hdr.version = 1;
+
+    if (!buf_push_bytes(&data, &hdr, (uint32_t)sizeof(hdr)))
+        goto fail;
+
+    mutex_lock_impl(&am->state_m);
+    uint32_t slot_count = (uint32_t)am->slots.size;
+    for (uint32_t i = 0; i < slot_count; ++i)
+    {
+        asset_slot_t *s = (asset_slot_t *)vector_impl_at(&am->slots, i);
+        if (!s)
+            continue;
+
+        if (s->asset.state != ASSET_STATE_READY)
+            continue;
+
+        ihandle_t h = ihandle_make(am->handle_type, (uint16_t)(i + 1), s->generation);
+
+        uint32_t midx32 = asset_manager_find_first_module_index(am, s->asset.type);
+        if (midx32 == 0xFFFFFFFFu)
+        {
+            char hb[64];
+            handle_hex_triplet(hb, h);
+            LOG_ERROR("Asset has no module for save: type=%s handle=%s", asset_type_name(am, s->asset.type), hb);
+            continue;
+        }
+
+        const asset_module_desc_t *m = asset_manager_get_module_by_index(am, midx32);
+        if (!m || !m->save_blob_fn)
+        {
+            char hb[64];
+            handle_hex_triplet(hb, h);
+            LOG_ERROR("Asset has no save thingamabob: type=%s handle=%s", asset_type_name(am, s->asset.type), hb);
+            continue;
+        }
+
+        asset_blob_t blob;
+        memset(&blob, 0, sizeof(blob));
+        blob.align = 64;
+
+        if (!m->save_blob_fn(am, h, &s->asset, &blob))
+        {
+            char hb[64];
+            handle_hex_triplet(hb, h);
+            LOG_ERROR("Asset save thingamabob failed: type=%s handle=%s", asset_type_name(am, s->asset.type), hb);
+            if (m->blob_free_fn)
+                m->blob_free_fn(am, &blob);
+            else
+                free(blob.data);
+            continue;
+        }
+
+        if (!blob.data || blob.size == 0)
+        {
+            char hb[64];
+            handle_hex_triplet(hb, h);
+            LOG_ERROR("Asset save thingamabob returned empty blob: type=%s handle=%s", asset_type_name(am, s->asset.type), hb);
+            if (m->blob_free_fn)
+                m->blob_free_fn(am, &blob);
+            else
+                free(blob.data);
+            continue;
+        }
+
+        if (!buf_align(&data, blob.align ? blob.align : 64u))
+        {
+            if (m->blob_free_fn)
+                m->blob_free_fn(am, &blob);
+            else
+                free(blob.data);
+            goto fail_locked;
+        }
+
+        uint32_t off = data.size;
+        if (!buf_push_bytes(&data, blob.data, blob.size))
+        {
+            if (m->blob_free_fn)
+                m->blob_free_fn(am, &blob);
+            else
+                free(blob.data);
+            goto fail_locked;
+        }
+
+        pack_toc_t e;
+        memset(&e, 0, sizeof(e));
+        e.key = ((uint64_t)((uint16_t)s->asset.type) << 48) | (uint64_t)h.value;
+        e.type = (uint16_t)s->asset.type;
+        e.variant = 0;
+        e.flags = (uint32_t)blob.flags;
+        e.offset = off;
+        e.size = blob.size;
+        e.uncompressed_size = blob.uncompressed_size;
+        e.codec = blob.codec;
+
+        vector_impl_push_back(&tocs, &e);
+
+        if (m->blob_free_fn)
+            m->blob_free_fn(am, &blob);
+        else
+            free(blob.data);
+    }
+    mutex_unlock_impl(&am->state_m);
+
+    hdr.toc_count = (uint32_t)tocs.size;
+    hdr.toc_offset = data.size;
+    hdr.data_offset = (uint32_t)sizeof(pack_hdr_t);
+
+    if (!buf_align(&data, 16))
+        goto fail;
+
+    for (uint32_t i = 0; i < tocs.size; ++i)
+    {
+        pack_toc_t *e = (pack_toc_t *)vector_impl_at(&tocs, i);
+        if (!buf_push_bytes(&data, e, (uint32_t)sizeof(*e)))
+            goto fail;
+    }
+
+    hdr.file_size = data.size;
+    memcpy(data.p, &hdr, sizeof(hdr));
+
+    vector_impl_free(&tocs);
+
+    *out_data = data.p;
+    *out_size = data.size;
+    return true;
+
+fail_locked:
+    mutex_unlock_impl(&am->state_m);
+fail:
+    vector_impl_free(&tocs);
+    free(data.p);
+    *out_data = NULL;
+    *out_size = 0;
+    return false;
+}
+
+void asset_manager_free_pack(uint8_t *data)
+{
+    free(data);
 }

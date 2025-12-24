@@ -801,6 +801,7 @@ asset_module_desc_t asset_module_model_gltf(void)
     m.load_fn = asset_model_gltf_load;
     m.init_fn = asset_model_gltf_init;
     m.cleanup_fn = asset_model_gltf_cleanup;
-    m.save_fn = NULL;
+    m.save_blob_fn = NULL;
+    m.blob_free_fn = NULL;
     return m;
 }

@@ -54,5 +54,8 @@ static asset_module_desc_t asset_module_material(void)
     m.load_fn = asset_material_load;
     m.init_fn = asset_material_init;
     m.cleanup_fn = asset_material_cleanup;
+    
+    m.save_blob_fn = NULL;
+    m.blob_free_fn = NULL;
     return m;
 }
