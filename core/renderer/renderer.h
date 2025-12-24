@@ -27,6 +27,9 @@ typedef struct renderer_config_t
     int alpha_test;
     float alpha_cutoff;
     int height_invert;
+
+    int deferred;
+    int gbuf_debug;
 } renderer_config_t;
 
 typedef struct pushed_model_t
@@ -64,20 +67,27 @@ typedef struct renderer_t
     vec4 clear_color;
     vec2i fb_size;
 
-    uint32_t scene_fbo;
+    uint32_t gbuf_fbo;
+    uint32_t light_fbo;
     uint32_t final_fbo;
 
     uint32_t fs_vao;
 
-    uint32_t scene_color_tex;
-    uint32_t final_color_tex;
-    uint32_t depth_tex;
+    uint32_t gbuf_albedo;
+    uint32_t gbuf_normal;
+    uint32_t gbuf_material;
+    uint32_t gbuf_depth;
 
-    vector_t lights;  // vector<light_t>
-    vector_t models;  // vector<model_t
-    vector_t shaders; // vector<shader_t*>
+    uint32_t light_color_tex;
+    uint32_t final_color_tex;
+
+    vector_t lights;
+    vector_t models;
+    vector_t shaders;
 
     uint8_t default_shader_id;
+    uint8_t gbuf_shader_id;
+    uint8_t light_shader_id;
 
     camera_t camera;
 

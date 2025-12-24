@@ -120,51 +120,95 @@ static shader_t *R_new_shader_from_files_with_defines(const char *vp, const char
     return out;
 }
 
+static void R_alloc_tex2d(GLuint *tex, GLenum internal, int w, int h, GLenum format, GLenum type, GLenum minf, GLenum magf)
+{
+    glGenTextures(1, tex);
+    glBindTexture(GL_TEXTURE_2D, *tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, internal, w, h, 0, format, type, 0);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, minf);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, magf);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+}
+
 static void R_gl_delete_targets(renderer_t *r)
 {
-    if (r->scene_fbo)
-        glDeleteFramebuffers(1, &r->scene_fbo);
+    if (r->gbuf_fbo)
+        glDeleteFramebuffers(1, &r->gbuf_fbo);
+    if (r->light_fbo)
+        glDeleteFramebuffers(1, &r->light_fbo);
     if (r->final_fbo)
         glDeleteFramebuffers(1, &r->final_fbo);
 
-    if (r->scene_color_tex)
-        glDeleteTextures(1, &r->scene_color_tex);
+    if (r->gbuf_albedo)
+        glDeleteTextures(1, &r->gbuf_albedo);
+    if (r->gbuf_normal)
+        glDeleteTextures(1, &r->gbuf_normal);
+    if (r->gbuf_material)
+        glDeleteTextures(1, &r->gbuf_material);
+    if (r->gbuf_depth)
+        glDeleteTextures(1, &r->gbuf_depth);
+
+    if (r->light_color_tex)
+        glDeleteTextures(1, &r->light_color_tex);
     if (r->final_color_tex)
         glDeleteTextures(1, &r->final_color_tex);
-    if (r->depth_tex)
-        glDeleteTextures(1, &r->depth_tex);
 
-    r->scene_fbo = 0;
+    r->gbuf_fbo = 0;
+    r->light_fbo = 0;
     r->final_fbo = 0;
-    r->scene_color_tex = 0;
+
+    r->gbuf_albedo = 0;
+    r->gbuf_normal = 0;
+    r->gbuf_material = 0;
+    r->gbuf_depth = 0;
+
+    r->light_color_tex = 0;
     r->final_color_tex = 0;
-    r->depth_tex = 0;
 }
 
 static void R_create_targets(renderer_t *r)
 {
     R_gl_delete_targets(r);
 
-    glGenFramebuffers(1, &r->scene_fbo);
-    glBindFramebuffer(GL_FRAMEBUFFER, r->scene_fbo);
+    if (r->fb_size.x < 1)
+        r->fb_size.x = 1;
+    if (r->fb_size.y < 1)
+        r->fb_size.y = 1;
 
-    glGenTextures(1, &r->scene_color_tex);
-    glBindTexture(GL_TEXTURE_2D, r->scene_color_tex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, r->fb_size.x, r->fb_size.y, 0, GL_RGBA, GL_FLOAT, 0);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, r->scene_color_tex, 0);
+    glGenFramebuffers(1, &r->gbuf_fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, r->gbuf_fbo);
 
-    glGenTextures(1, &r->depth_tex);
-    glBindTexture(GL_TEXTURE_2D, r->depth_tex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, r->fb_size.x, r->fb_size.y, 0, GL_DEPTH_COMPONENT, GL_FLOAT, 0);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, r->depth_tex, 0);
+    R_alloc_tex2d(&r->gbuf_albedo, GL_RGBA8, r->fb_size.x, r->fb_size.y, GL_RGBA, GL_UNSIGNED_BYTE, GL_NEAREST, GL_NEAREST);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, r->gbuf_albedo, 0);
+
+    R_alloc_tex2d(&r->gbuf_normal, GL_RGBA16F, r->fb_size.x, r->fb_size.y, GL_RGBA, GL_FLOAT, GL_NEAREST, GL_NEAREST);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, r->gbuf_normal, 0);
+
+    R_alloc_tex2d(&r->gbuf_material, GL_RGBA8, r->fb_size.x, r->fb_size.y, GL_RGBA, GL_UNSIGNED_BYTE, GL_NEAREST, GL_NEAREST);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT2, GL_TEXTURE_2D, r->gbuf_material, 0);
+
+    R_alloc_tex2d(&r->gbuf_depth, GL_DEPTH_COMPONENT32F, r->fb_size.x, r->fb_size.y, GL_DEPTH_COMPONENT, GL_FLOAT, GL_NEAREST, GL_NEAREST);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, r->gbuf_depth, 0);
+
+    {
+        GLenum bufs[] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2};
+        glDrawBuffers(3, bufs);
+    }
+
+    {
+        GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+        if (status != GL_FRAMEBUFFER_COMPLETE)
+            LOG_ERROR("GBuffer FBO incomplete: 0x%x", (unsigned)status);
+    }
+
+    glGenFramebuffers(1, &r->light_fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, r->light_fbo);
+
+    R_alloc_tex2d(&r->light_color_tex, GL_RGBA16F, r->fb_size.x, r->fb_size.y, GL_RGBA, GL_FLOAT, GL_LINEAR, GL_LINEAR);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, r->light_color_tex, 0);
+
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, r->gbuf_depth, 0);
 
     {
         GLenum bufs[] = {GL_COLOR_ATTACHMENT0};
@@ -174,19 +218,13 @@ static void R_create_targets(renderer_t *r)
     {
         GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
         if (status != GL_FRAMEBUFFER_COMPLETE)
-            LOG_ERROR("Renderer scene FBO incomplete: 0x%x", (unsigned)status);
+            LOG_ERROR("Light FBO incomplete: 0x%x", (unsigned)status);
     }
 
     glGenFramebuffers(1, &r->final_fbo);
     glBindFramebuffer(GL_FRAMEBUFFER, r->final_fbo);
 
-    glGenTextures(1, &r->final_color_tex);
-    glBindTexture(GL_TEXTURE_2D, r->final_color_tex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, r->fb_size.x, r->fb_size.y, 0, GL_RGBA, GL_FLOAT, 0);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    R_alloc_tex2d(&r->final_color_tex, GL_RGBA16F, r->fb_size.x, r->fb_size.y, GL_RGBA, GL_FLOAT, GL_LINEAR, GL_LINEAR);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, r->final_color_tex, 0);
 
     {
@@ -197,7 +235,7 @@ static void R_create_targets(renderer_t *r)
     {
         GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
         if (status != GL_FRAMEBUFFER_COMPLETE)
-            LOG_ERROR("Renderer final FBO incomplete: 0x%x", (unsigned)status);
+            LOG_ERROR("Final FBO incomplete: 0x%x", (unsigned)status);
     }
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -662,6 +700,15 @@ static void R_composite_to_final(renderer_t *r)
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
+static int R_mat_is_transparent(const asset_material_t *m)
+{
+    if (!m)
+        return 0;
+    if (m->opacity < 0.999f)
+        return 1;
+    return 0;
+}
+
 static void R_apply_material_or_default(renderer_t *r, shader_t *s, asset_material_t *mat)
 {
     shader_set_int(s, "u_HasMaterial", mat ? 1 : 0);
@@ -713,6 +760,173 @@ static void R_apply_material_or_default(renderer_t *r, shader_t *s, asset_materi
     }
 }
 
+static void R_bind_common_uniforms(renderer_t *r, shader_t *s, const mat4 model_mtx)
+{
+    shader_set_mat4(s, "u_Model", model_mtx);
+    shader_set_mat4(s, "u_View", r->camera.view);
+    shader_set_mat4(s, "u_Proj", r->camera.proj);
+    shader_set_vec3(s, "u_CameraPos", r->camera.position);
+
+    shader_set_int(s, "u_HeightInvert", r->cfg.height_invert ? 1 : 0);
+    shader_set_int(s, "u_AlphaTest", r->cfg.alpha_test ? 1 : 0);
+    shader_set_float(s, "u_AlphaCutoff", r->cfg.alpha_cutoff);
+    shader_set_int(s, "u_ManualSRGB", r->cfg.manual_srgb ? 1 : 0);
+}
+
+static void R_deferred_geom_pass(renderer_t *r)
+{
+    shader_t *gbuf = (r->gbuf_shader_id != 0xFF) ? R_get_shader(r, r->gbuf_shader_id) : NULL;
+
+    if (!gbuf)
+        return;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, r->gbuf_fbo);
+    glViewport(0, 0, r->fb_size.x, r->fb_size.y);
+
+    glEnable(GL_DEPTH_TEST);
+    glDepthMask(GL_TRUE);
+    glDisable(GL_BLEND);
+
+    glEnable(GL_CULL_FACE);
+    glCullFace(GL_BACK);
+    glFrontFace(GL_CCW);
+
+    shader_bind(gbuf);
+
+    for (uint32_t i = 0; i < r->models.size; i++)
+    {
+        pushed_model_t *pm = (pushed_model_t *)vector_at(&r->models, i);
+        if (!pm)
+            continue;
+
+        asset_model_t *mdl = R_resolve_model(r, pm->model);
+        if (!mdl)
+            continue;
+
+        for (uint32_t mi = 0; mi < mdl->meshes.size; ++mi)
+        {
+            mesh_t *mesh = (mesh_t *)vector_at((vector_t *)&mdl->meshes, mi);
+            if (!mesh || !mesh->vao || !mesh->index_count)
+                continue;
+
+            asset_material_t *mat = R_resolve_material(r, mesh->material);
+            if (R_mat_is_transparent(mat))
+                continue;
+
+            R_bind_common_uniforms(r, gbuf, pm->model_matrix);
+            R_apply_material_or_default(r, gbuf, mat);
+
+            glBindVertexArray(mesh->vao);
+            glDrawElements(GL_TRIANGLES, (GLsizei)mesh->index_count, GL_UNSIGNED_INT, 0);
+            glBindVertexArray(0);
+        }
+    }
+}
+
+static void R_deferred_light_pass(renderer_t *r)
+{
+    shader_t *ls = (r->light_shader_id != 0xFF) ? R_get_shader(r, r->light_shader_id) : NULL;
+    if (!ls)
+        return;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, r->light_fbo);
+    glViewport(0, 0, r->fb_size.x, r->fb_size.y);
+
+    glDisable(GL_CULL_FACE);
+    glDisable(GL_BLEND);
+
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_ALWAYS);
+    glDepthMask(GL_FALSE);
+
+    glClearColor(0, 0, 0, 0);
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    shader_bind(ls);
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, r->gbuf_albedo);
+    shader_set_int(ls, "u_GAlbedo", 0);
+
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, r->gbuf_normal);
+    shader_set_int(ls, "u_GNormal", 1);
+
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_2D, r->gbuf_material);
+    shader_set_int(ls, "u_GMaterial", 2);
+
+    glActiveTexture(GL_TEXTURE3);
+    glBindTexture(GL_TEXTURE_2D, r->gbuf_depth);
+    shader_set_int(ls, "u_GDepth", 3);
+
+    shader_set_vec2(ls, "u_InvResolution", (vec2){1.0f / (float)r->fb_size.x, 1.0f / (float)r->fb_size.y});
+    shader_set_mat4(ls, "u_InvView", r->camera.inv_view);
+    shader_set_mat4(ls, "u_InvProj", r->camera.inv_proj);
+    shader_set_vec3(ls, "u_CameraPos", r->camera.position);
+
+    R_draw_fs_tri(r);
+
+    glDepthMask(GL_TRUE);
+    glDepthFunc(GL_LEQUAL);
+}
+static void R_forward_transparent_pass(renderer_t *r)
+{
+    glBindFramebuffer(GL_FRAMEBUFFER, r->light_fbo);
+    glViewport(0, 0, r->fb_size.x, r->fb_size.y);
+
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LEQUAL);
+    glDepthMask(GL_FALSE);
+
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    glDisable(GL_CULL_FACE);
+
+    for (uint32_t i = 0; i < r->models.size; i++)
+    {
+        pushed_model_t *pm = (pushed_model_t *)vector_at(&r->models, i);
+        if (!pm)
+            continue;
+
+        asset_model_t *mdl = R_resolve_model(r, pm->model);
+        if (!mdl)
+            continue;
+
+        for (uint32_t mi = 0; mi < mdl->meshes.size; ++mi)
+        {
+            mesh_t *mesh = (mesh_t *)vector_at((vector_t *)&mdl->meshes, mi);
+            if (!mesh || !mesh->vao || !mesh->index_count)
+                continue;
+
+            asset_material_t *mat = R_resolve_material(r, mesh->material);
+            if (!R_mat_is_transparent(mat))
+                continue;
+
+            uint8_t shader_id = mat ? mat->shader_id : r->default_shader_id;
+            shader_t *s = R_get_shader(r, shader_id);
+            if (!s)
+                continue;
+
+            shader_bind(s);
+
+            R_bind_common_uniforms(r, s, pm->model_matrix);
+            R_apply_material_or_default(r, s, mat);
+
+            glBindVertexArray(mesh->vao);
+            glDrawElements(GL_TRIANGLES, (GLsizei)mesh->index_count, GL_UNSIGNED_INT, 0);
+            glBindVertexArray(0);
+        }
+    }
+
+    glDisable(GL_BLEND);
+    glDepthMask(GL_TRUE);
+    glEnable(GL_CULL_FACE);
+    glCullFace(GL_BACK);
+    glFrontFace(GL_CCW);
+}
+
 int R_init(renderer_t *r, asset_manager_t *assets)
 {
     if (!r)
@@ -743,7 +957,6 @@ int R_init(renderer_t *r, asset_manager_t *assets)
 
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LEQUAL);
-    glDisable(GL_CULL_FACE);
     glDisable(GL_BLEND);
 
     glGenVertexArrays(1, &r->fs_vao);
@@ -755,10 +968,19 @@ int R_init(renderer_t *r, asset_manager_t *assets)
     r->models = create_vector(pushed_model_t);
     r->shaders = create_vector(shader_t *);
 
+    shader_t *gbuf_shader = R_new_shader_from_files_with_defines("res/shaders/gbuffer.vert", "res/shaders/gbuffer.frag");
+    if (!gbuf_shader)
+        return 1;
+    r->gbuf_shader_id = R_add_shader(r, gbuf_shader);
+
+    shader_t *light_shader = R_new_shader_from_files_with_defines("res/shaders/deferred_light.vert", "res/shaders/deferred_light.frag");
+    if (!light_shader)
+        return 1;
+    r->light_shader_id = R_add_shader(r, light_shader);
+
     shader_t *default_shader = R_new_shader_from_files_with_defines("res/shaders/shader.vert", "res/shaders/shader.frag");
     if (!default_shader)
         return 1;
-
     r->default_shader_id = R_add_shader(r, default_shader);
 
     R_lights_ubo_init(r);
@@ -867,16 +1089,8 @@ void R_begin_frame(renderer_t *r)
     vector_clear(&r->lights);
     vector_clear(&r->models);
 
-    glBindFramebuffer(GL_FRAMEBUFFER, r->scene_fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, r->gbuf_fbo);
     glViewport(0, 0, r->fb_size.x, r->fb_size.y);
-    glClearColor(r->clear_color.x, r->clear_color.y, r->clear_color.z, r->clear_color.w);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-}
-
-void R_end_frame(renderer_t *r)
-{
-    if (!r)
-        return;
 
     glEnable(GL_DEPTH_TEST);
     glDepthMask(GL_TRUE);
@@ -886,54 +1100,21 @@ void R_end_frame(renderer_t *r)
     glCullFace(GL_BACK);
     glFrontFace(GL_CCW);
 
-    glBindFramebuffer(GL_FRAMEBUFFER, r->scene_fbo);
-    glViewport(0, 0, r->fb_size.x, r->fb_size.y);
+    glClearColor(0, 0, 0, 0);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+}
+
+void R_end_frame(renderer_t *r)
+{
+    if (!r)
+        return;
 
     R_lights_ubo_upload(r);
     glBindBufferBase(GL_UNIFORM_BUFFER, 0, r->lights_ubo);
 
-    for (uint32_t i = 0; i < r->models.size; i++)
-    {
-        pushed_model_t *pm = (pushed_model_t *)vector_at(&r->models, i);
-        if (!pm)
-            continue;
-
-        asset_model_t *mdl = R_resolve_model(r, pm->model);
-        if (!mdl)
-            continue;
-
-        for (uint32_t mi = 0; mi < mdl->meshes.size; ++mi)
-        {
-            mesh_t *mesh = (mesh_t *)vector_at((vector_t *)&mdl->meshes, mi);
-            if (!mesh || !mesh->vao || !mesh->index_count)
-                continue;
-
-            asset_material_t *mat = R_resolve_material(r, mesh->material);
-
-            uint8_t shader_id = mat ? mat->shader_id : r->default_shader_id;
-            shader_t *s = R_get_shader(r, shader_id);
-            if (!s)
-                continue;
-
-            shader_bind(s);
-
-            shader_set_mat4(s, "u_Model", pm->model_matrix);
-            shader_set_mat4(s, "u_View", r->camera.view);
-            shader_set_mat4(s, "u_Proj", r->camera.proj);
-            shader_set_vec3(s, "u_CameraPos", r->camera.position);
-
-            shader_set_int(s, "u_HeightInvert", r->cfg.height_invert ? 1 : 0);
-            shader_set_int(s, "u_AlphaTest", r->cfg.alpha_test ? 1 : 0);
-            shader_set_float(s, "u_AlphaCutoff", r->cfg.alpha_cutoff);
-            shader_set_int(s, "u_ManualSRGB", r->cfg.manual_srgb ? 1 : 0);
-
-            R_apply_material_or_default(r, s, mat);
-
-            glBindVertexArray(mesh->vao);
-            glDrawElements(GL_TRIANGLES, (GLsizei)mesh->index_count, GL_UNSIGNED_INT, 0);
-            glBindVertexArray(0);
-        }
-    }
+    R_deferred_geom_pass(r);
+    R_deferred_light_pass(r);
+    R_forward_transparent_pass(r);
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
