@@ -57,6 +57,7 @@ typedef struct demo_layer_state_t
     light_t lights_point[3];
     light_t sun_dir;
 
+    float t;
     int ready;
 } demo_layer_state_t;
 
@@ -97,6 +98,7 @@ static void demo_layer_init(layer_t *layer)
 
     s->cam = camera_create();
     s->fovy_rad = 60.0f * 0.017453292519943295f;
+
     {
         float aspect = (r->fb_size.y != 0) ? ((float)r->fb_size.x / (float)r->fb_size.y) : 1.0f;
         camera_set_perspective(&s->cam, s->fovy_rad, aspect, 0.1f, 500.0f);
@@ -128,10 +130,21 @@ static void demo_layer_init(layer_t *layer)
 
     s->override_mat_h = asset_manager_submit_raw(am, ASSET_MATERIAL, &mat);
 
+    s->cube_model_h = asset_manager_request(am, ASSET_MODEL, "res/models/cube.obj");
+    s->cube_model_m = mat4_identity();
+
+    asset_material_t cube_mat = material_make_default(r->default_shader_id);
+    cube_mat.albedo = (vec3){0.2f, 0.85f, 1.0f};
+    cube_mat.emissive = (vec3){0.0f, 0.0f, 0.0f};
+    cube_mat.opacity = 0.35f;
+    cube_mat.roughness = 0.08f;
+    cube_mat.metallic = 0.0f;
+    cube_mat.normal_strength = 1.0f;
+
+    s->cube_mat_h = asset_manager_submit_raw(am, ASSET_MATERIAL, &cube_mat);
+
     s->did_patch_materials = 0;
-    s->bounds_ready = 0;
-    s->local_center = (vec3){0, 0, 0};
-    s->local_radius = 1.0f;
+    s->did_patch_cube = 0;
 
     s->lights_point[0] = make_point((vec3){0.0f, 3.0f, 0.0f}, (vec3){1.0f, 0.1f, 0.1f}, 2.0f);
     s->lights_point[1] = make_point((vec3){3.0f, 3.0f, 0.0f}, (vec3){0.1f, 1.0f, 0.1f}, 2.0f);
@@ -139,6 +152,7 @@ static void demo_layer_init(layer_t *layer)
 
     s->sun_dir = make_dir((vec3){0.15f, -1.0f, 1.0f}, (vec3){1.0f, 0.93f, 0.78f}, 1.25f);
 
+    s->t = 0.0f;
     s->ready = 1;
 }
 
@@ -159,88 +173,38 @@ static void demo_layer_update(layer_t *layer, float dt)
         return;
 
     renderer_t *r = &layer->app->renderer;
-    const asset_manager_t *am = &layer->app->asset_manager;
 
     float aspect = (r->fb_size.y != 0) ? ((float)r->fb_size.x / (float)r->fb_size.y) : 1.0f;
 
-    static float t = 0.0f;
-    t += dt;
+    s->t += dt;
 
-    mat4 rot = mat4_rotate_y(t * 0.2f);
-    mat4 scl = mat4_scale((vec3){1.0f, 1.0f, 1.0f});
-    s->model_m = mat4_mul(rot, scl);
+    vec3 target = (vec3){0.0f, 1.0f, 0.0f};
 
-    if (!s->bounds_ready)
-    {
-        const asset_any_t *a = asset_manager_get_any(am, s->model_h);
-        if (a && a->type == ASSET_MODEL && a->state == ASSET_STATE_READY)
-        {
-            asset_model_t *mdl = (asset_model_t *)&a->as.model;
-            vec3 mn, mx;
-            if (demo_compute_model_aabb_from_gpu(mdl, &mn, &mx))
-            {
-                s->aabb_min = mn;
-                s->aabb_max = mx;
+    float dist = 12.0f;
+    float ang = s->t * 0.35f;
+    float y = 5.5f;
 
-                s->local_center = (vec3){
-                    (mn.x + mx.x) * 0.5f,
-                    (mn.y + mx.y) * 0.5f,
-                    (mn.z + mx.z) * 0.5f};
+    vec3 cam_pos = (vec3){
+        target.x + cosf(ang) * dist,
+        y,
+        target.z + sinf(ang) * dist};
 
-                vec3 ext = (vec3){
-                    (mx.x - mn.x) * 0.5f,
-                    (mx.y - mn.y) * 0.5f,
-                    (mx.z - mn.z) * 0.5f};
+    camera_set_perspective(&s->cam, s->fovy_rad, aspect, 0.1f, 200.0f);
+    camera_look_at(&s->cam, cam_pos, target, (vec3){0.0f, 1.0f, 0.0f});
 
-                s->local_radius = sqrtf(ext.x * ext.x + ext.y * ext.y + ext.z * ext.z);
-                if (s->local_radius < 0.001f)
-                    s->local_radius = 0.001f;
+    mat4 rot = mat4_rotate_y(s->t * 0.2f);
+    s->model_m = rot;
 
-                s->bounds_ready = 1;
-            }
-        }
-    }
+    float bob = sinf(s->t * 1.5f) * 0.25f;
 
-    vec3 target_local = s->bounds_ready ? s->local_center : (vec3){0.0f, 0.75f, 0.0f};
-    vec3 target_world = demo_mat4_transform_point(s->model_m, target_local);
+    vec3 cube_pos = (vec3){
+        0.0f,
+        6.0f + bob,
+        0.0f};
 
-    float fovy = s->fovy_rad;
-    float fovx = 2.0f * atanf(tanf(fovy * 0.5f) * aspect);
-
-    float scale = demo_mat4_max_scale_axis(s->model_m);
-    float radius_world = (s->bounds_ready ? s->local_radius : 1.0f) * scale;
-
-    float margin = 1.15f;
-    float rv = radius_world * margin;
-
-    float dv = rv / tanf(fovy * 0.5f);
-    float dh = rv / tanf(fovx * 0.5f);
-    float dist = demo_maxf(dv, dh);
-
-    dist = demo_clampf(dist, 0.25f, 2000.0f);
-
-    float orbit_speed = 0.45f;
-    float ang = t * orbit_speed;
-
-    float elev_deg = 15.0f;
-    float elev = elev_deg * 0.017453292519943295f;
-
-    float y_off = tanf(elev) * dist;
-
-    vec3 pos = (vec3){
-        target_world.x + dist * cosf(ang),
-        target_world.y + y_off,
-        target_world.z + dist * sinf(ang)};
-
-    float nearp = dist - rv * 1.25f;
-    nearp = demo_clampf(nearp, 0.02f, 500.0f);
-
-    float farp = dist + rv * 2.0f;
-    if (farp < nearp + 1.0f)
-        farp = nearp + 1.0f;
-
-    camera_set_perspective(&s->cam, fovy, aspect, nearp, farp);
-    camera_look_at(&s->cam, pos, target_world, (vec3){0.0f, 1.0f, 0.0f});
+    mat4 cube_t = demo_mat4_translate(cube_pos);
+    mat4 cube_s = mat4_scale((vec3){1.25f, 1.25f, 1.25f});
+    s->cube_model_m = mat4_mul(cube_t, cube_s);
 }
 
 static void demo_layer_draw(layer_t *layer)
@@ -267,15 +231,30 @@ static void demo_layer_draw(layer_t *layer)
         }
     }
 
+    if (!s->did_patch_cube)
+    {
+        const asset_any_t *c = asset_manager_get_any(am, s->cube_model_h);
+        if (c && c->type == ASSET_MODEL && c->state == ASSET_STATE_READY)
+        {
+            asset_model_t *mdl = (asset_model_t *)&c->as.model;
+            for (uint32_t i = 0; i < mdl->meshes.size; ++i)
+            {
+                mesh_t *m = (mesh_t *)vector_impl_at(&mdl->meshes, i);
+                m->material = s->cube_mat_h;
+            }
+            s->did_patch_cube = 1;
+        }
+    }
+
     R_push_camera(r, &s->cam);
 
     R_push_light(r, s->sun_dir);
-
     R_push_light(r, s->lights_point[0]);
     R_push_light(r, s->lights_point[1]);
     R_push_light(r, s->lights_point[2]);
 
     R_push_model(r, s->model_h, s->model_m);
+    R_push_model(r, s->cube_model_h, s->cube_model_m);
 }
 
 layer_t create_demo_layer(void)
