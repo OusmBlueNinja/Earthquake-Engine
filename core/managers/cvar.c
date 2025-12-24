@@ -77,6 +77,10 @@ static cvar_entry_t g_cvars[SV_CVAR_COUNT] = {
     [CL_R_SSR_STRIDE] = {.name = "cl_r_ssr_stride", .type = CVAR_FLOAT, .def.f = 0.15f, .flags = CVAR_FLAG_NONE},
     [CL_R_SSR_THICKNESS] = {.name = "cl_r_ssr_thickness", .type = CVAR_FLOAT, .def.f = 0.2f, .flags = CVAR_FLAG_NONE},
     [CL_R_SSR_MAX_DIST] = {.name = "cl_r_ssr_max_dist", .type = CVAR_FLOAT, .def.f = 50.0f, .flags = CVAR_FLAG_NONE},
+    [CL_R_FORCE_LOD_LEVEL] = {.name = "cl_r_force_lod_level", .type = CVAR_INT, .def.i = -1, .flags = CVAR_FLAG_NONE},
+
+    [CL_R_WIREFRAME] = {.name = "cl_r_wireframe", .type = CVAR_BOOL, .def.b = false, .flags = CVAR_FLAG_NONE},
+
 };
 
 void cvar_set_cheats_permission(bool allowed)

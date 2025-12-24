@@ -13,6 +13,8 @@
 #include "renderer/light.h"
 #include "asset_manager/asset_manager.h"
 #include "asset_manager/asset_types/model.h"
+#include "asset_manager/asset_types/material.h"
+#include "asset_manager/asset_types/image.h"
 #include "systems/event.h"
 #include "vector.h"
 
@@ -22,8 +24,8 @@
 #include <GL/glew.h>
 #endif
 
-#define TREE_COUNT 500
-#define MOVING_LIGHTS 24
+#define TREE_COUNT 100000
+#define MOVING_LIGHTS 48
 
 static float demo_clampf(float x, float lo, float hi)
 {
@@ -137,8 +139,17 @@ typedef struct demo_layer_state_t
 {
     ihandle_t tree_model_h;
     ihandle_t hdri_h;
-
     vector_t tree_instances;
+
+    ihandle_t model_h;
+    mat4 model_m;
+    ihandle_t override_mat_h;
+    int did_patch_materials;
+
+    ihandle_t cube_model_h;
+    mat4 cube_model_m;
+    ihandle_t cube_mat_h;
+    int did_patch_cube;
 
     camera_t cam;
     float fovy_rad;
@@ -166,6 +177,9 @@ typedef struct demo_layer_state_t
 
     float t;
     moving_light_t lights[MOVING_LIGHTS];
+
+    float stats_accum;
+    uint64_t stats_frame_id;
 } demo_layer_state_t;
 
 static void demo_layer_apply_camera(demo_layer_state_t *s, renderer_t *r)
@@ -328,6 +342,33 @@ static void demo_init_moving_lights(demo_layer_state_t *s)
     }
 }
 
+static int demo_try_patch_model_materials(asset_manager_t *am, ihandle_t model_h, ihandle_t mat_h)
+{
+    if (!ihandle_is_valid(model_h) || !ihandle_is_valid(mat_h))
+        return 0;
+
+    asset_any_t *a = asset_manager_get_any(am, model_h);
+    if (!a)
+        return 0;
+
+    if (a->type != ASSET_MODEL)
+        return 0;
+
+    if (a->state != ASSET_STATE_READY)
+        return 0;
+
+    asset_model_t *m = &a->as.model;
+
+    for (uint32_t i = 0; i < m->meshes.size; ++i)
+    {
+        mesh_t *mesh = (mesh_t *)vector_impl_at(&m->meshes, i);
+        if (mesh)
+            mesh->material = mat_h;
+    }
+
+    return 1;
+}
+
 static void demo_layer_init(layer_t *layer)
 {
     demo_layer_state_t *s = (demo_layer_state_t *)calloc(1, sizeof(demo_layer_state_t));
@@ -354,11 +395,56 @@ static void demo_layer_init(layer_t *layer)
     demo_layer_apply_camera(s, r);
 
     s->tree_model_h = asset_manager_request(am, ASSET_MODEL, "C:/Users/spenc/Desktop/tree_small_02_4k.gltf/tree_small_02_4k.gltf");
-    //s->hdri_h = asset_manager_request(am, ASSET_IMAGE, "C:/Users/spenc/Desktop/barnaslingan_01_4k.hdr");
+    s->hdri_h = asset_manager_request(am, ASSET_IMAGE, "C:/Users/spenc/Desktop/barnaslingan_01_4k.hdr");
+
+    s->model_h = asset_manager_request(am, ASSET_MODEL, "C:/Users/spenc/Desktop/44-textures_dirt_separated/Cottage_FREE.obj");
+    s->model_m = mat4_identity();
+
+    asset_material_t mat = material_make_default(r->default_shader_id);
+
+    mat.albedo_tex = asset_manager_request(am, ASSET_IMAGE, "C:/Users/spenc/Desktop/44-textures_dirt_separated/Cottage_Dirt_Base_Color.png");
+    mat.normal_tex = asset_manager_request(am, ASSET_IMAGE, "C:/Users/spenc/Desktop/44-textures_dirt_separated/Cottage_Dirt_Normal.png");
+    mat.roughness_tex = asset_manager_request(am, ASSET_IMAGE, "C:/Users/spenc/Desktop/44-textures_dirt_separated/Cottage_Dirt_Roughness.png");
+    mat.metallic_tex = asset_manager_request(am, ASSET_IMAGE, "C:/Users/spenc/Desktop/44-textures_dirt_separated/Cottage_Dirt_Metallic.png");
+    mat.occlusion_tex = asset_manager_request(am, ASSET_IMAGE, "C:/Users/spenc/Desktop/44-textures_dirt_separated/Cottage_Dirt_AO.png");
+    mat.height_tex = asset_manager_request(am, ASSET_IMAGE, "C:/Users/spenc/Desktop/44-textures_dirt_separated/Cottage_Dirt_Height.png");
+
+    mat.opacity = 1.0f;
+
+    ihandle_t opacity_tex = asset_manager_request(am, ASSET_IMAGE, "C:/Users/spenc/Desktop/44-textures_dirt_separated/Cottage_Dirt_Opacity.png");
+    if (ihandle_is_valid(opacity_tex))
+        mat.opacity = 0.999f;
+
+    mat.roughness = 1.0f;
+    mat.metallic = 0.0f;
+    mat.normal_strength = 1.0f;
+    mat.height_scale = 0.03f;
+    mat.height_steps = 24;
+
+    s->override_mat_h = asset_manager_submit_raw(am, ASSET_MATERIAL, &mat);
+
+    s->cube_model_h = asset_manager_request(am, ASSET_MODEL, "res/models/cube.obj");
+    s->cube_model_m = mat4_identity();
+
+    asset_material_t cube_mat = material_make_default(r->default_shader_id);
+    cube_mat.albedo = (vec3){0.2f, 0.85f, 1.0f};
+    cube_mat.emissive = (vec3){0.0f, 0.0f, 0.0f};
+    cube_mat.opacity = 0.35f;
+    cube_mat.roughness = 0.08f;
+    cube_mat.metallic = 0.0f;
+    cube_mat.normal_strength = 1.0f;
+
+    s->cube_mat_h = asset_manager_submit_raw(am, ASSET_MATERIAL, &cube_mat);
+
+    s->did_patch_materials = 0;
+    s->did_patch_cube = 0;
+
+    s->stats_accum = 0.0f;
+    s->stats_frame_id = 0;
 
     srand(1337u);
 
-    demo_spawn_trees_disk(&s->tree_instances, TREE_COUNT, 60.0f, 0.0f, 0.75f, 1.15f);
+    demo_spawn_trees_disk(&s->tree_instances, TREE_COUNT, 600.0f, 0.0f, 0.75f, 1.15f);
 
     demo_init_moving_lights(s);
     s->t = 0.0f;
@@ -387,6 +473,13 @@ static void demo_layer_update(layer_t *layer, float dt)
         return;
 
     renderer_t *r = &layer->app->renderer;
+    asset_manager_t *am = &layer->app->asset_manager;
+
+    if (!s->did_patch_materials)
+        s->did_patch_materials = demo_try_patch_model_materials(am, s->model_h, s->override_mat_h);
+
+    if (!s->did_patch_cube)
+        s->did_patch_cube = demo_try_patch_model_materials(am, s->cube_model_h, s->cube_mat_h);
 
     s->t += dt;
 
@@ -416,6 +509,25 @@ static void demo_layer_update(layer_t *layer, float dt)
     s->focus = demo_vec3_add(s->focus, delta);
 
     demo_layer_apply_camera(s, r);
+
+    s->stats_accum += dt;
+    s->stats_frame_id++;
+
+    if (s->stats_accum >= 0.5f)
+    {
+        const render_stats_t *st = R_get_stats(r);
+        if (st)
+        {
+            LOG_INFO("[RenderStats] draws=%llu tris=%llu inst_draws=%llu inst=%llu inst_tris=%llu",
+                     (unsigned long long)st->draw_calls,
+                     (unsigned long long)st->triangles,
+                     (unsigned long long)st->instanced_draw_calls,
+                     (unsigned long long)st->instances,
+                     (unsigned long long)st->instanced_triangles);
+        }
+
+        s->stats_accum = fmodf(s->stats_accum, 0.5f);
+    }
 }
 
 static void demo_layer_draw(layer_t *layer)
@@ -447,6 +559,18 @@ static void demo_layer_draw(layer_t *layer)
         lt.range = L->range;
 
         R_push_light(r, lt);
+    }
+
+    {
+        mat4 H = demo_transform_trs((vec3){0.0f, 0.0f, 0.0f}, 0.0f, (vec3){1.0f, 1.0f, 1.0f});
+        s->model_m = H;
+        R_push_model(r, s->model_h, s->model_m);
+    }
+
+    {
+        mat4 C = demo_transform_trs((vec3){0.0f, 1.15f, 0.0f}, s->t * 0.35f, (vec3){1.0f, 1.0f, 1.0f});
+        s->cube_model_m = C;
+        R_push_model(r, s->cube_model_h, s->cube_model_m);
     }
 
     for (uint32_t i = 0; i < s->tree_instances.size; ++i)

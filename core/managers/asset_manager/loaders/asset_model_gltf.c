@@ -6,12 +6,14 @@
 #include <stdio.h>
 #include <stddef.h>
 #include <ctype.h>
+#include <float.h>
 
 #include "asset_manager/asset_types/model.h"
 #include "asset_manager/asset_types/material.h"
 #include "asset_manager/asset_types/image.h"
 #include "vector.h"
 #include "asset_image.h"
+#include "systems/model_lod.h"
 
 #if defined(__APPLE__)
 #include <OpenGL/gl3.h>
@@ -240,8 +242,7 @@ static ihandle_t mdl_gltf_request_image(asset_manager_t *am, const char *gltf_pa
         const char *comma = strchr(img->uri, ',');
         if (!comma)
         {
-            if (desc->debug_name)
-                free(desc->debug_name);
+            free(desc->debug_name);
             free(desc);
             return ihandle_invalid();
         }
@@ -262,8 +263,7 @@ static ihandle_t mdl_gltf_request_image(asset_manager_t *am, const char *gltf_pa
 
         if (!is_b64)
         {
-            if (desc->debug_name)
-                free(desc->debug_name);
+            free(desc->debug_name);
             free(desc);
             return ihandle_invalid();
         }
@@ -272,10 +272,8 @@ static ihandle_t mdl_gltf_request_image(asset_manager_t *am, const char *gltf_pa
         uint8_t *bytes = mdl_b64_decode(b64, strlen(b64), &out_n);
         if (!bytes || !out_n)
         {
-            if (bytes)
-                free(bytes);
-            if (desc->debug_name)
-                free(desc->debug_name);
+            free(bytes);
+            free(desc->debug_name);
             free(desc);
             return ihandle_invalid();
         }
@@ -287,8 +285,7 @@ static ihandle_t mdl_gltf_request_image(asset_manager_t *am, const char *gltf_pa
         if (!ihandle_is_valid(h))
         {
             free(bytes);
-            if (desc->debug_name)
-                free(desc->debug_name);
+            free(desc->debug_name);
             free(desc);
         }
         return h;
@@ -303,8 +300,7 @@ static ihandle_t mdl_gltf_request_image(asset_manager_t *am, const char *gltf_pa
         uint8_t *bytes = (uint8_t *)malloc(sz);
         if (!bytes)
         {
-            if (desc->debug_name)
-                free(desc->debug_name);
+            free(desc->debug_name);
             free(desc);
             return ihandle_invalid();
         }
@@ -318,15 +314,13 @@ static ihandle_t mdl_gltf_request_image(asset_manager_t *am, const char *gltf_pa
         if (!ihandle_is_valid(h))
         {
             free(bytes);
-            if (desc->debug_name)
-                free(desc->debug_name);
+            free(desc->debug_name);
             free(desc);
         }
         return h;
     }
 
-    if (desc->debug_name)
-        free(desc->debug_name);
+    free(desc->debug_name);
     free(desc);
     (void)data;
     return ihandle_invalid();
@@ -338,8 +332,7 @@ static ihandle_t mdl_gltf_material_to_handle(asset_manager_t *am, const char *gl
 
     if (m && m->name && m->name[0])
     {
-        if (cur.name)
-            free(cur.name);
+        free(cur.name);
         cur.name = (char *)malloc(strlen(m->name) + 1);
         if (cur.name)
             memcpy(cur.name, m->name, strlen(m->name) + 1);
@@ -586,21 +579,6 @@ static bool mdl_gltf_quick_verify(const char *path)
 
 static void mdl_gltf_free_raw(model_raw_t *raw)
 {
-    if (!raw)
-        return;
-
-    for (uint32_t i = 0; i < raw->submeshes.size; ++i)
-    {
-        model_cpu_submesh_t *sm = (model_cpu_submesh_t *)vector_impl_at(&raw->submeshes, i);
-        if (!sm)
-            continue;
-        free(sm->vertices);
-        free(sm->indices);
-        if (sm->material_name)
-            free(sm->material_name);
-        memset(sm, 0, sizeof(*sm));
-    }
-
     model_raw_destroy(raw);
 }
 
@@ -702,12 +680,17 @@ bool asset_model_gltf_load(asset_manager_t *am, const char *path, uint32_t path_
                 return false;
             }
 
+            model_cpu_lod_t lod0;
+            memset(&lod0, 0, sizeof(lod0));
+            lod0.vertices = vtx;
+            lod0.vertex_count = vcount;
+            lod0.indices = idx;
+            lod0.index_count = icount;
+
             model_cpu_submesh_t sm;
             memset(&sm, 0, sizeof(sm));
-            sm.vertices = vtx;
-            sm.vertex_count = vcount;
-            sm.indices = idx;
-            sm.index_count = icount;
+            sm.lods = vector_impl_create_vector(sizeof(model_cpu_lod_t));
+            vector_impl_push_back(&sm.lods, &lod0);
             sm.material_name = NULL;
             sm.material = mdl_gltf_get_or_make_mat(am, path, data, &mat_map, prim->material);
 
@@ -717,6 +700,15 @@ bool asset_model_gltf_load(asset_manager_t *am, const char *path, uint32_t path_
 
     vector_impl_free(&mat_map);
     cgltf_free(data);
+
+    model_lod_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.lod_count = 4;
+    s.triangle_ratio[0] = 1.0f;
+    s.triangle_ratio[1] = 0.5f;
+    s.triangle_ratio[2] = 0.25f;
+    s.triangle_ratio[3] = 0.12f;
+    model_raw_generate_lods(&raw, &s);
 
     memset(out_asset, 0, sizeof(*out_asset));
     out_asset->type = ASSET_MODEL;
@@ -738,28 +730,46 @@ bool asset_model_gltf_init(asset_manager_t *am, asset_any_t *asset)
     for (uint32_t i = 0; i < asset->as.model_raw.submeshes.size; ++i)
     {
         model_cpu_submesh_t *sm = (model_cpu_submesh_t *)vector_impl_at(&asset->as.model_raw.submeshes, i);
-        if (!sm || !sm->vertices || !sm->indices || !sm->vertex_count || !sm->index_count)
+        if (!sm || sm->lods.size == 0)
             continue;
 
         mesh_t gm;
         memset(&gm, 0, sizeof(gm));
         gm.material = sm->material;
-        gm.index_count = sm->index_count;
+        gm.lods = vector_impl_create_vector(sizeof(mesh_lod_t));
 
-        glGenVertexArrays(1, &gm.vao);
-        glBindVertexArray(gm.vao);
+        mesh_set_local_aabb_from_cpu(&gm, sm);
 
-        glGenBuffers(1, &gm.vbo);
-        glBindBuffer(GL_ARRAY_BUFFER, gm.vbo);
-        glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(sm->vertex_count * sizeof(model_vertex_t)), sm->vertices, GL_STATIC_DRAW);
+        for (uint32_t li = 0; li < sm->lods.size; ++li)
+        {
+            model_cpu_lod_t *cl = (model_cpu_lod_t *)vector_impl_at(&sm->lods, li);
+            if (!cl || !cl->vertices || !cl->indices || !cl->vertex_count || !cl->index_count)
+                continue;
 
-        glGenBuffers(1, &gm.ibo);
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gm.ibo);
-        glBufferData(GL_ELEMENT_ARRAY_BUFFER, (GLsizeiptr)(sm->index_count * sizeof(uint32_t)), sm->indices, GL_STATIC_DRAW);
+            mesh_lod_t glod;
+            memset(&glod, 0, sizeof(glod));
+            glod.index_count = cl->index_count;
 
-        mdl_vao_setup_model_vertex();
+            glGenVertexArrays(1, &glod.vao);
+            glBindVertexArray(glod.vao);
 
-        vector_impl_push_back(&model.meshes, &gm);
+            glGenBuffers(1, &glod.vbo);
+            glBindBuffer(GL_ARRAY_BUFFER, glod.vbo);
+            glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(cl->vertex_count * sizeof(model_vertex_t)), cl->vertices, GL_STATIC_DRAW);
+
+            glGenBuffers(1, &glod.ibo);
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, glod.ibo);
+            glBufferData(GL_ELEMENT_ARRAY_BUFFER, (GLsizeiptr)(cl->index_count * sizeof(uint32_t)), cl->indices, GL_STATIC_DRAW);
+
+            mdl_vao_setup_model_vertex();
+
+            vector_impl_push_back(&gm.lods, &glod);
+        }
+
+        if (gm.lods.size > 0)
+            vector_impl_push_back(&model.meshes, &gm);
+        else
+            vector_impl_free(&gm.lods);
     }
 
     model_raw_destroy(&asset->as.model_raw);
@@ -780,14 +790,29 @@ void asset_model_gltf_cleanup(asset_manager_t *am, asset_any_t *asset)
 
     for (uint32_t i = 0; i < asset->as.model.meshes.size; ++i)
     {
-        mesh_t *msh = (mesh_t *)vector_impl_at(&asset->as.model.meshes, i);
-        if (msh->ibo)
-            glDeleteBuffers(1, &msh->ibo);
-        if (msh->vbo)
-            glDeleteBuffers(1, &msh->vbo);
-        if (msh->vao)
-            glDeleteVertexArrays(1, &msh->vao);
-        memset(msh, 0, sizeof(*msh));
+        mesh_t *m = (mesh_t *)vector_impl_at(&asset->as.model.meshes, i);
+        if (!m)
+            continue;
+
+        for (uint32_t li = 0; li < m->lods.size; ++li)
+        {
+            mesh_lod_t *l = (mesh_lod_t *)vector_impl_at(&m->lods, li);
+            if (!l)
+                continue;
+            if (l->ibo)
+                glDeleteBuffers(1, &l->ibo);
+            if (l->vbo)
+                glDeleteBuffers(1, &l->vbo);
+            if (l->vao)
+                glDeleteVertexArrays(1, &l->vao);
+            memset(l, 0, sizeof(*l));
+        }
+
+        vector_impl_free(&m->lods);
+        m->material = ihandle_invalid();
+        m->has_aabb = 0;
+        m->local_aabb.min = (vec3){0, 0, 0};
+        m->local_aabb.max = (vec3){0, 0, 0};
     }
 
     asset_model_destroy_cpu_only(&asset->as.model);

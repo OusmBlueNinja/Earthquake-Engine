@@ -54,7 +54,8 @@ typedef enum
     CL_R_SSR_STRIDE,
     CL_R_SSR_THICKNESS,
     CL_R_SSR_MAX_DIST,
-
+    CL_R_FORCE_LOD_LEVEL,
+    CL_R_WIREFRAME,
     SV_CVAR_COUNT
 } sv_cvar_key_t;
 

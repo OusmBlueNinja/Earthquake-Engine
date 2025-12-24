@@ -18,6 +18,16 @@ typedef struct pushed_model_t
     mat4 model_matrix;
 } pushed_model_t;
 
+typedef struct render_stats_t
+{
+    uint64_t draw_calls;
+    uint64_t triangles;
+
+    uint64_t instanced_draw_calls;
+    uint64_t instances;
+    uint64_t instanced_triangles;
+} render_stats_t;
+
 typedef struct renderer_cfg_t
 {
     int bloom;
@@ -44,6 +54,8 @@ typedef struct renderer_cfg_t
     float ssr_stride;
     float ssr_thickness;
     float ssr_max_dist;
+
+    bool wireframe;
 } renderer_cfg_t;
 
 typedef struct renderer_t
@@ -95,6 +107,8 @@ typedef struct renderer_t
     bloom_t bloom;
     ssr_t ssr;
 
+    render_stats_t stats;
+
 } renderer_t;
 
 int R_init(renderer_t *r, asset_manager_t *assets);
@@ -111,6 +125,8 @@ void R_push_model(renderer_t *r, const ihandle_t model, mat4 model_matrix);
 void R_push_model_forward(renderer_t *r, const ihandle_t model, mat4 model_matrix);
 
 void R_push_hdri(renderer_t *r, ihandle_t tex);
+
+const render_stats_t *R_get_stats(const renderer_t *r);
 
 uint8_t R_add_shader(renderer_t *r, shader_t *shader);
 shader_t *R_get_shader(const renderer_t *r, uint8_t shader_id);

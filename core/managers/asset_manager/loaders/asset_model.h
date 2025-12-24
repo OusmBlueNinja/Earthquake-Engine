@@ -21,6 +21,7 @@ typedef struct obj_v3_t
 {
     float x, y, z;
 } obj_v3_t;
+
 typedef struct obj_v2_t
 {
     float x, y;
@@ -288,6 +289,31 @@ static const char *mdl_mtl_parse_tex_path(char *args)
 static void mdl_submesh_zero(model_cpu_submesh_t *sm)
 {
     memset(sm, 0, sizeof(*sm));
+    sm->lods = vector_impl_create_vector(sizeof(model_cpu_lod_t));
+    sm->material = ihandle_invalid();
+}
+
+static void mdl_submesh_free_cpu(model_cpu_submesh_t *sm)
+{
+    if (!sm)
+        return;
+
+    for (uint32_t i = 0; i < sm->lods.size; ++i)
+    {
+        model_cpu_lod_t *l = (model_cpu_lod_t *)vector_impl_at(&sm->lods, i);
+        if (!l)
+            continue;
+        free(l->vertices);
+        free(l->indices);
+        memset(l, 0, sizeof(*l));
+    }
+
+    vector_impl_free(&sm->lods);
+
+    if (sm->material_name)
+        free(sm->material_name);
+
+    memset(sm, 0, sizeof(*sm));
     sm->material = ihandle_invalid();
 }
 
@@ -452,13 +478,21 @@ static bool mdl_obj_load_to_raw_fast(const char *path, model_raw_t *out_raw, cha
         {
             if (gi.count > 0)
             {
-                cur.vertices = gv.p;
-                cur.vertex_count = gv.count;
-                cur.indices = gi.p;
-                cur.index_count = gi.count;
+                model_cpu_lod_t lod0;
+                memset(&lod0, 0, sizeof(lod0));
+                lod0.vertices = gv.p;
+                lod0.vertex_count = gv.count;
+                lod0.indices = gi.p;
+                lod0.index_count = gi.count;
+
+                vector_impl_push_back(&cur.lods, &lod0);
+
                 vector_impl_push_back(&raw.submeshes, &cur);
+
                 gv = (grow_vtx_t){0};
                 gi = (grow_u32_t){0};
+                memset(&cur, 0, sizeof(cur));
+                mdl_submesh_zero(&cur);
             }
             else
             {
@@ -466,7 +500,8 @@ static bool mdl_obj_load_to_raw_fast(const char *path, model_raw_t *out_raw, cha
                 cur.material_name = NULL;
             }
 
-            mdl_submesh_zero(&cur);
+            if (cur.material_name)
+                free(cur.material_name);
             cur.material_name = mdl_strdup_trim(s + 6);
             continue;
         }
@@ -579,6 +614,7 @@ static bool mdl_obj_load_to_raw_fast(const char *path, model_raw_t *out_raw, cha
                     free(mtllib);
                     mdl_grow_vtx_free(&gv);
                     mdl_grow_u32_free(&gi);
+                    mdl_submesh_free_cpu(&cur);
                     return false;
                 }
                 if (!mdl_grow_u32_reserve(&gi, 3))
@@ -591,6 +627,7 @@ static bool mdl_obj_load_to_raw_fast(const char *path, model_raw_t *out_raw, cha
                     free(mtllib);
                     mdl_grow_vtx_free(&gv);
                     mdl_grow_u32_free(&gi);
+                    mdl_submesh_free_cpu(&cur);
                     return false;
                 }
 
@@ -646,18 +683,25 @@ static bool mdl_obj_load_to_raw_fast(const char *path, model_raw_t *out_raw, cha
 
     if (gi.count > 0)
     {
-        cur.vertices = gv.p;
-        cur.vertex_count = gv.count;
-        cur.indices = gi.p;
-        cur.index_count = gi.count;
+        model_cpu_lod_t lod0;
+        memset(&lod0, 0, sizeof(lod0));
+        lod0.vertices = gv.p;
+        lod0.vertex_count = gv.count;
+        lod0.indices = gi.p;
+        lod0.index_count = gi.count;
+
+        vector_impl_push_back(&cur.lods, &lod0);
         vector_impl_push_back(&raw.submeshes, &cur);
+
         gv = (grow_vtx_t){0};
         gi = (grow_u32_t){0};
+        memset(&cur, 0, sizeof(cur));
     }
     else
     {
         free(cur.material_name);
         cur.material_name = NULL;
+        mdl_submesh_free_cpu(&cur);
     }
 
     mdl_grow_vtx_free(&gv);
@@ -679,22 +723,13 @@ static bool mdl_obj_load_to_raw_fast(const char *path, model_raw_t *out_raw, cha
 static void mdl_vao_setup_model_vertex(void)
 {
     glEnableVertexAttribArray(0);
-    glVertexAttribPointer(
-        0, 3, GL_FLOAT, GL_FALSE,
-        (GLsizei)sizeof(model_vertex_t),
-        (void *)offsetof(model_vertex_t, px));
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, (GLsizei)sizeof(model_vertex_t), (void *)offsetof(model_vertex_t, px));
 
     glEnableVertexAttribArray(1);
-    glVertexAttribPointer(
-        1, 3, GL_FLOAT, GL_FALSE,
-        (GLsizei)sizeof(model_vertex_t),
-        (void *)offsetof(model_vertex_t, nx));
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, (GLsizei)sizeof(model_vertex_t), (void *)offsetof(model_vertex_t, nx));
 
     glEnableVertexAttribArray(2);
-    glVertexAttribPointer(
-        2, 2, GL_FLOAT, GL_FALSE,
-        (GLsizei)sizeof(model_vertex_t),
-        (void *)offsetof(model_vertex_t, u));
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, (GLsizei)sizeof(model_vertex_t), (void *)offsetof(model_vertex_t, u));
 }
 
 typedef struct mdl_mtl_entry_t
@@ -702,28 +737,6 @@ typedef struct mdl_mtl_entry_t
     char *name;
     ihandle_t handle;
 } mdl_mtl_entry_t;
-
-static const char *mdl_next_token(char **p)
-{
-    char *s = *p;
-    while (*s == ' ' || *s == '\t')
-        s++;
-    if (!*s)
-    {
-        *p = s;
-        return NULL;
-    }
-    char *start = s;
-    while (*s && *s != ' ' && *s != '\t' && *s != '\r' && *s != '\n')
-        s++;
-    if (*s)
-    {
-        *s = 0;
-        s++;
-    }
-    *p = s;
-    return start;
-}
 
 static bool mdl_load_mtl_and_submit_all(asset_manager_t *am, const char *mtl_path, vector_t *out_entries)
 {
@@ -965,6 +978,15 @@ static bool asset_model_load(asset_manager_t *am, const char *path, uint32_t pat
     return true;
 }
 
+static const model_cpu_lod_t *mdl_get_cpu_lod0(const model_cpu_submesh_t *sm)
+{
+    if (!sm)
+        return NULL;
+    if (sm->lods.size == 0)
+        return NULL;
+    return (const model_cpu_lod_t *)vector_impl_at((vector_t *)&sm->lods, 0);
+}
+
 static bool asset_model_init(asset_manager_t *am, asset_any_t *asset)
 {
     if (!asset || asset->type != ASSET_MODEL)
@@ -977,9 +999,7 @@ static bool asset_model_init(asset_manager_t *am, asset_any_t *asset)
     if (asset->as.model_raw.mtllib_path && asset->as.model_raw.mtllib_path[0])
     {
         if (!mdl_load_mtl_and_submit_all(am, asset->as.model_raw.mtllib_path, &mtl_entries))
-        {
             mtl_entries = vector_impl_create_vector(sizeof(mdl_mtl_entry_t));
-        }
 
         for (uint32_t i = 0; i < asset->as.model_raw.submeshes.size; ++i)
         {
@@ -992,6 +1012,7 @@ static bool asset_model_init(asset_manager_t *am, asset_any_t *asset)
     }
     else
     {
+        mtl_entries = vector_impl_create_vector(sizeof(mdl_mtl_entry_t));
         for (uint32_t i = 0; i < asset->as.model_raw.submeshes.size; ++i)
         {
             model_cpu_submesh_t *sm = (model_cpu_submesh_t *)vector_impl_at(&asset->as.model_raw.submeshes, i);
@@ -1006,25 +1027,40 @@ static bool asset_model_init(asset_manager_t *am, asset_any_t *asset)
     for (uint32_t i = 0; i < asset->as.model_raw.submeshes.size; ++i)
     {
         model_cpu_submesh_t *sm = (model_cpu_submesh_t *)vector_impl_at(&asset->as.model_raw.submeshes, i);
+        if (!sm)
+            continue;
+
+        const model_cpu_lod_t *cpu0 = mdl_get_cpu_lod0(sm);
+        if (!cpu0 || !cpu0->vertices || !cpu0->indices || cpu0->index_count == 0 || cpu0->vertex_count == 0)
+            continue;
 
         mesh_t gm;
         memset(&gm, 0, sizeof(gm));
-        gm.material = sm ? sm->material : ihandle_invalid();
-        gm.index_count = sm ? sm->index_count : 0;
+        gm.material = sm->material;
+        gm.lods = vector_impl_create_vector(sizeof(mesh_lod_t));
 
-        glGenVertexArrays(1, &gm.vao);
-        glBindVertexArray(gm.vao);
+        mesh_lod_t lod0;
+        memset(&lod0, 0, sizeof(lod0));
+        lod0.index_count = cpu0->index_count;
 
-        glGenBuffers(1, &gm.vbo);
-        glBindBuffer(GL_ARRAY_BUFFER, gm.vbo);
-        glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(sm->vertex_count * sizeof(model_vertex_t)), sm->vertices, GL_STATIC_DRAW);
+        glGenVertexArrays(1, &lod0.vao);
+        glBindVertexArray(lod0.vao);
 
-        glGenBuffers(1, &gm.ibo);
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gm.ibo);
-        glBufferData(GL_ELEMENT_ARRAY_BUFFER, (GLsizeiptr)(sm->index_count * sizeof(uint32_t)), sm->indices, GL_STATIC_DRAW);
+        glGenBuffers(1, &lod0.vbo);
+        glBindBuffer(GL_ARRAY_BUFFER, lod0.vbo);
+        glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(cpu0->vertex_count * sizeof(model_vertex_t)), cpu0->vertices, GL_STATIC_DRAW);
+
+        glGenBuffers(1, &lod0.ibo);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, lod0.ibo);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, (GLsizeiptr)(cpu0->index_count * sizeof(uint32_t)), cpu0->indices, GL_STATIC_DRAW);
 
         mdl_vao_setup_model_vertex();
 
+        glBindVertexArray(0);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+
+        vector_impl_push_back(&gm.lods, &lod0);
         vector_impl_push_back(&model.meshes, &gm);
     }
 
@@ -1049,12 +1085,26 @@ static void asset_model_cleanup(asset_manager_t *am, asset_any_t *asset)
     for (uint32_t i = 0; i < asset->as.model.meshes.size; ++i)
     {
         mesh_t *m = (mesh_t *)vector_impl_at(&asset->as.model.meshes, i);
-        if (m->ibo)
-            glDeleteBuffers(1, &m->ibo);
-        if (m->vbo)
-            glDeleteBuffers(1, &m->vbo);
-        if (m->vao)
-            glDeleteVertexArrays(1, &m->vao);
+        if (!m)
+            continue;
+
+        for (uint32_t li = 0; li < m->lods.size; ++li)
+        {
+            mesh_lod_t *l = (mesh_lod_t *)vector_impl_at(&m->lods, li);
+            if (!l)
+                continue;
+
+            if (l->ibo)
+                glDeleteBuffers(1, &l->ibo);
+            if (l->vbo)
+                glDeleteBuffers(1, &l->vbo);
+            if (l->vao)
+                glDeleteVertexArrays(1, &l->vao);
+
+            memset(l, 0, sizeof(*l));
+        }
+
+        vector_impl_free(&m->lods);
         memset(m, 0, sizeof(*m));
     }
 
@@ -1065,7 +1115,7 @@ static asset_module_desc_t asset_module_model(void)
 {
     asset_module_desc_t m;
     m.type = ASSET_MODEL;
-    m.name = "ASSET_MODEL";
+    m.name = "ASSET_MODEL_OBJ";
     m.load_fn = asset_model_load;
     m.init_fn = asset_model_init;
     m.cleanup_fn = asset_model_cleanup;

@@ -51,6 +51,8 @@ uniform int u_ManualSRGB;
 
 uniform vec3 u_CameraPos;
 
+uniform int u_DebugLod;
+
 vec3 srgb_to_linear(vec3 c)
 {
     return pow(max(c, vec3(0.0)), vec3(2.2));
@@ -105,8 +107,30 @@ vec2 oct_encode(vec3 n)
     return e;
 }
 
+vec3 lod_color(int l)
+{
+    if (l <= 0) return vec3(0.2, 1.0, 0.2);
+    if (l == 1) return vec3(0.2, 0.6, 1.0);
+    if (l == 2) return vec3(1.0, 0.8, 0.2);
+    if (l == 3) return vec3(1.0, 0.2, 0.2);
+    if (l == 4) return vec3(0.9, 0.2, 1.0);
+    if (l == 5) return vec3(0.2, 1.0, 1.0);
+    return vec3(0.8, 0.8, 0.8);
+}
+
 void main()
 {
+    if (u_DebugLod != 0)
+    {
+        vec3 c = lod_color(u_DebugLod - 1);
+
+        oAlbedo   = vec4(c, 1.0);
+        oNormal   = vec2(0.5, 0.5);
+        oMaterial = vec4(1.0, 0.0, 1.0, 0.0);
+        oEmissive = vec4(0.0, 0.0, 0.0, 1.0);
+        return;
+    }
+
     vec3 V = normalize(u_CameraPos - v.ws_pos);
     vec3 v_ts = normalize(transpose(v.tbn) * V);
 
