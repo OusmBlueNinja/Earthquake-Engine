@@ -1,3 +1,4 @@
+// mat4.h
 #pragma once
 
 #include <math.h>
@@ -30,18 +31,7 @@ static inline mat4 mat4_identity(void)
     return r;
 }
 
-static inline mat4 mat4_mul(mat4 a, mat4 b)
-{
-    mat4 r;
-    for (int c = 0; c < 4; c++)
-        for (int r0 = 0; r0 < 4; r0++)
-            r.m[c * 4 + r0] =
-                a.m[0 * 4 + r0] * b.m[c * 4 + 0] +
-                a.m[1 * 4 + r0] * b.m[c * 4 + 1] +
-                a.m[2 * 4 + r0] * b.m[c * 4 + 2] +
-                a.m[3 * 4 + r0] * b.m[c * 4 + 3];
-    return r;
-}
+mat4 mat4_mul(mat4 a, mat4 b);
 
 static inline mat4 mat4_translate(vec3 v)
 {
@@ -97,7 +87,7 @@ static inline mat4 mat4_rotate_z(float a)
 static inline mat4 mat4_perspective(float fov, float aspect, float zn, float zf)
 {
     float t = tanf(fov * 0.5f);
-    mat4 r = {0};
+    mat4 r = (mat4){0};
     r.m[0] = 1.0f / (aspect * t);
     r.m[5] = 1.0f / t;
     r.m[10] = -(zf + zn) / (zf - zn);
@@ -134,8 +124,11 @@ static inline mat4 mat4_lookat(vec3 eye, vec3 at, vec3 up)
     r.m[2] = -f.x;
     r.m[6] = -f.y;
     r.m[10] = -f.z;
+
     r.m[12] = -(s.x * eye.x + s.y * eye.y + s.z * eye.z);
     r.m[13] = -(u.x * eye.x + u.y * eye.y + u.z * eye.z);
     r.m[14] = (f.x * eye.x + f.y * eye.y + f.z * eye.z);
     return r;
 }
+
+mat4 mat4_inverse(mat4 m);
