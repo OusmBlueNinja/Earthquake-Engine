@@ -29,93 +29,13 @@ static float demo_clampf(float x, float lo, float hi)
     return x;
 }
 
-static float demo_maxf(float a, float b)
+static mat4 demo_mat4_translate(vec3 t)
 {
-    return a > b ? a : b;
-}
-
-static float demo_len3(float x, float y, float z)
-{
-    return sqrtf(x * x + y * y + z * z);
-}
-
-static float demo_mat4_max_scale_axis(mat4 m)
-{
-    float sx = demo_len3(m.m[0], m.m[1], m.m[2]);
-    float sy = demo_len3(m.m[4], m.m[5], m.m[6]);
-    float sz = demo_len3(m.m[8], m.m[9], m.m[10]);
-    return demo_maxf(sx, demo_maxf(sy, sz));
-}
-
-static vec3 demo_mat4_transform_point(mat4 m, vec3 p)
-{
-    float x = m.m[0] * p.x + m.m[4] * p.y + m.m[8] * p.z + m.m[12];
-    float y = m.m[1] * p.x + m.m[5] * p.y + m.m[9] * p.z + m.m[13];
-    float z = m.m[2] * p.x + m.m[6] * p.y + m.m[10] * p.z + m.m[14];
-    return (vec3){x, y, z};
-}
-
-static int demo_compute_model_aabb_from_gpu(asset_model_t *mdl, vec3 *out_min, vec3 *out_max)
-{
-    if (!mdl || mdl->meshes.size == 0)
-        return 0;
-
-    float minx = 1e30f, miny = 1e30f, minz = 1e30f;
-    float maxx = -1e30f, maxy = -1e30f, maxz = -1e30f;
-
-    for (uint32_t i = 0; i < mdl->meshes.size; ++i)
-    {
-        mesh_t *mesh = (mesh_t *)vector_impl_at(&mdl->meshes, i);
-        if (!mesh || !mesh->vbo)
-            continue;
-
-        glBindBuffer(GL_ARRAY_BUFFER, mesh->vbo);
-
-        GLint sz = 0;
-        glGetBufferParameteriv(GL_ARRAY_BUFFER, GL_BUFFER_SIZE, &sz);
-        if (sz <= 0)
-            continue;
-
-        size_t count = (size_t)sz / sizeof(model_vertex_t);
-        if (count == 0)
-            continue;
-
-        model_vertex_t *tmp = (model_vertex_t *)malloc(count * sizeof(model_vertex_t));
-        if (!tmp)
-            continue;
-
-        glGetBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)(count * sizeof(model_vertex_t)), tmp);
-
-        for (size_t v = 0; v < count; ++v)
-        {
-            float x = tmp[v].px;
-            float y = tmp[v].py;
-            float z = tmp[v].pz;
-
-            if (x < minx)
-                minx = x;
-            if (y < miny)
-                miny = y;
-            if (z < minz)
-                minz = z;
-
-            if (x > maxx)
-                maxx = x;
-            if (y > maxy)
-                maxy = y;
-            if (z > maxz)
-                maxz = z;
-        }
-
-        free(tmp);
-    }
-
-    if (minx > maxx || miny > maxy || minz > maxz)
-        return 0;
-
-    *out_min = (vec3){minx, miny, minz};
-    *out_max = (vec3){maxx, maxy, maxz};
-    return 1;
+    mat4 m = mat4_identity();
+    m.m[12] = t.x;
+    m.m[13] = t.y;
+    m.m[14] = t.z;
+    return m;
 }
 
 typedef struct demo_layer_state_t
@@ -126,11 +46,10 @@ typedef struct demo_layer_state_t
     ihandle_t override_mat_h;
     int did_patch_materials;
 
-    int bounds_ready;
-    vec3 aabb_min;
-    vec3 aabb_max;
-    vec3 local_center;
-    float local_radius;
+    ihandle_t cube_model_h;
+    mat4 cube_model_m;
+    ihandle_t cube_mat_h;
+    int did_patch_cube;
 
     camera_t cam;
     float fovy_rad;
