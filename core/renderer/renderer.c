@@ -566,7 +566,7 @@ static void R_bloom_run(renderer_t *r)
 
     shader_bind(r->bloom.cs_extract);
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, r->scene_color_tex);
+    glBindTexture(GL_TEXTURE_2D, r->light_color_tex);
     shader_set_int(r->bloom.cs_extract, "u_Src", 0);
     shader_set_float(r->bloom.cs_extract, "u_Threshold", r->cfg.bloom_threshold);
     shader_set_float(r->bloom.cs_extract, "u_Knee", r->cfg.bloom_knee);
@@ -677,7 +677,7 @@ static void R_composite_to_final(renderer_t *r)
     shader_set_int(r->bloom.post_present, "u_DebugMode", r->cfg.debug_mode);
 
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, r->scene_color_tex);
+    glBindTexture(GL_TEXTURE_2D, r->light_color_tex);
     shader_set_int(r->bloom.post_present, "u_Scene", 0);
 
     glActiveTexture(GL_TEXTURE1);
@@ -685,7 +685,7 @@ static void R_composite_to_final(renderer_t *r)
     shader_set_int(r->bloom.post_present, "u_Bloom", 1);
 
     glActiveTexture(GL_TEXTURE2);
-    glBindTexture(GL_TEXTURE_2D, r->depth_tex);
+    glBindTexture(GL_TEXTURE_2D, r->gbuf_depth);
     shader_set_int(r->bloom.post_present, "u_Depth", 2);
 
     shader_set_int(r->bloom.post_present, "u_EnableBloom", r->cfg.bloom ? 1 : 0);
