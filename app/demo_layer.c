@@ -178,7 +178,7 @@ static void demo_layer_apply_camera(demo_layer_state_t *s, renderer_t *r)
     camera_set_perspective(&s->cam, s->fovy_rad, aspect, 0.1f, 20000.0f);
 
     s->pitch = demo_clampf(s->pitch, -1.55f, 1.55f);
-    s->dist = demo_clampf(s->dist, 1.5f, 2000.0f);
+    s->dist = demo_clampf(s->dist, 1.5f, 20000.0f);
 
     mat4 ry = demo_mat4_rotate_y(s->yaw);
     mat4 rx = demo_mat4_rotate_x(s->pitch);
@@ -216,7 +216,7 @@ static bool demo_layer_on_event(layer_t *layer, event_t *e)
     {
         double dy = e->as.mouse_scroll.dy;
         float k = powf(0.90f, (float)dy);
-        s->dist = demo_clampf(s->dist * k, 1.5f, 2000.0f);
+        s->dist = demo_clampf(s->dist * k, 1.5f, 20000.0f);
         e->handled = true;
         return true;
     }
