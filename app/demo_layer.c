@@ -175,7 +175,7 @@ typedef struct demo_layer_state_t
 static void demo_layer_apply_camera(demo_layer_state_t *s, renderer_t *r)
 {
     float aspect = (r->fb_size.y != 0) ? ((float)r->fb_size.x / (float)r->fb_size.y) : 1.0f;
-    camera_set_perspective(&s->cam, s->fovy_rad, aspect, 0.1f, 20000.0f);
+    camera_set_perspective(&s->cam, s->fovy_rad, aspect, 0.1f, 200000.0f);
 
     s->pitch = demo_clampf(s->pitch, -1.55f, 1.55f);
     s->dist = demo_clampf(s->dist, 1.5f, 20000.0f);

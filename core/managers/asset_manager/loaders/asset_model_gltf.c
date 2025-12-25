@@ -703,11 +703,14 @@ bool asset_model_gltf_load(asset_manager_t *am, const char *path, uint32_t path_
 
     model_lod_settings_t s;
     memset(&s, 0, sizeof(s));
-    s.lod_count = 4;
+    s.lod_count = 7;
     s.triangle_ratio[0] = 1.0f;
-    s.triangle_ratio[1] = 0.5f;
-    s.triangle_ratio[2] = 0.25f;
-    s.triangle_ratio[3] = 0.12f;
+    s.triangle_ratio[1] = 0.70f;
+    s.triangle_ratio[2] = 0.50f;
+    s.triangle_ratio[3] = 0.35f;
+    s.triangle_ratio[4] = 0.25f;
+    s.triangle_ratio[5] = 0.18f;
+    s.triangle_ratio[6] = 0.12f;
     model_raw_generate_lods(&raw, &s);
 
     memset(out_asset, 0, sizeof(*out_asset));

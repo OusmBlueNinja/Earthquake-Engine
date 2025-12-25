@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 
 #include "utils/logger.h"
 #include "systems/iKv1.h"
@@ -80,7 +81,6 @@ static cvar_entry_t g_cvars[SV_CVAR_COUNT] = {
     [CL_R_FORCE_LOD_LEVEL] = {.name = "cl_r_force_lod_level", .type = CVAR_INT, .def.i = -1, .flags = CVAR_FLAG_NONE},
 
     [CL_R_WIREFRAME] = {.name = "cl_r_wireframe", .type = CVAR_BOOL, .def.b = false, .flags = CVAR_FLAG_NONE},
-
 };
 
 void cvar_set_cheats_permission(bool allowed)
@@ -118,11 +118,6 @@ static bool cvar_can_set_internal(sv_cvar_key_t k, bool bypass_cheats, bool bypa
     }
 
     return true;
-}
-
-static bool cvar_can_set(sv_cvar_key_t k)
-{
-    return cvar_can_set_internal(k, false, false);
 }
 
 static void cvar_fire_changed(sv_cvar_key_t k, const void *oldv, const void *newv)
@@ -369,42 +364,191 @@ static bool ikv_root_is_named(const ikv_node_t *root, const char *name)
     return strcmp(root->key, name) == 0;
 }
 
-bool cvar_save(const char *filename)
+static void cvar_strlower(char *dst, size_t cap, const char *src)
 {
-    if (!filename || !filename[0])
-        return false;
-
-    ikv_node_t *root = ikv_create_object("icvar");
-    if (!root)
-        return false;
-
-    for (int i = 0; i < SV_CVAR_COUNT; ++i)
+    if (!dst || cap == 0)
+        return;
+    if (!src)
     {
-        if (g_cvars[i].flags & CVAR_FLAG_NO_SAVE)
-            continue;
-
-        switch (g_cvars[i].type)
-        {
-        case CVAR_INT:
-            ikv_object_set_int(root, g_cvars[i].name, (int64_t)g_cvars[i].value.i);
-            break;
-        case CVAR_BOOL:
-            ikv_object_set_bool(root, g_cvars[i].name, g_cvars[i].value.b);
-            break;
-        case CVAR_FLOAT:
-            ikv_object_set_float(root, g_cvars[i].name, (double)g_cvars[i].value.f);
-            break;
-        case CVAR_STRING:
-            ikv_object_set_string(root, g_cvars[i].name, g_cvars[i].value.s);
-            break;
-        default:
-            break;
-        }
+        dst[0] = 0;
+        return;
     }
 
-    bool ok = ikv_write_file(filename, root);
-    ikv_free(root);
-    return ok;
+    size_t i = 0;
+    for (; src[i] && i + 1 < cap; ++i)
+    {
+        char c = src[i];
+        if (c >= 'A' && c <= 'Z')
+            c = (char)(c - 'A' + 'a');
+        dst[i] = c;
+    }
+    dst[i] = 0;
+}
+
+static const char *cvar_map_prefix(const char *tok_lower)
+{
+    if (!tok_lower || !tok_lower[0])
+        return "misc";
+
+    if (strcmp(tok_lower, "sv") == 0)
+        return "server";
+    if (strcmp(tok_lower, "cl") == 0)
+        return "cl";
+
+    return tok_lower;
+}
+
+static int cvar_split_tokens(char parts[][64], int max_parts, const char *name)
+{
+    if (!parts || max_parts <= 0 || !name || !name[0])
+        return 0;
+
+    int count = 0;
+    const char *p = name;
+
+    while (*p && count < max_parts)
+    {
+        while (*p == '_')
+            ++p;
+        if (!*p)
+            break;
+
+        char buf[64];
+        size_t bi = 0;
+
+        while (*p && *p != '_' && bi + 1 < sizeof(buf))
+            buf[bi++] = *p++;
+
+        buf[bi] = 0;
+
+        cvar_strlower(parts[count], 64, buf);
+        ++count;
+
+        while (*p == '_')
+            ++p;
+    }
+
+    if (count > 0)
+    {
+        const char *mapped = cvar_map_prefix(parts[0]);
+        if (mapped != parts[0])
+            cvar_strlower(parts[0], 64, mapped);
+    }
+
+    return count;
+}
+
+static void cvar_build_slash_key(char *dst, size_t cap, const char *name)
+{
+    if (!dst || cap == 0)
+        return;
+    dst[0] = 0;
+
+    char parts[16][64];
+    int n = cvar_split_tokens(parts, 16, name);
+    if (n <= 0)
+        return;
+
+    size_t at = 0;
+    for (int i = 0; i < n; ++i)
+    {
+        const char *seg = parts[i];
+        if (!seg[0])
+            continue;
+
+        if (i > 0)
+        {
+            if (at + 1 >= cap)
+                break;
+            dst[at++] = '/';
+            dst[at] = 0;
+        }
+
+        size_t need = strlen(seg);
+        if (at + need >= cap)
+            need = cap - at - 1;
+
+        memcpy(dst + at, seg, need);
+        at += need;
+        dst[at] = 0;
+
+        if (at + 1 >= cap)
+            break;
+    }
+}
+
+static ikv_node_t *cvar_ensure_object(ikv_node_t *parent_obj, const char *key)
+{
+    if (!parent_obj || parent_obj->type != IKV_OBJECT || !key || !key[0])
+        return NULL;
+
+    ikv_node_t *n = ikv_object_get(parent_obj, key);
+    if (n)
+        return n->type == IKV_OBJECT ? n : NULL;
+
+    return ikv_object_add_object(parent_obj, key);
+}
+
+static ikv_node_t *cvar_find_node_nested(const ikv_node_t *root, const char *cvar_name)
+{
+    char parts[16][64];
+    int n = cvar_split_tokens(parts, 16, cvar_name);
+    if (n <= 0)
+        return NULL;
+
+    const ikv_node_t *cur = root;
+
+    for (int i = 0; i < n - 1; ++i)
+    {
+        if (!cur || cur->type != IKV_OBJECT)
+            return NULL;
+
+        cur = ikv_object_get(cur, parts[i]);
+        if (!cur || cur->type != IKV_OBJECT)
+            return NULL;
+    }
+
+    if (!cur || cur->type != IKV_OBJECT)
+        return NULL;
+
+    return ikv_object_get(cur, parts[n - 1]);
+}
+
+static void cvar_set_value_nested(ikv_node_t *root, const cvar_entry_t *cv)
+{
+    char parts[16][64];
+    int n = cvar_split_tokens(parts, 16, cv->name);
+    if (n <= 0)
+        return;
+
+    ikv_node_t *cur = root;
+
+    for (int i = 0; i < n - 1; ++i)
+    {
+        cur = cvar_ensure_object(cur, parts[i]);
+        if (!cur)
+            return;
+    }
+
+    const char *leaf = parts[n - 1];
+
+    switch (cv->type)
+    {
+    case CVAR_INT:
+        ikv_object_set_int(cur, leaf, (int64_t)cv->value.i);
+        break;
+    case CVAR_BOOL:
+        ikv_object_set_bool(cur, leaf, cv->value.b);
+        break;
+    case CVAR_FLOAT:
+        ikv_object_set_float(cur, leaf, (double)cv->value.f);
+        break;
+    case CVAR_STRING:
+        ikv_object_set_string(cur, leaf, cv->value.s);
+        break;
+    default:
+        break;
+    }
 }
 
 static bool cvar_node_type_matches(const cvar_entry_t *cv, const ikv_node_t *n)
@@ -427,6 +571,28 @@ static bool cvar_node_type_matches(const cvar_entry_t *cv, const ikv_node_t *n)
     }
 }
 
+bool cvar_save(const char *filename)
+{
+    if (!filename || !filename[0])
+        return false;
+
+    ikv_node_t *root = ikv_create_object("icvar");
+    if (!root)
+        return false;
+
+    for (int i = 0; i < SV_CVAR_COUNT; ++i)
+    {
+        if (g_cvars[i].flags & CVAR_FLAG_NO_SAVE)
+            continue;
+
+        cvar_set_value_nested(root, &g_cvars[i]);
+    }
+
+    bool ok = ikv_write_file(filename, root);
+    ikv_free(root);
+    return ok;
+}
+
 bool cvar_load(const char *filename)
 {
     if (!filename || !filename[0])
@@ -442,12 +608,25 @@ bool cvar_load(const char *filename)
         return false;
     }
 
+    char slash_key[256];
+
     for (int i = 0; i < SV_CVAR_COUNT; ++i)
     {
         if (g_cvars[i].flags & CVAR_FLAG_NO_LOAD)
             continue;
 
-        ikv_node_t *n = ikv_object_get(root, g_cvars[i].name);
+        ikv_node_t *n = cvar_find_node_nested(root, g_cvars[i].name);
+
+        if (!n)
+        {
+            cvar_build_slash_key(slash_key, sizeof(slash_key), g_cvars[i].name);
+            if (slash_key[0])
+                n = ikv_object_get(root, slash_key);
+        }
+
+        if (!n)
+            n = ikv_object_get(root, g_cvars[i].name);
+
         if (!n)
             continue;
 
@@ -491,6 +670,7 @@ bool cvar_load(const char *filename)
                 newv = (float)ikv_as_float(n);
             else
                 newv = (float)ikv_as_int(n);
+
             if (oldv != newv && cvar_can_set_internal(key, true, true))
             {
                 g_cvars[i].value.f = newv;

@@ -1,15 +1,18 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(Earthquake C)
+project(Earthquake LANGUAGES C CXX)
 include(FetchContent)
 
 set(CMAKE_C_STANDARD 23)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
-
 
 set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
@@ -22,6 +25,13 @@ FetchContent_Declare(
     GIT_TAG 3.3.10
 )
 FetchContent_MakeAvailable(glfw)
+
+FetchContent_Declare(
+    meshoptimizer
+    GIT_REPOSITORY https://github.com/zeux/meshoptimizer.git
+    GIT_TAG v1.0
+)
+FetchContent_MakeAvailable(meshoptimizer)
 
 find_package(OpenGL REQUIRED)
 find_package(GLEW REQUIRED)
@@ -44,19 +54,18 @@ target_include_directories(core PUBLIC
     "${CMAKE_SOURCE_DIR}/core/systems"
     "${CMAKE_SOURCE_DIR}/core/types"
     "${CMAKE_SOURCE_DIR}/vendor"
-
-
+    "${meshoptimizer_SOURCE_DIR}/src"
 )
-
-file(GLOB_RECURSE APP_SRC CONFIGURE_DEPENDS
-    "${CMAKE_SOURCE_DIR}/app/*.c"
-)
-
 
 target_link_libraries(core PUBLIC
     glfw
     OpenGL::GL
     GLEW::GLEW
+    meshoptimizer
+)
+
+file(GLOB_RECURSE APP_SRC CONFIGURE_DEPENDS
+    "${CMAKE_SOURCE_DIR}/app/*.c"
 )
 
 add_executable(app ${APP_SRC})
@@ -68,6 +77,7 @@ target_include_directories(app PRIVATE
 )
 
 target_link_libraries(app PRIVATE core)
+set_property(TARGET app PROPERTY LINKER_LANGUAGE CXX)
 
 target_compile_definitions(core PRIVATE $<$<CONFIG:Debug>:_DEBUG>)
 target_compile_definitions(app PRIVATE $<$<CONFIG:Debug>:_DEBUG>)

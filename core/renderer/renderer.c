@@ -586,7 +586,12 @@ static void R_bind_common_uniforms(renderer_t *r, shader_t *s)
 
 static int R_force_lod_level(void)
 {
-    return cvar_get_int_name("cl_r_force_lod_level");
+    int v = cvar_get_int_name("cl_r_force_lod_level");
+    if (v < -1)
+        v = -1;
+    if (v > 31)
+        v = 31;
+    return v;
 }
 
 static float R_mat4_max_scale_xyz(const mat4 *m)
@@ -620,30 +625,80 @@ static float R_mesh_local_radius(const mesh_t *mesh)
     return r;
 }
 
-static uint32_t R_pick_lod_level_for_mesh(const renderer_t *r, const mesh_t *mesh, const mat4 *model_mtx)
+static vec3 R_mesh_local_center(const mesh_t *mesh)
+{
+    if (!mesh || !mesh->has_aabb)
+        return (vec3){0.0f, 0.0f, 0.0f};
+    vec3 c;
+    c.x = 0.5f * (mesh->local_aabb.min.x + mesh->local_aabb.max.x);
+    c.y = 0.5f * (mesh->local_aabb.min.y + mesh->local_aabb.max.y);
+    c.z = 0.5f * (mesh->local_aabb.min.z + mesh->local_aabb.max.z);
+    return c;
+}
+
+static vec3 R_transform_point(mat4 m, vec3 p)
+{
+    vec3 o;
+    o.x = m.m[0] * p.x + m.m[4] * p.y + m.m[8] * p.z + m.m[12];
+    o.y = m.m[1] * p.x + m.m[5] * p.y + m.m[9] * p.z + m.m[13];
+    o.z = m.m[2] * p.x + m.m[6] * p.y + m.m[10] * p.z + m.m[14];
+    return o;
+}
+
+static void R_log_missing_forced_lod_once(ihandle_t model, uint32_t mesh_index, uint32_t lod_wanted, uint32_t lods)
+{
+    static uint32_t budget = 64u;
+    if (!budget)
+        return;
+    budget--;
+
+    LOG_WARN("Forced LOD %u requested but mesh has %u lods (model type=%u val=%u meta=%u mesh=%u). Using lod=%u",
+             lod_wanted, lods,
+             (unsigned)model.type, (unsigned)model.value, (unsigned)model.meta,
+             (unsigned)mesh_index,
+             (lods ? (lods - 1u) : 0u));
+}
+
+static uint32_t R_pick_lod_level_for_mesh(const renderer_t *r, const mesh_t *mesh, const mat4 *model_mtx, ihandle_t model_h, uint32_t mesh_index)
 {
     if (!r || !mesh || !model_mtx)
         return 0;
 
-    int forced = R_force_lod_level();
-    if (forced >= 0)
-        return (uint32_t)forced;
-
     uint32_t lods = mesh->lods.size;
     if (lods <= 1)
+    {
+        int forced0 = R_force_lod_level();
+        if (forced0 >= 0 && (uint32_t)forced0 > 0u)
+            R_log_missing_forced_lod_once(model_h, mesh_index, (uint32_t)forced0, lods);
         return 0;
+    }
 
-    float mx = model_mtx->m[12];
-    float my = model_mtx->m[13];
-    float mz = model_mtx->m[14];
+    int forced = R_force_lod_level();
+    if (forced >= 0)
+    {
+        uint32_t want = (uint32_t)forced;
+        if (want >= lods)
+        {
+            R_log_missing_forced_lod_once(model_h, mesh_index, want, lods);
+            return lods - 1u;
+        }
+        return want;
+    }
 
-    float dx = mx - r->camera.position.x;
-    float dy = my - r->camera.position.y;
-    float dz = mz - r->camera.position.z;
+    float dist = 0.0f;
 
-    float dist = sqrtf(dx * dx + dy * dy + dz * dz);
-    if (dist < 1e-3f)
-        dist = 1e-3f;
+    {
+        vec3 lc = R_mesh_local_center(mesh);
+        vec3 wc = R_transform_point(*model_mtx, lc);
+
+        float dx = wc.x - r->camera.position.x;
+        float dy = wc.y - r->camera.position.y;
+        float dz = wc.z - r->camera.position.z;
+
+        dist = sqrtf(dx * dx + dy * dy + dz * dz);
+        if (dist < 1e-3f)
+            dist = 1e-3f;
+    }
 
     float proj_fy = r->camera.proj.m[5];
     if (fabsf(proj_fy) < 1e-6f)
@@ -865,7 +920,7 @@ static void R_build_instancing(renderer_t *r)
                         if (!mesh)
                             continue;
 
-                        uint32_t lod = R_pick_lod_level_for_mesh(r, mesh, &pm->model_matrix);
+                        uint32_t lod = R_pick_lod_level_for_mesh(r, mesh, &pm->model_matrix, pm->model, mi);
 
                         items[n].model = pm->model;
                         items[n].mesh_index = mi;
@@ -923,7 +978,7 @@ static void R_build_instancing(renderer_t *r)
                         if (!mesh)
                             continue;
 
-                        uint32_t lod = R_pick_lod_level_for_mesh(r, mesh, &pm->model_matrix);
+                        uint32_t lod = R_pick_lod_level_for_mesh(r, mesh, &pm->model_matrix, pm->model, mi);
 
                         items[n].model = pm->model;
                         items[n].mesh_index = mi;
@@ -1210,7 +1265,7 @@ static void R_forward_transparent_pass(renderer_t *r)
             if (!mesh)
                 continue;
 
-            uint32_t lod_level = R_pick_lod_level_for_mesh(r, mesh, &pm->model_matrix);
+            uint32_t lod_level = R_pick_lod_level_for_mesh(r, mesh, &pm->model_matrix, pm->model, mi);
 
             const mesh_lod_t *lod = R_mesh_get_lod(mesh, lod_level);
             if (!lod || !lod->vao || !lod->index_count)
@@ -1277,7 +1332,7 @@ static void R_forward_transparent_pass(renderer_t *r)
         if (!mesh)
             continue;
 
-        uint32_t lod_level = R_pick_lod_level_for_mesh(r, mesh, &pm->model_matrix);
+        uint32_t lod_level = R_pick_lod_level_for_mesh(r, mesh, &pm->model_matrix, pm->model, items[i].mesh_index);
 
         const mesh_lod_t *lod = R_mesh_get_lod(mesh, lod_level);
         if (!lod || !lod->vao || !lod->index_count)

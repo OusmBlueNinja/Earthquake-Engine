@@ -1,8 +1,5 @@
 #version 460 core
 
-#ifndef MAX_LIGHTS
-#define MAX_LIGHTS 16
-#endif
 
 #define LIGHT_DIRECTIONAL 0
 #define LIGHT_POINT 1

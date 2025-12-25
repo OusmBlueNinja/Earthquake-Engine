@@ -2,21 +2,20 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
+#include <stdbool.h>
 #include <math.h>
 #include <time.h>
+#include <float.h>
 
 #include "utils/logger.h"
 
-/*
-    This file keeps your existing "cluster LOD" generator for intermediate LODs,
-    and replaces ONLY the LAST LOD with a boundary-protected EDGE-COLLAPSE simplifier.
-
-    Why: Your last LOD was getting "holes" because triangles were being dropped after
-    aggressive clustering + min-area filtering. Edge collapse can reduce triangles
-    without punching random holes (when boundary edges are protected and flips rejected).
-*/
+#ifndef MODEL_LOD_MAX
+#define MODEL_LOD_MAX 8
+#endif
 
 static uint32_t u32_min(uint32_t a, uint32_t b) { return a < b ? a : b; }
+static uint32_t u32_max(uint32_t a, uint32_t b) { return a > b ? a : b; }
 
 static uint8_t clamp_lod_count(uint8_t c)
 {
@@ -32,1029 +31,23 @@ static float clamp01(float x)
     return x;
 }
 
-static void v3_norm(float *x, float *y, float *z)
+static float settings_value_to_ratio(float v)
 {
-    float len2 = (*x) * (*x) + (*y) * (*y) + (*z) * (*z);
-    if (len2 > 1e-20f)
-    {
-        float inv = 1.0f / sqrtf(len2);
-        *x *= inv; *y *= inv; *z *= inv;
-    }
-    else
-    {
-        *x = 0.0f; *y = 1.0f; *z = 0.0f;
-    }
+    if (v <= 0.0f) return 0.0f;
+    if (v > 1.0f) return clamp01(v / 100.0f);
+    return clamp01(v);
 }
 
-static float v3_dot(float ax, float ay, float az, float bx, float by, float bz)
+static int size_mul_ok(size_t a, size_t b, size_t* out)
 {
-    return ax * bx + ay * by + az * bz;
-}
-
-static void v3_cross(float ax, float ay, float az, float bx, float by, float bz, float *cx, float *cy, float *cz)
-{
-    *cx = ay * bz - az * by;
-    *cy = az * bx - ax * bz;
-    *cz = ax * by - ay * bx;
-}
-
-static float tri_cross_len2_pos3(const model_vertex_t *v0, const model_vertex_t *v1, const model_vertex_t *v2)
-{
-    float ax = v1->px - v0->px;
-    float ay = v1->py - v0->py;
-    float az = v1->pz - v0->pz;
-
-    float bx = v2->px - v0->px;
-    float by = v2->py - v0->py;
-    float bz = v2->pz - v0->pz;
-
-    float cx, cy, cz;
-    v3_cross(ax, ay, az, bx, by, bz, &cx, &cy, &cz);
-    return cx * cx + cy * cy + cz * cz;
-}
-
-static float min_len2_threshold_from_min_px(float min_px, float px_per_world_at_ref)
-{
-    float s = px_per_world_at_ref;
-    if (min_px <= 0.0f || s <= 1e-20f) return 0.0f;
-    float min_px2 = min_px * min_px;
-    float min_px4 = min_px2 * min_px2;
-    float s2 = s * s;
-    float s4 = s2 * s2;
-    return (4.0f * min_px4) / s4;
-}
-
-static uint32_t lod_res_from_ratio(float ratio)
-{
-    if (ratio > 0.90f) return 512u;
-    if (ratio > 0.75f) return 384u;
-    if (ratio > 0.55f) return 256u;
-    if (ratio > 0.35f) return 192u;
-    if (ratio > 0.20f) return 128u;
-    if (ratio > 0.12f) return 96u;
-    if (ratio > 0.07f) return 72u;
-    if (ratio > 0.04f) return 56u;
-    return 40u;
-}
-
-static uint32_t clamp_u32(uint32_t x, uint32_t lo, uint32_t hi)
-{
-    if (x < lo) return lo;
-    if (x > hi) return hi;
-    return x;
-}
-
-/* -------------------------- CLUSTER LOD (your original) -------------------------- */
-
-typedef struct lod_scratch_t
-{
-    /* clustering scratch */
-    uint64_t *keys;
-    uint64_t *keys_tmp;
-    uint32_t *order;
-    uint32_t *order_tmp;
-    uint32_t *remap;
-    uint32_t *new_counts;
-    model_vertex_t *new_vtx;
-    uint32_t *tmp_idx;
-
-    uint32_t cap_v;
-    uint32_t cap_i;
-    uint32_t cap_new;
-
-    /* edge-collapse scratch (separate, allocated on demand) */
-    uint32_t *tmp_u32;
-    uint8_t  *tmp_u8;
-
-    uint32_t cap_tmp_u32;
-    uint32_t cap_tmp_u8;
-} lod_scratch_t;
-
-static void scratch_free(lod_scratch_t *sc)
-{
-    if (!sc) return;
-    free(sc->keys);
-    free(sc->keys_tmp);
-    free(sc->order);
-    free(sc->order_tmp);
-    free(sc->remap);
-    free(sc->new_counts);
-    free(sc->new_vtx);
-    free(sc->tmp_idx);
-    free(sc->tmp_u32);
-    free(sc->tmp_u8);
-    memset(sc, 0, sizeof(*sc));
-}
-
-static int scratch_ensure_v(lod_scratch_t *sc, uint32_t vcount)
-{
-    if (sc->cap_v >= vcount && sc->keys && sc->keys_tmp && sc->order && sc->order_tmp && sc->remap)
-        return 1;
-
-    uint32_t cap = sc->cap_v ? sc->cap_v : 1u;
-    while (cap < vcount) cap <<= 1u;
-
-    uint64_t *k  = (uint64_t *)realloc(sc->keys,      (size_t)cap * sizeof(uint64_t));
-    uint64_t *kt = (uint64_t *)realloc(sc->keys_tmp,  (size_t)cap * sizeof(uint64_t));
-    uint32_t *o  = (uint32_t *)realloc(sc->order,     (size_t)cap * sizeof(uint32_t));
-    uint32_t *ot = (uint32_t *)realloc(sc->order_tmp, (size_t)cap * sizeof(uint32_t));
-    uint32_t *r  = (uint32_t *)realloc(sc->remap,     (size_t)cap * sizeof(uint32_t));
-
-    if (!k || !kt || !o || !ot || !r)
-    {
-        sc->keys = k; sc->keys_tmp = kt; sc->order = o; sc->order_tmp = ot; sc->remap = r;
-        return 0;
-    }
-
-    sc->keys = k; sc->keys_tmp = kt; sc->order = o; sc->order_tmp = ot; sc->remap = r;
-    sc->cap_v = cap;
+    if (!out) return 0;
+    if (a == 0 || b == 0) { *out = 0; return 1; }
+    if (a > SIZE_MAX / b) return 0;
+    *out = a * b;
     return 1;
 }
 
-static int scratch_ensure_i(lod_scratch_t *sc, uint32_t icount)
-{
-    if (sc->cap_i >= icount && sc->tmp_idx) return 1;
-
-    uint32_t cap = sc->cap_i ? sc->cap_i : 1u;
-    while (cap < icount) cap <<= 1u;
-
-    uint32_t *ti = (uint32_t *)realloc(sc->tmp_idx, (size_t)cap * sizeof(uint32_t));
-    if (!ti) return 0;
-
-    sc->tmp_idx = ti;
-    sc->cap_i = cap;
-    return 1;
-}
-
-static int scratch_ensure_new(lod_scratch_t *sc, uint32_t new_cap)
-{
-    if (sc->cap_new >= new_cap && sc->new_vtx && sc->new_counts) return 1;
-
-    uint32_t cap = sc->cap_new ? sc->cap_new : 1u;
-    while (cap < new_cap) cap <<= 1u;
-
-    model_vertex_t *nv = (model_vertex_t *)realloc(sc->new_vtx, (size_t)cap * sizeof(model_vertex_t));
-    uint32_t *nc = (uint32_t *)realloc(sc->new_counts, (size_t)cap * sizeof(uint32_t));
-    if (!nv || !nc)
-    {
-        sc->new_vtx = nv; sc->new_counts = nc;
-        return 0;
-    }
-
-    sc->new_vtx = nv; sc->new_counts = nc;
-    sc->cap_new = cap;
-    return 1;
-}
-
-static int scratch_ensure_tmp_u32(lod_scratch_t *sc, uint32_t n)
-{
-    if (sc->cap_tmp_u32 >= n && sc->tmp_u32) return 1;
-    uint32_t cap = sc->cap_tmp_u32 ? sc->cap_tmp_u32 : 1u;
-    while (cap < n) cap <<= 1u;
-    uint32_t *p = (uint32_t *)realloc(sc->tmp_u32, (size_t)cap * sizeof(uint32_t));
-    if (!p) return 0;
-    sc->tmp_u32 = p;
-    sc->cap_tmp_u32 = cap;
-    return 1;
-}
-
-static int scratch_ensure_tmp_u8(lod_scratch_t *sc, uint32_t n)
-{
-    if (sc->cap_tmp_u8 >= n && sc->tmp_u8) return 1;
-    uint32_t cap = sc->cap_tmp_u8 ? sc->cap_tmp_u8 : 1u;
-    while (cap < n) cap <<= 1u;
-    uint8_t *p = (uint8_t *)realloc(sc->tmp_u8, (size_t)cap * sizeof(uint8_t));
-    if (!p) return 0;
-    sc->tmp_u8 = p;
-    sc->cap_tmp_u8 = cap;
-    return 1;
-}
-
-/* radix sort "order" indices by u64 key */
-static void radix_sort_u64_by_order(uint64_t *keys, uint32_t *order, uint64_t *keys_tmp, uint32_t *order_tmp, uint32_t n)
-{
-    uint32_t counts[256];
-
-    for (uint32_t pass = 0; pass < 8u; ++pass)
-    {
-        memset(counts, 0, sizeof(counts));
-        uint32_t shift = pass * 8u;
-
-        for (uint32_t i = 0; i < n; ++i)
-        {
-            uint64_t k = keys[order[i]];
-            uint32_t b = (uint32_t)((k >> shift) & 0xffu);
-            counts[b] += 1u;
-        }
-
-        uint32_t sum = 0u;
-        for (uint32_t i = 0; i < 256u; ++i)
-        {
-            uint32_t c = counts[i];
-            counts[i] = sum;
-            sum += c;
-        }
-
-        for (uint32_t i = 0; i < n; ++i)
-        {
-            uint32_t v = order[i];
-            uint64_t k = keys[v];
-            uint32_t b = (uint32_t)((k >> shift) & 0xffu);
-            uint32_t dst = counts[b]++;
-            order_tmp[dst] = v;
-        }
-
-        uint32_t *swp = order;
-        order = order_tmp;
-        order_tmp = swp;
-    }
-
-    /* ensure caller's "order" receives final result */
-    memcpy(order_tmp, order, (size_t)n * sizeof(uint32_t));
-    memcpy(order, order_tmp, (size_t)n * sizeof(uint32_t));
-    (void)keys_tmp;
-}
-
-static uint64_t make_cell_key(uint32_t cx, uint32_t cy, uint32_t cz)
-{
-    uint64_t x = (uint64_t)(cx & 0x1fffffu);
-    uint64_t y = (uint64_t)(cy & 0x1fffffu);
-    uint64_t z = (uint64_t)(cz & 0x1fffffu);
-    return x | (y << 21u) | (z << 42u);
-}
-
-static int build_lod_cluster_fast(const model_cpu_lod_t *src,
-                                 float ratio,
-                                 uint32_t res,
-                                 int enforce_min_px,
-                                 float min_len2_threshold,
-                                 float minx, float miny, float minz,
-                                 float inv_cell,
-                                 lod_scratch_t *sc,
-                                 model_cpu_lod_t *out)
-{
-    memset(out, 0, sizeof(*out));
-
-    uint32_t vcount = src->vertex_count;
-    uint32_t icount = src->index_count;
-
-    if (!scratch_ensure_v(sc, vcount)) return 0;
-    if (!scratch_ensure_i(sc, icount)) return 0;
-
-    for (uint32_t i = 0; i < vcount; ++i)
-    {
-        const model_vertex_t *v = &src->vertices[i];
-
-        float fx = (v->px - minx) * inv_cell;
-        float fy = (v->py - miny) * inv_cell;
-        float fz = (v->pz - minz) * inv_cell;
-
-        uint32_t cx = (uint32_t)((fx < 0.0f) ? 0u : (uint32_t)fx);
-        uint32_t cy = (uint32_t)((fy < 0.0f) ? 0u : (uint32_t)fy);
-        uint32_t cz = (uint32_t)((fz < 0.0f) ? 0u : (uint32_t)fz);
-
-        cx = clamp_u32(cx, 0u, res - 1u);
-        cy = clamp_u32(cy, 0u, res - 1u);
-        cz = clamp_u32(cz, 0u, res - 1u);
-
-        sc->keys[i]  = make_cell_key(cx, cy, cz);
-        sc->order[i] = i;
-    }
-
-    radix_sort_u64_by_order(sc->keys, sc->order, sc->keys_tmp, sc->order_tmp, vcount);
-
-    uint32_t new_vcount = 0;
-    if (!scratch_ensure_new(sc, vcount)) return 0;
-
-    uint32_t run_begin = 0;
-    while (run_begin < vcount)
-    {
-        uint32_t vi0 = sc->order[run_begin];
-        uint64_t k = sc->keys[vi0];
-
-        uint32_t run_end = run_begin + 1u;
-        while (run_end < vcount)
-        {
-            uint32_t vik = sc->order[run_end];
-            if (sc->keys[vik] != k) break;
-            run_end += 1u;
-        }
-
-        float sum_px = 0.0f, sum_py = 0.0f, sum_pz = 0.0f;
-        float sum_nx = 0.0f, sum_ny = 0.0f, sum_nz = 0.0f;
-        float sum_tx = 0.0f, sum_ty = 0.0f, sum_tz = 0.0f, sum_tw = 0.0f;
-        float sum_u = 0.0f, sum_v = 0.0f;
-        uint32_t cnt = 0u;
-
-        for (uint32_t r = run_begin; r < run_end; ++r)
-        {
-            uint32_t vi = sc->order[r];
-            const model_vertex_t *v = &src->vertices[vi];
-
-            sc->remap[vi] = new_vcount;
-
-            sum_px += v->px; sum_py += v->py; sum_pz += v->pz;
-            sum_nx += v->nx; sum_ny += v->ny; sum_nz += v->nz;
-            sum_tx += v->tx; sum_ty += v->ty; sum_tz += v->tz;
-            sum_tw += v->tw;
-            sum_u  += v->u;  sum_v  += v->v;
-
-            cnt += 1u;
-        }
-
-        float inv = 1.0f / (float)cnt;
-        model_vertex_t *nv = &sc->new_vtx[new_vcount];
-
-        nv->px = sum_px * inv; nv->py = sum_py * inv; nv->pz = sum_pz * inv;
-
-        nv->nx = sum_nx * inv; nv->ny = sum_ny * inv; nv->nz = sum_nz * inv;
-        v3_norm(&nv->nx, &nv->ny, &nv->nz);
-
-        nv->tx = sum_tx * inv; nv->ty = sum_ty * inv; nv->tz = sum_tz * inv;
-        v3_norm(&nv->tx, &nv->ty, &nv->tz);
-
-        nv->tw = (sum_tw * inv) >= 0.0f ? 1.0f : -1.0f;
-
-        nv->u = sum_u * inv; nv->v = sum_v * inv;
-
-        sc->new_counts[new_vcount] = cnt;
-        new_vcount += 1u;
-
-        run_begin = run_end;
-    }
-
-    uint32_t tri_src = icount / 3u;
-    uint32_t w = 0;
-
-    for (uint32_t t = 0; t < tri_src; ++t)
-    {
-        uint32_t i0 = src->indices[t * 3u + 0u];
-        uint32_t i1 = src->indices[t * 3u + 1u];
-        uint32_t i2 = src->indices[t * 3u + 2u];
-
-        if (i0 >= vcount || i1 >= vcount || i2 >= vcount) continue;
-
-        uint32_t a = sc->remap[i0];
-        uint32_t b = sc->remap[i1];
-        uint32_t c = sc->remap[i2];
-
-        if (a == b || b == c || a == c) continue;
-
-        if (enforce_min_px)
-        {
-            const model_vertex_t *v0 = &sc->new_vtx[a];
-            const model_vertex_t *v1 = &sc->new_vtx[b];
-            const model_vertex_t *v2 = &sc->new_vtx[c];
-            float len2 = tri_cross_len2_pos3(v0, v1, v2);
-            if (len2 < min_len2_threshold) continue;
-        }
-
-        sc->tmp_idx[w++] = a;
-        sc->tmp_idx[w++] = b;
-        sc->tmp_idx[w++] = c;
-    }
-
-    if (w < 3u || new_vcount < 3u) return 0;
-
-    out->vertex_count = new_vcount;
-    out->index_count  = w;
-
-    out->vertices = (model_vertex_t *)malloc((size_t)new_vcount * sizeof(model_vertex_t));
-    out->indices  = (uint32_t *)malloc((size_t)w * sizeof(uint32_t));
-    if (!out->vertices || !out->indices)
-    {
-        free(out->vertices);
-        free(out->indices);
-        memset(out, 0, sizeof(*out));
-        return 0;
-    }
-
-    memcpy(out->vertices, sc->new_vtx, (size_t)new_vcount * sizeof(model_vertex_t));
-    memcpy(out->indices,  sc->tmp_idx, (size_t)w * sizeof(uint32_t));
-
-    (void)ratio;
-    return 1;
-}
-
-/* -------------------------- EDGE COLLAPSE (last LOD) -------------------------- */
-
-/*
-    This is a conservative edge-collapse simplifier:
-
-    - Protect boundary edges (edges with only 1 incident triangle) -> avoids opening holes.
-    - Reject collapses that would flip affected triangles (normal dot < flip_threshold).
-    - Cost = squared edge length (optionally + normal/uv penalty if you want to add later).
-    - Uses a lazy min-heap: we push candidate edges, and validate on pop.
-
-    NOTE: This is not full QEM. It's intentionally simpler and robust.
-*/
-
-typedef struct ec_incident_list_t
-{
-    uint32_t *tris;
-    uint32_t count;
-    uint32_t cap;
-} ec_incident_list_t;
-
-static int ec_incident_push(ec_incident_list_t *lst, uint32_t tri_id)
-{
-    if (lst->count == lst->cap)
-    {
-        uint32_t nc = lst->cap ? (lst->cap * 2u) : 8u;
-        uint32_t *p = (uint32_t *)realloc(lst->tris, (size_t)nc * sizeof(uint32_t));
-        if (!p) return 0;
-        lst->tris = p;
-        lst->cap = nc;
-    }
-    lst->tris[lst->count++] = tri_id;
-    return 1;
-}
-
-typedef struct ec_edgekey_t
-{
-    uint64_t key;     /* (min<<32)|max */
-    uint32_t a, b;    /* endpoints */
-    uint32_t count;   /* number of incident triangles */
-} ec_edgekey_t;
-
-static uint64_t ec_make_edge_key(uint32_t i, uint32_t j)
-{
-    uint32_t a = i < j ? i : j;
-    uint32_t b = i < j ? j : i;
-    return ((uint64_t)a << 32u) | (uint64_t)b;
-}
-
-static void ec_edgekey_sort(ec_edgekey_t *edges, uint32_t n, lod_scratch_t *sc)
-{
-    /* sort by key using the existing radix sorter by building key array + order */
-    if (!scratch_ensure_v(sc, n)) return; /* reuses sc->keys/sc->order; safe */
-    for (uint32_t i = 0; i < n; ++i)
-    {
-        sc->keys[i]  = edges[i].key;
-        sc->order[i] = i;
-    }
-    radix_sort_u64_by_order(sc->keys, sc->order, sc->keys_tmp, sc->order_tmp, n);
-
-    /* reorder edges into tmp_u32 as indices then permute in-place via a temp copy */
-    /* We'll allocate a temp copy of edges (n) using tmp_u32 as raw bytes isn't safe; just malloc. */
-    ec_edgekey_t *tmp = (ec_edgekey_t *)malloc((size_t)n * sizeof(ec_edgekey_t));
-    if (!tmp) return;
-    for (uint32_t i = 0; i < n; ++i) tmp[i] = edges[sc->order[i]];
-    memcpy(edges, tmp, (size_t)n * sizeof(ec_edgekey_t));
-    free(tmp);
-}
-
-typedef struct ec_heap_item_t
-{
-    uint32_t a, b;
-    float cost;
-} ec_heap_item_t;
-
-typedef struct ec_heap_t
-{
-    ec_heap_item_t *items;
-    uint32_t count;
-    uint32_t cap;
-} ec_heap_t;
-
-static void ec_heap_free(ec_heap_t *h)
-{
-    free(h->items);
-    memset(h, 0, sizeof(*h));
-}
-
-static int ec_heap_push(ec_heap_t *h, ec_heap_item_t it)
-{
-    if (h->count == h->cap)
-    {
-        uint32_t nc = h->cap ? h->cap * 2u : 256u;
-        ec_heap_item_t *p = (ec_heap_item_t *)realloc(h->items, (size_t)nc * sizeof(ec_heap_item_t));
-        if (!p) return 0;
-        h->items = p;
-        h->cap = nc;
-    }
-    uint32_t i = h->count++;
-    h->items[i] = it;
-
-    /* up-heap */
-    while (i > 0u)
-    {
-        uint32_t p = (i - 1u) >> 1u;
-        if (h->items[p].cost <= h->items[i].cost) break;
-        ec_heap_item_t tmp = h->items[p];
-        h->items[p] = h->items[i];
-        h->items[i] = tmp;
-        i = p;
-    }
-    return 1;
-}
-
-static int ec_heap_pop_min(ec_heap_t *h, ec_heap_item_t *out)
-{
-    if (h->count == 0u) return 0;
-    *out = h->items[0];
-    h->count--;
-    if (h->count == 0u) return 1;
-    h->items[0] = h->items[h->count];
-
-    /* down-heap */
-    uint32_t i = 0u;
-    for (;;)
-    {
-        uint32_t l = i * 2u + 1u;
-        uint32_t r = l + 1u;
-        if (l >= h->count) break;
-
-        uint32_t m = l;
-        if (r < h->count && h->items[r].cost < h->items[l].cost) m = r;
-
-        if (h->items[i].cost <= h->items[m].cost) break;
-
-        ec_heap_item_t tmp = h->items[i];
-        h->items[i] = h->items[m];
-        h->items[m] = tmp;
-        i = m;
-    }
-    return 1;
-}
-
-static float ec_edge_cost_len2(const model_vertex_t *v, uint32_t a, uint32_t b)
-{
-    float dx = v[b].px - v[a].px;
-    float dy = v[b].py - v[a].py;
-    float dz = v[b].pz - v[a].pz;
-    return dx * dx + dy * dy + dz * dz;
-}
-
-static void ec_tri_normal_from_pos(const model_vertex_t *v, uint32_t i0, uint32_t i1, uint32_t i2, float *nx, float *ny, float *nz)
-{
-    float ax = v[i1].px - v[i0].px;
-    float ay = v[i1].py - v[i0].py;
-    float az = v[i1].pz - v[i0].pz;
-
-    float bx = v[i2].px - v[i0].px;
-    float by = v[i2].py - v[i0].py;
-    float bz = v[i2].pz - v[i0].pz;
-
-    v3_cross(ax, ay, az, bx, by, bz, nx, ny, nz);
-    v3_norm(nx, ny, nz);
-}
-
-static int ec_tri_contains(const uint32_t *tri, uint32_t v)
-{
-    return tri[0] == v || tri[1] == v || tri[2] == v;
-}
-
-/* Build boundary-vertex flags: vertex is boundary if it touches any boundary edge. */
-static int ec_build_boundary_flags(const uint32_t *idx, uint32_t tri_count, uint32_t vcount,
-                                  uint8_t *is_boundary_v, lod_scratch_t *sc)
-{
-    memset(is_boundary_v, 0, (size_t)vcount * sizeof(uint8_t));
-
-    /* emit all edges (3 per tri) */
-    uint32_t ecount = tri_count * 3u;
-    ec_edgekey_t *edges = (ec_edgekey_t *)malloc((size_t)ecount * sizeof(ec_edgekey_t));
-    if (!edges) return 0;
-
-    for (uint32_t t = 0; t < tri_count; ++t)
-    {
-        uint32_t i0 = idx[t * 3u + 0u];
-        uint32_t i1 = idx[t * 3u + 1u];
-        uint32_t i2 = idx[t * 3u + 2u];
-        edges[t * 3u + 0u].key = ec_make_edge_key(i0, i1);
-        edges[t * 3u + 1u].key = ec_make_edge_key(i1, i2);
-        edges[t * 3u + 2u].key = ec_make_edge_key(i2, i0);
-        edges[t * 3u + 0u].a = i0; edges[t * 3u + 0u].b = i1;
-        edges[t * 3u + 1u].a = i1; edges[t * 3u + 1u].b = i2;
-        edges[t * 3u + 2u].a = i2; edges[t * 3u + 2u].b = i0;
-        edges[t * 3u + 0u].count = 1u;
-        edges[t * 3u + 1u].count = 1u;
-        edges[t * 3u + 2u].count = 1u;
-    }
-
-    ec_edgekey_sort(edges, ecount, sc);
-
-    /* run-length count; boundary edges have count==1 */
-    uint32_t run = 0u;
-    while (run < ecount)
-    {
-        uint64_t k = edges[run].key;
-        uint32_t end = run + 1u;
-        while (end < ecount && edges[end].key == k) end++;
-
-        if ((end - run) == 1u)
-        {
-            uint32_t a = (uint32_t)(k >> 32u);
-            uint32_t b = (uint32_t)(k & 0xffffffffu);
-            if (a < vcount) is_boundary_v[a] = 1u;
-            if (b < vcount) is_boundary_v[b] = 1u;
-        }
-
-        run = end;
-    }
-
-    free(edges);
-    return 1;
-}
-
-static int ec_build_incident_lists(const uint32_t *idx, uint32_t tri_count, uint32_t vcount,
-                                  ec_incident_list_t *inc)
-{
-    for (uint32_t i = 0; i < vcount; ++i)
-        memset(&inc[i], 0, sizeof(inc[i]));
-
-    for (uint32_t t = 0; t < tri_count; ++t)
-    {
-        uint32_t i0 = idx[t * 3u + 0u];
-        uint32_t i1 = idx[t * 3u + 1u];
-        uint32_t i2 = idx[t * 3u + 2u];
-        if (i0 >= vcount || i1 >= vcount || i2 >= vcount) continue;
-        if (!ec_incident_push(&inc[i0], t)) return 0;
-        if (!ec_incident_push(&inc[i1], t)) return 0;
-        if (!ec_incident_push(&inc[i2], t)) return 0;
-    }
-    return 1;
-}
-
-static void ec_free_incident_lists(ec_incident_list_t *inc, uint32_t vcount)
-{
-    if (!inc) return;
-    for (uint32_t i = 0; i < vcount; ++i) free(inc[i].tris);
-    free(inc);
-}
-
-/* Attempt a collapse (r -> k). Returns 1 if applied, 0 if rejected. */
-static int ec_try_collapse(uint32_t k, uint32_t r,
-                           model_vertex_t *v, uint32_t vcount,
-                           uint32_t *idx, uint32_t tri_count,
-                           uint8_t *v_alive, uint8_t *t_alive,
-                           uint8_t *is_boundary_v,
-                           ec_incident_list_t *inc,
-                           float flip_threshold_dot)
-{
-    if (k >= vcount || r >= vcount) return 0;
-    if (!v_alive[k] || !v_alive[r]) return 0;
-
-    /* Boundary protection: don't collapse boundary vertices (simple & safe). */
-    if (is_boundary_v[k] || is_boundary_v[r]) return 0;
-
-    /* Proposed new vertex (midpoint + averaged attributes). */
-    model_vertex_t newv = v[k];
-    newv.px = 0.5f * (v[k].px + v[r].px);
-    newv.py = 0.5f * (v[k].py + v[r].py);
-    newv.pz = 0.5f * (v[k].pz + v[r].pz);
-
-    newv.nx = 0.5f * (v[k].nx + v[r].nx);
-    newv.ny = 0.5f * (v[k].ny + v[r].ny);
-    newv.nz = 0.5f * (v[k].nz + v[r].nz);
-    v3_norm(&newv.nx, &newv.ny, &newv.nz);
-
-    newv.tx = 0.5f * (v[k].tx + v[r].tx);
-    newv.ty = 0.5f * (v[k].ty + v[r].ty);
-    newv.tz = 0.5f * (v[k].tz + v[r].tz);
-    v3_norm(&newv.tx, &newv.ty, &newv.tz);
-
-    newv.tw = (v[k].tw + v[r].tw) >= 0.0f ? 1.0f : -1.0f;
-    newv.u  = 0.5f * (v[k].u + v[r].u);
-    newv.v  = 0.5f * (v[k].v + v[r].v);
-
-    /* Validate all triangles incident to r (and also those incident to k, because k moves). */
-    ec_incident_list_t *Lr = &inc[r];
-    ec_incident_list_t *Lk = &inc[k];
-
-    /* Helper lambda-ish: validate triangle t with the proposed new vertex, and r->k remap. */
-    for (uint32_t pass = 0; pass < 2u; ++pass)
-    {
-        ec_incident_list_t *L = (pass == 0u) ? Lr : Lk;
-        for (uint32_t ii = 0; ii < L->count; ++ii)
-        {
-            uint32_t t = L->tris[ii];
-            if (t >= tri_count) continue;
-            if (!t_alive[t]) continue;
-
-            uint32_t tri[3];
-            tri[0] = idx[t * 3u + 0u];
-            tri[1] = idx[t * 3u + 1u];
-            tri[2] = idx[t * 3u + 2u];
-
-            if (!ec_tri_contains(tri, r) && !ec_tri_contains(tri, k)) continue;
-
-            /* Original normal */
-            float onx, ony, onz;
-            ec_tri_normal_from_pos(v, tri[0], tri[1], tri[2], &onx, &ony, &onz);
-
-            /* Build remapped triangle */
-            uint32_t ntri[3] = { tri[0], tri[1], tri[2] };
-            for (uint32_t c = 0; c < 3u; ++c)
-                if (ntri[c] == r) ntri[c] = k;
-
-            /* Degenerate after collapse: allowed (it will be removed), no need to flip-check. */
-            if (ntri[0] == ntri[1] || ntri[1] == ntri[2] || ntri[0] == ntri[2])
-                continue;
-
-            /* Compute new normal using "newv" for vertex k. */
-            model_vertex_t saved_k = v[k];
-            v[k] = newv;
-
-            float nnx, nny, nnz;
-            ec_tri_normal_from_pos(v, ntri[0], ntri[1], ntri[2], &nnx, &nny, &nnz);
-
-            v[k] = saved_k;
-
-            float d = v3_dot(onx, ony, onz, nnx, nny, nnz);
-            if (d < flip_threshold_dot)
-                return 0; /* reject collapse due to flip */
-        }
-    }
-
-    /* Apply: move k to newv, kill r, update triangles incident to r and k. */
-    v[k] = newv;
-    v_alive[r] = 0u;
-
-    /* Update triangles in Lr: replace r->k, drop degenerates, and add those tris to Lk for future queries. */
-    for (uint32_t ii = 0; ii < Lr->count; ++ii)
-    {
-        uint32_t t = Lr->tris[ii];
-        if (t >= tri_count) continue;
-        if (!t_alive[t]) continue;
-
-        uint32_t *tri = &idx[t * 3u];
-
-        int touched = 0;
-        for (uint32_t c = 0; c < 3u; ++c)
-        {
-            if (tri[c] == r)
-            {
-                tri[c] = k;
-                touched = 1;
-            }
-        }
-        if (!touched) continue;
-
-        /* remove degenerates */
-        if (tri[0] == tri[1] || tri[1] == tri[2] || tri[0] == tri[2])
-        {
-            t_alive[t] = 0u;
-            continue;
-        }
-
-        /* maintain incident list lazily: append to k's list */
-        (void)ec_incident_push(Lk, t);
-    }
-
-    return 1;
-}
-
-static int build_lod_edge_collapse(const model_cpu_lod_t *src,
-                                  float ratio,
-                                  lod_scratch_t *sc,
-                                  model_cpu_lod_t *out)
-{
-    memset(out, 0, sizeof(*out));
-
-    if (!src || !src->vertices || !src->indices) return 0;
-    if (src->index_count < 3u || src->vertex_count < 3u) return 0;
-
-    uint32_t vcount = src->vertex_count;
-    uint32_t tri_count = src->index_count / 3u;
-
-    uint32_t target_tris = (uint32_t)floorf((float)tri_count * clamp01(ratio));
-    if (target_tris < 1u) target_tris = 1u;
-
-    /* Working copies */
-    model_vertex_t *v = (model_vertex_t *)malloc((size_t)vcount * sizeof(model_vertex_t));
-    uint32_t *idx = (uint32_t *)malloc((size_t)tri_count * 3u * sizeof(uint32_t));
-    if (!v || !idx)
-    {
-        free(v); free(idx);
-        return 0;
-    }
-    memcpy(v, src->vertices, (size_t)vcount * sizeof(model_vertex_t));
-    memcpy(idx, src->indices, (size_t)tri_count * 3u * sizeof(uint32_t));
-
-    /* Alive flags */
-    if (!scratch_ensure_tmp_u8(sc, (uint32_t)(vcount + tri_count + vcount))) /* v_alive + t_alive + boundary */
-    {
-        free(v); free(idx);
-        return 0;
-    }
-    uint8_t *v_alive = sc->tmp_u8;
-    uint8_t *t_alive = sc->tmp_u8 + vcount;
-    uint8_t *is_boundary_v = sc->tmp_u8 + vcount + tri_count;
-
-    memset(v_alive, 1, (size_t)vcount * sizeof(uint8_t));
-    memset(t_alive, 1, (size_t)tri_count * sizeof(uint8_t));
-
-    if (!ec_build_boundary_flags(idx, tri_count, vcount, is_boundary_v, sc))
-    {
-        free(v); free(idx);
-        return 0;
-    }
-
-    /* Incident lists */
-    ec_incident_list_t *inc = (ec_incident_list_t *)calloc((size_t)vcount, sizeof(ec_incident_list_t));
-    if (!inc)
-    {
-        free(v); free(idx);
-        return 0;
-    }
-    if (!ec_build_incident_lists(idx, tri_count, vcount, inc))
-    {
-        ec_free_incident_lists(inc, vcount);
-        free(v); free(idx);
-        return 0;
-    }
-
-    /* Seed heap with all edges from all alive triangles. */
-    ec_heap_t heap;
-    memset(&heap, 0, sizeof(heap));
-
-    for (uint32_t t = 0; t < tri_count; ++t)
-    {
-        if (!t_alive[t]) continue;
-        uint32_t i0 = idx[t * 3u + 0u];
-        uint32_t i1 = idx[t * 3u + 1u];
-        uint32_t i2 = idx[t * 3u + 2u];
-        if (i0 >= vcount || i1 >= vcount || i2 >= vcount) continue;
-
-        /* push 3 directed candidates (we'll decide keep/remove on pop) */
-        ec_heap_item_t e01 = { i0, i1, ec_edge_cost_len2(v, i0, i1) };
-        ec_heap_item_t e12 = { i1, i2, ec_edge_cost_len2(v, i1, i2) };
-        ec_heap_item_t e20 = { i2, i0, ec_edge_cost_len2(v, i2, i0) };
-        if (!ec_heap_push(&heap, e01) || !ec_heap_push(&heap, e12) || !ec_heap_push(&heap, e20))
-        {
-            ec_heap_free(&heap);
-            ec_free_incident_lists(inc, vcount);
-            free(v); free(idx);
-            return 0;
-        }
-    }
-
-    /* Collapse loop */
-    uint32_t alive_tris = tri_count;
-    const float flip_threshold_dot = 0.0f; /* 0 = forbid >90deg flips; raise to 0.2 for stricter */
-
-    /* Helper: recompute alive triangle count occasionally (lazy) */
-    uint32_t step = 0u;
-
-    while (alive_tris > target_tris)
-    {
-        ec_heap_item_t it;
-        if (!ec_heap_pop_min(&heap, &it))
-            break;
-
-        uint32_t a = it.a;
-        uint32_t b = it.b;
-        if (a >= vcount || b >= vcount) continue;
-        if (!v_alive[a] || !v_alive[b]) continue;
-        if (a == b) continue;
-
-        /* boundary protection: handled inside try_collapse as vertex-based */
-        /* choose keep vertex: keep the one with higher incident count (heuristic) */
-        uint32_t ka = a, rb = b;
-        if (inc[b].count > inc[a].count) { ka = b; rb = a; }
-
-        if (!ec_try_collapse(ka, rb, v, vcount, idx, tri_count, v_alive, t_alive, is_boundary_v, inc, flip_threshold_dot))
-            continue;
-
-        /* after a successful collapse, push some fresh local edges from ka's incident tris */
-        ec_incident_list_t *Lk = &inc[ka];
-        for (uint32_t ii = 0; ii < Lk->count; ++ii)
-        {
-            uint32_t t = Lk->tris[ii];
-            if (t >= tri_count) continue;
-            if (!t_alive[t]) continue;
-
-            uint32_t i0 = idx[t * 3u + 0u];
-            uint32_t i1 = idx[t * 3u + 1u];
-            uint32_t i2 = idx[t * 3u + 2u];
-
-            if (i0 >= vcount || i1 >= vcount || i2 >= vcount) continue;
-            if (!v_alive[i0] || !v_alive[i1] || !v_alive[i2]) continue;
-
-            ec_heap_item_t e01 = { i0, i1, ec_edge_cost_len2(v, i0, i1) };
-            ec_heap_item_t e12 = { i1, i2, ec_edge_cost_len2(v, i1, i2) };
-            ec_heap_item_t e20 = { i2, i0, ec_edge_cost_len2(v, i2, i0) };
-            (void)ec_heap_push(&heap, e01);
-            (void)ec_heap_push(&heap, e12);
-            (void)ec_heap_push(&heap, e20);
-        }
-
-        /* lazy alive tris recount every so often */
-        step++;
-        if ((step & 0x3ffu) == 0u)
-        {
-            uint32_t c = 0u;
-            for (uint32_t t = 0; t < tri_count; ++t) if (t_alive[t]) c++;
-            alive_tris = c;
-        }
-    }
-
-    /* Final alive tris count */
-    {
-        uint32_t c = 0u;
-        for (uint32_t t = 0; t < tri_count; ++t) if (t_alive[t]) c++;
-        alive_tris = c;
-    }
-
-    /* Compact vertices: build remap old->new for alive vertices actually referenced by alive triangles */
-    if (!scratch_ensure_tmp_u32(sc, vcount))
-    {
-        ec_heap_free(&heap);
-        ec_free_incident_lists(inc, vcount);
-        free(v); free(idx);
-        return 0;
-    }
-    uint32_t *remap = sc->tmp_u32;
-    for (uint32_t i = 0; i < vcount; ++i) remap[i] = 0xffffffffu;
-
-    uint32_t used_count = 0u;
-    for (uint32_t t = 0; t < tri_count; ++t)
-    {
-        if (!t_alive[t]) continue;
-        for (uint32_t c = 0; c < 3u; ++c)
-        {
-            uint32_t vi = idx[t * 3u + c];
-            if (vi >= vcount) continue;
-            if (!v_alive[vi]) continue;
-            if (remap[vi] == 0xffffffffu)
-                remap[vi] = used_count++;
-        }
-    }
-
-    if (alive_tris < 1u || used_count < 3u)
-    {
-        ec_heap_free(&heap);
-        ec_free_incident_lists(inc, vcount);
-        free(v); free(idx);
-        return 0;
-    }
-
-    out->vertex_count = used_count;
-    out->index_count  = alive_tris * 3u;
-    out->vertices = (model_vertex_t *)malloc((size_t)used_count * sizeof(model_vertex_t));
-    out->indices  = (uint32_t *)malloc((size_t)out->index_count * sizeof(uint32_t));
-    if (!out->vertices || !out->indices)
-    {
-        free(out->vertices);
-        free(out->indices);
-        memset(out, 0, sizeof(*out));
-
-        ec_heap_free(&heap);
-        ec_free_incident_lists(inc, vcount);
-        free(v); free(idx);
-        return 0;
-    }
-
-    for (uint32_t i = 0; i < vcount; ++i)
-    {
-        uint32_t ni = remap[i];
-        if (ni != 0xffffffffu)
-            out->vertices[ni] = v[i];
-    }
-
-    uint32_t w = 0u;
-    for (uint32_t t = 0; t < tri_count; ++t)
-    {
-        if (!t_alive[t]) continue;
-
-        uint32_t a = idx[t * 3u + 0u];
-        uint32_t b = idx[t * 3u + 1u];
-        uint32_t c = idx[t * 3u + 2u];
-
-        uint32_t na = (a < vcount) ? remap[a] : 0xffffffffu;
-        uint32_t nb = (b < vcount) ? remap[b] : 0xffffffffu;
-        uint32_t nc = (c < vcount) ? remap[c] : 0xffffffffu;
-
-        if (na == 0xffffffffu || nb == 0xffffffffu || nc == 0xffffffffu) continue;
-        if (na == nb || nb == nc || na == nc) continue;
-
-        out->indices[w++] = na;
-        out->indices[w++] = nb;
-        out->indices[w++] = nc;
-    }
-
-    out->index_count = w;
-    if (out->index_count < 3u)
-    {
-        free(out->vertices);
-        free(out->indices);
-        memset(out, 0, sizeof(*out));
-
-        ec_heap_free(&heap);
-        ec_free_incident_lists(inc, vcount);
-        free(v); free(idx);
-        return 0;
-    }
-
-    ec_heap_free(&heap);
-    ec_free_incident_lists(inc, vcount);
-    free(v);
-    free(idx);
-    return 1;
-}
-
-/* -------------------------- Common cleanup helpers -------------------------- */
+static float safe_f(float x) { return isfinite(x) ? x : 0.0f; }
 
 static void cpu_lod_free(model_cpu_lod_t *l)
 {
@@ -1064,7 +57,896 @@ static void cpu_lod_free(model_cpu_lod_t *l)
     memset(l, 0, sizeof(*l));
 }
 
-/* -------------------------- Public entry point -------------------------- */
+static int cpu_lod_clone(const model_cpu_lod_t* src, model_cpu_lod_t* out)
+{
+    if (!src || !out || !src->vertices || !src->indices) return 0;
+    if (src->vertex_count < 3u || src->index_count < 3u) return 0;
+
+    memset(out, 0, sizeof(*out));
+
+    size_t vb = 0, ib = 0;
+    if (!size_mul_ok((size_t)src->vertex_count, sizeof(model_vertex_t), &vb)) return 0;
+    if (!size_mul_ok((size_t)src->index_count, sizeof(uint32_t), &ib)) return 0;
+
+    out->vertices = (model_vertex_t*)malloc(vb);
+    out->indices  = (uint32_t*)malloc(ib);
+    if (!out->vertices || !out->indices)
+    {
+        cpu_lod_free(out);
+        return 0;
+    }
+
+    memcpy(out->vertices, src->vertices, vb);
+    memcpy(out->indices,  src->indices,  ib);
+    out->vertex_count = src->vertex_count;
+    out->index_count  = src->index_count;
+    return 1;
+}
+
+static uint32_t sanitize_tris(const uint32_t *src_idx, uint32_t src_icount, uint32_t vcount, uint32_t *dst_idx)
+{
+    if (!src_idx || !dst_idx) return 0;
+
+    uint32_t w = 0u;
+    uint32_t tri = src_icount / 3u;
+
+    for (uint32_t t = 0; t < tri; ++t)
+    {
+        uint32_t i0 = src_idx[t * 3u + 0u];
+        uint32_t i1 = src_idx[t * 3u + 1u];
+        uint32_t i2 = src_idx[t * 3u + 2u];
+
+        if (i0 >= vcount || i1 >= vcount || i2 >= vcount) continue;
+        if (i0 == i1 || i1 == i2 || i0 == i2) continue;
+
+        dst_idx[w++] = i0;
+        dst_idx[w++] = i1;
+        dst_idx[w++] = i2;
+    }
+
+    return w;
+}
+
+typedef struct u64u32_map_t
+{
+    uint64_t* keys;
+    uint32_t* vals;
+    uint32_t cap;
+    uint32_t mask;
+} u64u32_map_t;
+
+static uint64_t mix64(uint64_t x)
+{
+    x += 0x9e3779b97f4a7c15ULL;
+    x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
+    x = x ^ (x >> 31);
+    return x;
+}
+
+static uint32_t next_pow2_u32_safe(uint32_t x)
+{
+    if (x <= 1u) return 1u;
+    x--;
+    x |= x >> 1;
+    x |= x >> 2;
+    x |= x >> 4;
+    x |= x >> 8;
+    x |= x >> 16;
+    return x + 1u;
+}
+
+static int map_init(u64u32_map_t* m, uint32_t desired)
+{
+    if (!m) return 0;
+    memset(m, 0, sizeof(*m));
+
+    uint32_t cap = desired < 16u ? 32u : next_pow2_u32_safe(desired * 2u);
+    if (cap < 32u) cap = 32u;
+
+    size_t kb = 0, vb = 0;
+    if (!size_mul_ok((size_t)cap, sizeof(uint64_t), &kb)) return 0;
+    if (!size_mul_ok((size_t)cap, sizeof(uint32_t), &vb)) return 0;
+
+    m->keys = (uint64_t*)malloc(kb);
+    m->vals = (uint32_t*)malloc(vb);
+    if (!m->keys || !m->vals)
+    {
+        free(m->keys);
+        free(m->vals);
+        memset(m, 0, sizeof(*m));
+        return 0;
+    }
+
+    for (uint32_t i = 0; i < cap; ++i)
+    {
+        m->keys[i] = UINT64_MAX;
+        m->vals[i] = 0xFFFFFFFFu;
+    }
+
+    m->cap = cap;
+    m->mask = cap - 1u;
+    return 1;
+}
+
+static void map_free(u64u32_map_t* m)
+{
+    if (!m) return;
+    free(m->keys);
+    free(m->vals);
+    memset(m, 0, sizeof(*m));
+}
+
+static int map_get_or_insert(u64u32_map_t* m, uint64_t key, uint32_t* io_val, int* inserted)
+{
+    uint32_t h = (uint32_t)mix64(key);
+    uint32_t i = h & m->mask;
+
+    for (uint32_t step = 0; step < m->cap; ++step)
+    {
+        uint32_t slot = (i + step) & m->mask;
+
+        if (m->keys[slot] == key)
+        {
+            if (io_val) *io_val = m->vals[slot];
+            if (inserted) *inserted = 0;
+            return 1;
+        }
+
+        if (m->keys[slot] == UINT64_MAX)
+        {
+            m->keys[slot] = key;
+            m->vals[slot] = io_val ? *io_val : 0u;
+            if (inserted) *inserted = 1;
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+static uint64_t edge_key_u64(uint32_t a, uint32_t b)
+{
+    uint32_t lo = u32_min(a, b);
+    uint32_t hi = u32_max(a, b);
+    uint64_t k = ((uint64_t)lo << 32) | (uint64_t)hi;
+    if (k == UINT64_MAX) k -= 1ULL;
+    return k;
+}
+
+static float uv_wrap_dist(float a, float b)
+{
+    float d0 = fabsf(a - b);
+    float d1 = fabsf((a + 1.0f) - b);
+    float d2 = fabsf((a - 1.0f) - b);
+    float d = d0;
+    if (d1 < d) d = d1;
+    if (d2 < d) d = d2;
+    return d;
+}
+
+static float tri_area3(const model_vertex_t* v0, const model_vertex_t* v1, const model_vertex_t* v2)
+{
+    float x0 = safe_f(v0->px), y0 = safe_f(v0->py), z0 = safe_f(v0->pz);
+    float x1 = safe_f(v1->px), y1 = safe_f(v1->py), z1 = safe_f(v1->pz);
+    float x2 = safe_f(v2->px), y2 = safe_f(v2->py), z2 = safe_f(v2->pz);
+
+    float ax = x1 - x0, ay = y1 - y0, az = z1 - z0;
+    float bx = x2 - x0, by = y2 - y0, bz = z2 - z0;
+
+    float cx = ay*bz - az*by;
+    float cy = az*bx - ax*bz;
+    float cz = ax*by - ay*bx;
+
+    float a2 = cx*cx + cy*cy + cz*cz;
+    if (!isfinite(a2) || a2 <= 0.0f) return 0.0f;
+    return 0.5f * sqrtf(a2);
+}
+
+static float ndot_edge(const model_vertex_t* a, const model_vertex_t* b)
+{
+    float anx = safe_f(a->nx), any = safe_f(a->ny), anz = safe_f(a->nz);
+    float bnx = safe_f(b->nx), bny = safe_f(b->ny), bnz = safe_f(b->nz);
+    float al2 = anx*anx + any*any + anz*anz;
+    float bl2 = bnx*bnx + bny*bny + bnz*bnz;
+    if (al2 <= 1e-20f || bl2 <= 1e-20f) return 1.0f;
+    float inva = 1.0f / sqrtf(al2);
+    float invb = 1.0f / sqrtf(bl2);
+    return (anx*bnx + any*bny + anz*bnz) * inva * invb;
+}
+
+static int uv_seam_edge(const model_vertex_t* a, const model_vertex_t* b, float uv_max)
+{
+    if (uv_max <= 0.0f) return 0;
+    float au = safe_f(a->u), av = safe_f(a->v);
+    float bu = safe_f(b->u), bv = safe_f(b->v);
+    float du = uv_wrap_dist(au, bu);
+    float dv = uv_wrap_dist(av, bv);
+    return (du > uv_max || dv > uv_max) ? 1 : 0;
+}
+
+typedef struct tri_rank_t
+{
+    float area;
+    uint32_t t;
+} tri_rank_t;
+
+static int tri_rank_cmp(const void* pa, const void* pb)
+{
+    const tri_rank_t* a = (const tri_rank_t*)pa;
+    const tri_rank_t* b = (const tri_rank_t*)pb;
+    if (a->area < b->area) return -1;
+    if (a->area > b->area) return 1;
+    return 0;
+}
+
+typedef struct adj_node_t
+{
+    uint32_t to;
+    uint32_t next;
+    uint32_t eid;
+} adj_node_t;
+
+static int build_boundary_loops(const uint32_t* idx, uint32_t icount, uint32_t vcount,
+                               uint32_t** out_loops_flat, uint32_t** out_loop_starts, uint32_t* out_loop_count)
+{
+    *out_loops_flat = NULL;
+    *out_loop_starts = NULL;
+    *out_loop_count = 0u;
+
+    uint32_t tri = icount / 3u;
+    uint32_t edge_est = tri * 3u;
+
+    u64u32_map_t ecount;
+    if (!map_init(&ecount, edge_est)) return 0;
+
+    for (uint32_t t = 0; t < tri; ++t)
+    {
+        uint32_t i0 = idx[t*3u+0u];
+        uint32_t i1 = idx[t*3u+1u];
+        uint32_t i2 = idx[t*3u+2u];
+        uint32_t vs[3] = { i0, i1, i2 };
+
+        for (int e = 0; e < 3; ++e)
+        {
+            uint32_t a = vs[e];
+            uint32_t b = vs[(e+1)%3];
+            if (a >= vcount || b >= vcount || a == b) continue;
+            uint64_t k = edge_key_u64(a, b);
+            uint32_t val = 1u;
+            int ins = 0;
+            uint32_t cur = 0u;
+            if (!map_get_or_insert(&ecount, k, &cur, &ins)) { map_free(&ecount); return 0; }
+            if (!ins)
+            {
+                val = cur + 1u;
+                if (!map_get_or_insert(&ecount, k, &val, &ins)) { map_free(&ecount); return 0; }
+            }
+        }
+    }
+
+    uint32_t bcap = edge_est * 2u;
+    size_t nb = 0;
+    if (!size_mul_ok((size_t)bcap, sizeof(adj_node_t), &nb)) { map_free(&ecount); return 0; }
+    adj_node_t* nodes = (adj_node_t*)malloc(nb);
+    if (!nodes) { map_free(&ecount); return 0; }
+    uint32_t* head = (uint32_t*)malloc((size_t)vcount * sizeof(uint32_t));
+    uint8_t* used = (uint8_t*)malloc((size_t)bcap);
+    if (!head || !used)
+    {
+        free(nodes);
+        free(head);
+        free(used);
+        map_free(&ecount);
+        return 0;
+    }
+    for (uint32_t i = 0; i < vcount; ++i) head[i] = UINT32_MAX;
+
+    uint32_t bcount = 0u;
+
+    for (uint32_t t = 0; t < tri; ++t)
+    {
+        uint32_t i0 = idx[t*3u+0u];
+        uint32_t i1 = idx[t*3u+1u];
+        uint32_t i2 = idx[t*3u+2u];
+        uint32_t vs[3] = { i0, i1, i2 };
+
+        for (int e = 0; e < 3; ++e)
+        {
+            uint32_t a = vs[e];
+            uint32_t b = vs[(e+1)%3];
+            if (a >= vcount || b >= vcount || a == b) continue;
+
+            uint64_t k = edge_key_u64(a, b);
+            uint32_t cnt = 0u;
+            int ins = 0;
+            if (!map_get_or_insert(&ecount, k, &cnt, &ins)) continue;
+            if (ins) continue;
+            if (cnt != 1u) continue;
+
+            if (bcount + 2u > bcap)
+            {
+                uint32_t new_cap = bcap < 1024u ? 2048u : bcap * 2u;
+                size_t nb2 = 0;
+                if (!size_mul_ok((size_t)new_cap, sizeof(adj_node_t), &nb2)) break;
+                adj_node_t* np = (adj_node_t*)realloc(nodes, nb2);
+                uint8_t* up = (uint8_t*)realloc(used, (size_t)new_cap);
+                if (!np || !up) break;
+                nodes = np;
+                used = up;
+                bcap = new_cap;
+            }
+
+            uint32_t eid = bcount;
+
+            nodes[bcount].to = b;
+            nodes[bcount].eid = eid;
+            nodes[bcount].next = head[a];
+            head[a] = bcount;
+            bcount++;
+
+            nodes[bcount].to = a;
+            nodes[bcount].eid = eid;
+            nodes[bcount].next = head[b];
+            head[b] = bcount;
+            bcount++;
+        }
+    }
+
+    map_free(&ecount);
+
+    memset(used, 0, (size_t)bcap);
+
+    uint32_t loops_cap = 16u;
+    uint32_t* loop_starts = (uint32_t*)malloc((size_t)(loops_cap + 1u) * sizeof(uint32_t));
+    if (!loop_starts)
+    {
+        free(nodes); free(head); free(used);
+        return 0;
+    }
+
+    uint32_t flat_cap = 256u;
+    uint32_t* flat = (uint32_t*)malloc((size_t)flat_cap * sizeof(uint32_t));
+    if (!flat)
+    {
+        free(loop_starts);
+        free(nodes); free(head); free(used);
+        return 0;
+    }
+
+    uint32_t loop_count = 0u;
+    uint32_t flat_count = 0u;
+
+    for (uint32_t vi = 0; vi < vcount; ++vi)
+    {
+        uint32_t n0 = head[vi];
+        if (n0 == UINT32_MAX) continue;
+
+        for (uint32_t n = n0; n != UINT32_MAX; n = nodes[n].next)
+        {
+            uint32_t eid = nodes[n].eid;
+            if (eid >= bcap) continue;
+            if (used[eid]) continue;
+
+            uint32_t start_v = vi;
+            uint32_t prev_v = UINT32_MAX;
+            uint32_t cur_v = start_v;
+
+            if (loop_count + 1u >= loops_cap)
+            {
+                uint32_t new_cap = loops_cap * 2u;
+                uint32_t* np = (uint32_t*)realloc(loop_starts, (size_t)(new_cap + 1u) * sizeof(uint32_t));
+                if (!np) break;
+                loop_starts = np;
+                loops_cap = new_cap;
+            }
+
+            loop_starts[loop_count] = flat_count;
+
+            for (uint32_t steps = 0; steps < 1u<<30; ++steps)
+            {
+                if (flat_count + 1u > flat_cap)
+                {
+                    uint32_t new_cap = flat_cap * 2u;
+                    uint32_t* np = (uint32_t*)realloc(flat, (size_t)new_cap * sizeof(uint32_t));
+                    if (!np) break;
+                    flat = np;
+                    flat_cap = new_cap;
+                }
+
+                flat[flat_count++] = cur_v;
+
+                uint32_t best_to = UINT32_MAX;
+                uint32_t best_eid = UINT32_MAX;
+
+                uint32_t h = head[cur_v];
+                uint32_t deg = 0u;
+                for (uint32_t it = h; it != UINT32_MAX; it = nodes[it].next) deg++;
+
+                if (deg != 2u) break;
+
+                for (uint32_t it = h; it != UINT32_MAX; it = nodes[it].next)
+                {
+                    uint32_t to = nodes[it].to;
+                    uint32_t eid2 = nodes[it].eid;
+                    if (to == prev_v) continue;
+                    best_to = to;
+                    best_eid = eid2;
+                    break;
+                }
+
+                if (best_to == UINT32_MAX || best_eid == UINT32_MAX) break;
+
+                used[best_eid] = 1u;
+
+                prev_v = cur_v;
+                cur_v = best_to;
+
+                if (cur_v == start_v) break;
+            }
+
+            if (flat_count - loop_starts[loop_count] >= 3u) loop_count++;
+            else flat_count = loop_starts[loop_count];
+        }
+    }
+
+    loop_starts[loop_count] = flat_count;
+
+    free(nodes);
+    free(head);
+    free(used);
+
+    if (loop_count == 0u)
+    {
+        free(loop_starts);
+        free(flat);
+        return 1;
+    }
+
+    *out_loops_flat = flat;
+    *out_loop_starts = loop_starts;
+    *out_loop_count = loop_count;
+    return 1;
+}
+
+static void add_tri_u32(uint32_t** idx, uint32_t* count, uint32_t* cap, uint32_t a, uint32_t b, uint32_t c)
+{
+    if (*count + 3u > *cap)
+    {
+        uint32_t new_cap = (*cap < 1024u) ? 2048u : (*cap * 2u);
+        uint32_t* np = (uint32_t*)realloc(*idx, (size_t)new_cap * sizeof(uint32_t));
+        if (!np) return;
+        *idx = np;
+        *cap = new_cap;
+    }
+    (*idx)[(*count)++] = a;
+    (*idx)[(*count)++] = b;
+    (*idx)[(*count)++] = c;
+}
+
+static uint32_t add_vertex(model_vertex_t** v, uint32_t* count, uint32_t* cap, model_vertex_t nv)
+{
+    if (*count + 1u > *cap)
+    {
+        uint32_t new_cap = (*cap < 1024u) ? 2048u : (*cap * 2u);
+        model_vertex_t* np = (model_vertex_t*)realloc(*v, (size_t)new_cap * sizeof(model_vertex_t));
+        if (!np) return 0xFFFFFFFFu;
+        *v = np;
+        *cap = new_cap;
+    }
+    uint32_t id = *count;
+    (*v)[(*count)++] = nv;
+    return id;
+}
+
+static void compact_mesh(model_cpu_lod_t* out)
+{
+    if (!out || !out->vertices || !out->indices) return;
+
+    uint32_t vcount = out->vertex_count;
+    uint32_t icount = out->index_count;
+
+    uint8_t* used = (uint8_t*)calloc((size_t)vcount, 1);
+    if (!used) return;
+
+    for (uint32_t i = 0; i < icount; ++i)
+    {
+        uint32_t v = out->indices[i];
+        if (v < vcount) used[v] = 1u;
+    }
+
+    uint32_t* remap = (uint32_t*)malloc((size_t)vcount * sizeof(uint32_t));
+    if (!remap) { free(used); return; }
+
+    uint32_t new_v = 0u;
+    for (uint32_t i = 0; i < vcount; ++i)
+    {
+        if (used[i]) remap[i] = new_v++;
+        else remap[i] = 0xFFFFFFFFu;
+    }
+
+    if (new_v < 3u)
+    {
+        free(remap);
+        free(used);
+        return;
+    }
+
+    model_vertex_t* nv = (model_vertex_t*)malloc((size_t)new_v * sizeof(model_vertex_t));
+    if (!nv)
+    {
+        free(remap);
+        free(used);
+        return;
+    }
+
+    for (uint32_t i = 0; i < vcount; ++i)
+    {
+        if (!used[i]) continue;
+        nv[remap[i]] = out->vertices[i];
+    }
+
+    for (uint32_t i = 0; i < icount; ++i)
+    {
+        uint32_t v = out->indices[i];
+        out->indices[i] = (v < vcount) ? remap[v] : 0u;
+    }
+
+    free(out->vertices);
+    out->vertices = nv;
+    out->vertex_count = new_v;
+
+    free(remap);
+    free(used);
+}
+
+static float lod_effective_total_ratio(const model_lod_settings_t *s, uint8_t li, uint8_t lod_count)
+{
+    float total = settings_value_to_ratio(s->triangle_ratio[li]);
+    if (total <= 0.0f) total = powf(0.5f, (float)li);
+    total = clamp01(total);
+    if (total < 0.001f) total = 0.001f;
+    if (li == (uint8_t)(lod_count - 1u) && total > 0.5f) total = 0.5f;
+    return total;
+}
+
+static int build_lod_drop_and_patch(const model_cpu_lod_t* src, float total_ratio, model_cpu_lod_t* out)
+{
+    memset(out, 0, sizeof(*out));
+    if (!src || !src->vertices || !src->indices) return 0;
+    if (src->vertex_count < 3u || src->index_count < 3u) return 0;
+
+    uint32_t vcount0 = src->vertex_count;
+    uint32_t icount0 = src->index_count - (src->index_count % 3u);
+    if (icount0 < 3u) return 0;
+
+    size_t idxb0 = 0;
+    if (!size_mul_ok((size_t)icount0, sizeof(uint32_t), &idxb0)) return 0;
+
+    uint32_t* clean_idx = (uint32_t*)malloc(idxb0);
+    if (!clean_idx) return 0;
+
+    uint32_t clean_icount = sanitize_tris(src->indices, icount0, vcount0, clean_idx);
+    if (clean_icount < 3u) { free(clean_idx); return 0; }
+
+    uint32_t tri0 = clean_icount / 3u;
+    float r = clamp01(total_ratio);
+    if (r <= 0.0f) r = 0.5f;
+
+    uint32_t target_tri = (uint32_t)floorf((float)tri0 * r);
+    if (target_tri < 1u) target_tri = 1u;
+    if (target_tri >= tri0) target_tri = tri0;
+
+    if (target_tri == tri0)
+    {
+        out->vertex_count = src->vertex_count;
+        out->index_count = clean_icount;
+
+        size_t vb = 0, ib = 0;
+        if (!size_mul_ok((size_t)src->vertex_count, sizeof(model_vertex_t), &vb) ||
+            !size_mul_ok((size_t)clean_icount, sizeof(uint32_t), &ib))
+        {
+            free(clean_idx);
+            return 0;
+        }
+
+        out->vertices = (model_vertex_t*)malloc(vb);
+        out->indices = (uint32_t*)malloc(ib);
+        if (!out->vertices || !out->indices)
+        {
+            cpu_lod_free(out);
+            free(clean_idx);
+            return 0;
+        }
+
+        memcpy(out->vertices, src->vertices, vb);
+        memcpy(out->indices, clean_idx, ib);
+
+        free(clean_idx);
+        return 1;
+    }
+
+    uint32_t edge_est = tri0 * 3u;
+    u64u32_map_t edge_counts;
+    if (!map_init(&edge_counts, edge_est))
+    {
+        free(clean_idx);
+        return 0;
+    }
+
+    for (uint32_t t = 0; t < tri0; ++t)
+    {
+        uint32_t i0 = clean_idx[t*3u+0u];
+        uint32_t i1 = clean_idx[t*3u+1u];
+        uint32_t i2 = clean_idx[t*3u+2u];
+        uint32_t vs[3] = { i0, i1, i2 };
+
+        for (int e = 0; e < 3; ++e)
+        {
+            uint32_t a = vs[e];
+            uint32_t b = vs[(e+1)%3];
+            uint64_t k = edge_key_u64(a, b);
+            uint32_t cur = 1u;
+            int ins = 0;
+            uint32_t prev = 0u;
+            if (!map_get_or_insert(&edge_counts, k, &prev, &ins)) continue;
+            if (!ins)
+            {
+                cur = prev + 1u;
+                map_get_or_insert(&edge_counts, k, &cur, &ins);
+            }
+        }
+    }
+
+    float sharp_ndot = 0.35f;
+    float uv_max = 1.0f / 64.0f;
+
+    uint8_t* protect = (uint8_t*)calloc((size_t)tri0, 1);
+    tri_rank_t* ranks = (tri_rank_t*)malloc((size_t)tri0 * sizeof(tri_rank_t));
+    if (!protect || !ranks)
+    {
+        free(protect);
+        free(ranks);
+        map_free(&edge_counts);
+        free(clean_idx);
+        return 0;
+    }
+
+    uint32_t keep_forced = 0u;
+    for (uint32_t t = 0; t < tri0; ++t)
+    {
+        uint32_t i0 = clean_idx[t*3u+0u];
+        uint32_t i1 = clean_idx[t*3u+1u];
+        uint32_t i2 = clean_idx[t*3u+2u];
+
+        const model_vertex_t* v0 = &src->vertices[i0];
+        const model_vertex_t* v1 = &src->vertices[i1];
+        const model_vertex_t* v2 = &src->vertices[i2];
+
+        float a = tri_area3(v0, v1, v2);
+        if (!isfinite(a) || a < 0.0f) a = 0.0f;
+
+        uint32_t vs[3] = { i0, i1, i2 };
+        uint8_t p = 0u;
+
+        for (int e = 0; e < 3; ++e)
+        {
+            uint32_t ea = vs[e];
+            uint32_t eb = vs[(e+1)%3];
+            uint64_t k = edge_key_u64(ea, eb);
+
+            uint32_t cnt = 0u;
+            int ins = 0;
+            if (!map_get_or_insert(&edge_counts, k, &cnt, &ins)) continue;
+            if (!ins && cnt == 1u) { p = 1u; break; }
+
+            const model_vertex_t* va = &src->vertices[ea];
+            const model_vertex_t* vb = &src->vertices[eb];
+
+            if (ndot_edge(va, vb) < sharp_ndot) { p = 1u; break; }
+            if (uv_seam_edge(va, vb, uv_max)) { p = 1u; break; }
+        }
+
+        protect[t] = p;
+        if (p) keep_forced++;
+
+        ranks[t].area = a;
+        ranks[t].t = t;
+    }
+
+    map_free(&edge_counts);
+
+    uint32_t keep_target = target_tri;
+    if (keep_target < keep_forced) keep_target = keep_forced;
+
+    qsort(ranks, (size_t)tri0, sizeof(tri_rank_t), tri_rank_cmp);
+
+    uint8_t* keep = (uint8_t*)calloc((size_t)tri0, 1);
+    if (!keep)
+    {
+        free(keep);
+        free(protect);
+        free(ranks);
+        free(clean_idx);
+        return 0;
+    }
+
+    for (uint32_t t = 0; t < tri0; ++t) if (protect[t]) keep[t] = 1u;
+
+    uint32_t kept = keep_forced;
+    uint32_t needed = (keep_target > kept) ? (keep_target - kept) : 0u;
+
+    for (uint32_t i = tri0; i-- > 0u && needed > 0u;)
+    {
+        uint32_t t = ranks[i].t;
+        if (keep[t]) continue;
+        keep[t] = 1u;
+        needed--;
+        kept++;
+    }
+
+    uint32_t out_vcap = src->vertex_count + 256u;
+    model_vertex_t* out_v = (model_vertex_t*)malloc((size_t)out_vcap * sizeof(model_vertex_t));
+    if (!out_v)
+    {
+        free(keep);
+        free(protect);
+        free(ranks);
+        free(clean_idx);
+        return 0;
+    }
+    memcpy(out_v, src->vertices, (size_t)src->vertex_count * sizeof(model_vertex_t));
+    uint32_t out_vcount = src->vertex_count;
+
+    uint32_t out_icap = u32_max(3u, keep_target * 3u + 512u);
+    uint32_t* out_i = (uint32_t*)malloc((size_t)out_icap * sizeof(uint32_t));
+    if (!out_i)
+    {
+        free(out_v);
+        free(keep);
+        free(protect);
+        free(ranks);
+        free(clean_idx);
+        return 0;
+    }
+    uint32_t out_icount = 0u;
+
+    for (uint32_t t = 0; t < tri0; ++t)
+    {
+        if (!keep[t]) continue;
+        uint32_t i0 = clean_idx[t*3u+0u];
+        uint32_t i1 = clean_idx[t*3u+1u];
+        uint32_t i2 = clean_idx[t*3u+2u];
+        add_tri_u32(&out_i, &out_icount, &out_icap, i0, i1, i2);
+    }
+
+    uint32_t* loops_flat = NULL;
+    uint32_t* loop_starts = NULL;
+    uint32_t loop_count = 0u;
+
+    if (!build_boundary_loops(out_i, out_icount, out_vcount, &loops_flat, &loop_starts, &loop_count))
+    {
+        free(loops_flat);
+        free(loop_starts);
+        free(out_i);
+        free(out_v);
+        free(keep);
+        free(protect);
+        free(ranks);
+        free(clean_idx);
+        return 0;
+    }
+
+    uint32_t max_loop_edges = 24u;
+
+    for (uint32_t li = 0; li < loop_count; ++li)
+    {
+        uint32_t s = loop_starts[li];
+        uint32_t e = loop_starts[li + 1u];
+        uint32_t n = (e > s) ? (e - s) : 0u;
+        if (n < 3u) continue;
+
+        uint32_t step = 1u;
+        if (n > max_loop_edges) step = (uint32_t)ceilf((float)n / (float)max_loop_edges);
+        if (step < 1u) step = 1u;
+
+        double cpx = 0.0, cpy = 0.0, cpz = 0.0;
+        double cnx = 0.0, cny = 0.0, cnz = 0.0;
+        double cu = 0.0, cv = 0.0;
+        uint32_t cnt = 0u;
+
+        for (uint32_t k = 0; k < n; k += step)
+        {
+            uint32_t vid = loops_flat[s + k];
+            if (vid >= out_vcount) continue;
+            model_vertex_t v = out_v[vid];
+            cpx += (double)safe_f(v.px);
+            cpy += (double)safe_f(v.py);
+            cpz += (double)safe_f(v.pz);
+            cnx += (double)safe_f(v.nx);
+            cny += (double)safe_f(v.ny);
+            cnz += (double)safe_f(v.nz);
+            cu  += (double)safe_f(v.u);
+            cv  += (double)safe_f(v.v);
+            cnt += 1u;
+        }
+
+        if (cnt < 3u) continue;
+
+        double inv = 1.0 / (double)cnt;
+
+        model_vertex_t center;
+        memset(&center, 0, sizeof(center));
+        center.px = (float)(cpx * inv);
+        center.py = (float)(cpy * inv);
+        center.pz = (float)(cpz * inv);
+
+        float nx = (float)(cnx * inv);
+        float ny = (float)(cny * inv);
+        float nz = (float)(cnz * inv);
+        float nl2 = nx*nx + ny*ny + nz*nz;
+        if (nl2 > 1e-20f)
+        {
+            float invl = 1.0f / sqrtf(nl2);
+            center.nx = nx * invl;
+            center.ny = ny * invl;
+            center.nz = nz * invl;
+        }
+        else
+        {
+            center.nx = 0.0f;
+            center.ny = 0.0f;
+            center.nz = 1.0f;
+        }
+
+        center.u = (float)(cu * inv);
+        center.v = (float)(cv * inv);
+
+        uint32_t cvid = add_vertex(&out_v, &out_vcount, &out_vcap, center);
+        if (cvid == 0xFFFFFFFFu) continue;
+
+        uint32_t first = loops_flat[s + 0u];
+        uint32_t prev = first;
+
+        uint32_t used_pts = 0u;
+        for (uint32_t k = step; k < n; k += step)
+        {
+            uint32_t cur = loops_flat[s + k];
+            if (cur >= out_vcount || prev >= out_vcount) { prev = cur; continue; }
+            add_tri_u32(&out_i, &out_icount, &out_icap, cvid, prev, cur);
+            prev = cur;
+            used_pts++;
+        }
+
+        if (used_pts >= 1u && first < out_vcount && prev < out_vcount)
+        {
+            add_tri_u32(&out_i, &out_icount, &out_icap, cvid, prev, first);
+        }
+    }
+
+    free(loops_flat);
+    free(loop_starts);
+
+    out->vertices = out_v;
+    out->vertex_count = out_vcount;
+    out->indices = out_i;
+    out->index_count = out_icount - (out_icount % 3u);
+
+    compact_mesh(out);
+
+    free(keep);
+    free(protect);
+    free(ranks);
+    free(clean_idx);
+
+    if (!out->vertices || !out->indices || out->index_count < 3u || out->vertex_count < 3u)
+    {
+        cpu_lod_free(out);
+        return 0;
+    }
+
+    return 1;
+}
 
 bool model_raw_generate_lods(model_raw_t *raw, const model_lod_settings_t *s)
 {
@@ -1072,13 +954,10 @@ bool model_raw_generate_lods(model_raw_t *raw, const model_lod_settings_t *s)
 
     if (!raw || !s) return false;
 
-    uint8_t lod_count = clamp_lod_count(s->lod_count);
-    raw->lod_count = lod_count;
+    const uint8_t target_lod_count = clamp_lod_count(s->lod_count);
 
     bool ok_all = true;
-
-    lod_scratch_t sc;
-    memset(&sc, 0, sizeof(sc));
+    uint32_t min_lods = UINT32_MAX;
 
     for (uint32_t smi = 0; smi < raw->submeshes.size; ++smi)
     {
@@ -1086,7 +965,6 @@ bool model_raw_generate_lods(model_raw_t *raw, const model_lod_settings_t *s)
         if (!sm) { ok_all = false; continue; }
         if (sm->lods.size == 0) { ok_all = false; continue; }
 
-        /* keep only LOD0 in the vector, free existing others */
         while (sm->lods.size > 1)
         {
             model_cpu_lod_t *l = (model_cpu_lod_t *)vector_impl_at(&sm->lods, sm->lods.size - 1);
@@ -1095,112 +973,120 @@ bool model_raw_generate_lods(model_raw_t *raw, const model_lod_settings_t *s)
         }
 
         model_cpu_lod_t *lod0 = (model_cpu_lod_t *)vector_impl_at(&sm->lods, 0);
-        if (!lod0 || !lod0->vertices || !lod0->indices || lod0->vertex_count == 0 || lod0->index_count < 3)
+        if (!lod0 || !lod0->vertices || !lod0->indices || lod0->vertex_count < 3u || lod0->index_count < 3u)
         {
             ok_all = false;
+            min_lods = u32_min(min_lods, (uint32_t)sm->lods.size);
             continue;
         }
 
-        /* bounds for clustering LODs */
-        float minx = lod0->vertices[0].px, miny = lod0->vertices[0].py, minz = lod0->vertices[0].pz;
-        float maxx = minx, maxy = miny, maxz = minz;
-
-        for (uint32_t i = 1; i < lod0->vertex_count; ++i)
+        for (uint8_t li = 1; li < target_lod_count; ++li)
         {
-            const model_vertex_t *v = &lod0->vertices[i];
-            if (v->px < minx) minx = v->px;
-            if (v->py < miny) miny = v->py;
-            if (v->pz < minz) minz = v->pz;
-            if (v->px > maxx) maxx = v->px;
-            if (v->py > maxy) maxy = v->py;
-            if (v->pz > maxz) maxz = v->pz;
-        }
-
-        float ex = maxx - minx;
-        float ey = maxy - miny;
-        float ez = maxz - minz;
-
-        float eps = 1e-6f;
-        if (ex < eps) ex = eps;
-        if (ey < eps) ey = eps;
-        if (ez < eps) ez = eps;
-
-        float extent = ex;
-        if (ey > extent) extent = ey;
-        if (ez > extent) extent = ez;
-        if (extent < 1e-6f) extent = 1e-6f;
-
-        /* used only for your old "min px" filter; we keep it conservative */
-        float fov_y = 60.0f * 3.1415926535f / 180.0f;
-        float screen_h = 1080.0f;
-        float ref_distance = extent * 6.0f;
-        if (ref_distance < 1e-3f) ref_distance = 1e-3f;
-
-        float px_per_world_at_ref = (screen_h * 0.5f) / tanf(fov_y * 0.5f);
-        px_per_world_at_ref = px_per_world_at_ref / ref_distance;
-
-        for (uint8_t li = 1; li < lod_count; ++li)
-        {
-            float ratio = s->triangle_ratio[li];
-            if (ratio <= 0.0f) ratio = 0.5f;
-            ratio = clamp01(ratio);
-
-            const uint8_t last_lod = (uint8_t)(lod_count - 1u);
+            float total_ratio = lod_effective_total_ratio(s, li, target_lod_count);
 
             model_cpu_lod_t out;
-            int ok = 0;
-
-            if (li == last_lod)
-            {
-                /* LAST LOD: use edge-collapse (no triangle "growth", no random holes if boundaries protected). */
-                float rlast = ratio;
-                /* if user passes something tiny, clamp to avoid collapsing everything */
-                if (rlast < 0.01f) rlast = 0.01f;
-
-                ok = build_lod_edge_collapse(lod0, rlast, &sc, &out);
-            }
-            else
-            {
-                /* Intermediate LODs: keep your fast clustering. */
-                uint32_t res = lod_res_from_ratio(ratio);
-                if (ratio <= 0.08f) res = u32_min(res, 72u);
-                if (ratio <= 0.04f) res = u32_min(res, 56u);
-                if (ratio <= 0.02f) res = u32_min(res, 40u);
-                if (res < 8u) res = 8u;
-                if (res > 512u) res = 512u;
-
-                float cell = extent / (float)res;
-                if (cell < 1e-6f) cell = 1e-6f;
-                float inv_cell = 1.0f / cell;
-
-                /* Don't do aggressive triangle dropping here; it can open holes. */
-                int enforce_min_px = 0;
-                float min_len2_threshold = 0.0f;
-
-                /* If you want a tiny degenerate filter for mid LODs, use ~0.25 px: */
-                /* enforce_min_px = 1;
-                   min_len2_threshold = min_len2_threshold_from_min_px(0.25f, px_per_world_at_ref); */
-
-                ok = build_lod_cluster_fast(lod0, ratio, res,
-                                            enforce_min_px, min_len2_threshold,
-                                            minx, miny, minz, inv_cell, &sc, &out);
-            }
+            int ok = build_lod_drop_and_patch(lod0, total_ratio, &out);
 
             if (!ok)
             {
                 ok_all = false;
-                continue;
+                model_cpu_lod_t* prev = (model_cpu_lod_t*)vector_impl_at(&sm->lods, sm->lods.size - 1);
+                model_cpu_lod_t fb;
+                if (!cpu_lod_clone(prev, &fb)) break;
+                out = fb;
             }
 
+            uint32_t before = sm->lods.size;
             vector_impl_push_back(&sm->lods, &out);
+
+            if (sm->lods.size != before + 1u)
+            {
+                ok_all = false;
+                cpu_lod_free(&out);
+                break;
+            }
+        }
+
+        while (sm->lods.size < target_lod_count)
+        {
+            ok_all = false;
+            model_cpu_lod_t* prev = (model_cpu_lod_t*)vector_impl_at(&sm->lods, sm->lods.size - 1);
+            model_cpu_lod_t fb;
+            if (!cpu_lod_clone(prev, &fb)) break;
+
+            uint32_t before = sm->lods.size;
+            vector_impl_push_back(&sm->lods, &fb);
+            if (sm->lods.size != before + 1u)
+            {
+                cpu_lod_free(&fb);
+                break;
+            }
+        }
+
+        min_lods = u32_min(min_lods, (uint32_t)sm->lods.size);
+    }
+
+    if (min_lods == UINT32_MAX) min_lods = 1u;
+    if (min_lods < 1u) min_lods = 1u;
+    if (min_lods > (uint32_t)MODEL_LOD_MAX) min_lods = MODEL_LOD_MAX;
+
+    for (uint32_t smi = 0; smi < raw->submeshes.size; ++smi)
+    {
+        model_cpu_submesh_t *sm = (model_cpu_submesh_t *)vector_impl_at(&raw->submeshes, smi);
+        if (!sm) continue;
+
+        while (sm->lods.size > min_lods)
+        {
+            model_cpu_lod_t *l = (model_cpu_lod_t *)vector_impl_at(&sm->lods, sm->lods.size - 1);
+            cpu_lod_free(l);
+            sm->lods.size -= 1;
         }
     }
 
-    scratch_free(&sc);
+    raw->lod_count = (uint8_t)min_lods;
+    if (raw->lod_count != target_lod_count) ok_all = false;
+
+    for (uint32_t smi = 0; smi < raw->submeshes.size; ++smi)
+    {
+        model_cpu_submesh_t *sm = (model_cpu_submesh_t *)vector_impl_at(&raw->submeshes, smi);
+        if (!sm) continue;
+        if (sm->lods.size == 0) continue;
+
+        model_cpu_lod_t *l0 = (model_cpu_lod_t *)vector_impl_at(&sm->lods, 0);
+        model_cpu_lod_t *lN = (model_cpu_lod_t *)vector_impl_at(&sm->lods, sm->lods.size - 1);
+
+        uint32_t tri0 = 0u;
+        uint32_t triN = 0u;
+
+        if (l0 && l0->indices) tri0 = (l0->index_count / 3u);
+        if (lN && lN->indices) triN = (lN->index_count / 3u);
+
+        uint32_t min_tri = tri0;
+        uint32_t max_tri = tri0;
+
+        for (uint32_t li = 0; li < sm->lods.size; ++li)
+        {
+            model_cpu_lod_t *l = (model_cpu_lod_t *)vector_impl_at(&sm->lods, li);
+            if (!l || !l->indices) continue;
+            uint32_t tr = l->index_count / 3u;
+            if (tr < min_tri) min_tri = tr;
+            if (tr > max_tri) max_tri = tr;
+        }
+
+        LOG_OK("Submesh %u: LOD0 tris=%u  LOD%u tris=%u  (min=%u max=%u lods=%u)",
+               (unsigned)smi,
+               (unsigned)tri0,
+               (unsigned)(sm->lods.size ? (sm->lods.size - 1u) : 0u),
+               (unsigned)triN,
+               (unsigned)min_tri,
+               (unsigned)max_tri,
+               (unsigned)sm->lods.size);
+    }
 
     clock_t t1 = clock();
     double secs = (double)(t1 - t0) / (double)CLOCKS_PER_SEC;
     LOG_OK("model_raw_generate_lods took %.6f seconds", secs);
+    LOG_OK("Generated %u LODs per submesh (target was %u)", (unsigned)raw->lod_count, (unsigned)target_lod_count);
 
     return ok_all;
 }
