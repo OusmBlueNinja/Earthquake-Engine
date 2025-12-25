@@ -10,6 +10,7 @@
 
 #include <string.h>
 #include <stdlib.h>
+#include <math.h>
 
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
@@ -56,6 +57,7 @@ enum material_tex_flags
 typedef struct inst_batch_t
 {
     ihandle_t model;
+    uint32_t mesh_index;
     uint32_t lod;
     uint32_t start;
     uint32_t count;
@@ -64,6 +66,7 @@ typedef struct inst_batch_t
 typedef struct inst_item_t
 {
     ihandle_t model;
+    uint32_t mesh_index;
     uint32_t lod;
     mat4 m;
 } inst_item_t;
@@ -586,38 +589,82 @@ static int R_force_lod_level(void)
     return cvar_get_int_name("cl_r_force_lod_level");
 }
 
-static uint32_t R_pick_lod_level_for_model(const renderer_t *r, const asset_model_t *m, const mat4 *model_mtx)
+static float R_mat4_max_scale_xyz(const mat4 *m)
 {
-    if (!m || !model_mtx)
+    float sx = sqrtf(m->m[0] * m->m[0] + m->m[1] * m->m[1] + m->m[2] * m->m[2]);
+    float sy = sqrtf(m->m[4] * m->m[4] + m->m[5] * m->m[5] + m->m[6] * m->m[6]);
+    float sz = sqrtf(m->m[8] * m->m[8] + m->m[9] * m->m[9] + m->m[10] * m->m[10]);
+    float s = sx;
+    if (sy > s)
+        s = sy;
+    if (sz > s)
+        s = sz;
+    if (s < 1e-6f)
+        s = 1e-6f;
+    return s;
+}
+
+static float R_mesh_local_radius(const mesh_t *mesh)
+{
+    if (!mesh || !mesh->has_aabb)
+        return 1.0f;
+
+    float ex = 0.5f * (mesh->local_aabb.max.x - mesh->local_aabb.min.x);
+    float ey = 0.5f * (mesh->local_aabb.max.y - mesh->local_aabb.min.y);
+    float ez = 0.5f * (mesh->local_aabb.max.z - mesh->local_aabb.min.z);
+
+    float r2 = ex * ex + ey * ey + ez * ez;
+    float r = (r2 > 1e-12f) ? sqrtf(r2) : 1.0f;
+    if (r < 1e-6f)
+        r = 1.0f;
+    return r;
+}
+
+static uint32_t R_pick_lod_level_for_mesh(const renderer_t *r, const mesh_t *mesh, const mat4 *model_mtx)
+{
+    if (!r || !mesh || !model_mtx)
         return 0;
 
     int forced = R_force_lod_level();
     if (forced >= 0)
         return (uint32_t)forced;
 
-    if (m->meshes.size == 0)
-        return 0;
-
-    mesh_t *mesh0 = (mesh_t *)vector_at((vector_t *)&m->meshes, 0);
-    if (!mesh0)
-        return 0;
-
-    uint32_t lods = mesh0->lods.size;
+    uint32_t lods = mesh->lods.size;
     if (lods <= 1)
         return 0;
 
-    float dx = model_mtx->m[12] - r->camera.position.x;
-    float dy = model_mtx->m[13] - r->camera.position.y;
-    float dz = model_mtx->m[14] - r->camera.position.z;
-    float d2 = dx * dx + dy * dy + dz * dz;
+    float mx = model_mtx->m[12];
+    float my = model_mtx->m[13];
+    float mz = model_mtx->m[14];
+
+    float dx = mx - r->camera.position.x;
+    float dy = my - r->camera.position.y;
+    float dz = mz - r->camera.position.z;
+
+    float dist = sqrtf(dx * dx + dy * dy + dz * dz);
+    if (dist < 1e-3f)
+        dist = 1e-3f;
+
+    float proj_fy = r->camera.proj.m[5];
+    if (fabsf(proj_fy) < 1e-6f)
+        proj_fy = 1.0f;
+
+    float px_per_world = (0.5f * (float)r->fb_size.y) * proj_fy / dist;
+
+    float radius_world = R_mesh_local_radius(mesh) * R_mat4_max_scale_xyz(model_mtx);
+    float diameter_px = 2.0f * radius_world * px_per_world;
 
     uint32_t lod = 0;
-    if (d2 > 25.0f * 25.0f)
+    if (diameter_px < 240.0f)
         lod = 1;
-    if (d2 > 60.0f * 60.0f)
+    if (diameter_px < 110.0f)
         lod = 2;
-    if (d2 > 120.0f * 120.0f)
+    if (diameter_px < 55.0f)
         lod = 3;
+    if (diameter_px < 26.0f)
+        lod = 4;
+    if (diameter_px < 13.0f)
+        lod = 5;
 
     if (lod >= lods)
         lod = lods - 1;
@@ -715,6 +762,11 @@ static int R_inst_item_sort(const void *a, const void *b)
     if (ia->model.meta > ib->model.meta)
         return 1;
 
+    if (ia->mesh_index < ib->mesh_index)
+        return -1;
+    if (ia->mesh_index > ib->mesh_index)
+        return 1;
+
     if (ia->lod < ib->lod)
         return -1;
     if (ia->lod > ib->lod)
@@ -735,15 +787,17 @@ static void R_emit_batches_from_items(renderer_t *r, inst_item_t *items, uint32_
     inst_batch_t cur;
     memset(&cur, 0, sizeof(cur));
     cur.model = items[0].model;
+    cur.mesh_index = items[0].mesh_index;
     cur.lod = items[0].lod;
     cur.start = cur_start;
 
     for (uint32_t i = 0; i < n; ++i)
     {
         int same_model = ihandle_eq(cur.model, items[i].model);
+        int same_mesh = (cur.mesh_index == items[i].mesh_index);
         int same_lod = (cur.lod == items[i].lod);
 
-        if (!(same_model && same_lod))
+        if (!(same_model && same_mesh && same_lod))
         {
             cur.count = r->inst_mats.size - cur_start;
             if (cur.count)
@@ -751,6 +805,7 @@ static void R_emit_batches_from_items(renderer_t *r, inst_item_t *items, uint32_
 
             cur_start = r->inst_mats.size;
             cur.model = items[i].model;
+            cur.mesh_index = items[i].mesh_index;
             cur.lod = items[i].lod;
             cur.start = cur_start;
             cur.count = 0;
@@ -772,65 +827,117 @@ static void R_build_instancing(renderer_t *r)
 
     if (r->models.size)
     {
-        inst_item_t *items = (inst_item_t *)malloc(sizeof(inst_item_t) * (size_t)r->models.size);
-        if (items)
+        uint32_t max_items = 0;
+
+        for (uint32_t i = 0; i < r->models.size; ++i)
         {
-            uint32_t n = 0;
-            for (uint32_t i = 0; i < r->models.size; ++i)
+            pushed_model_t *pm = (pushed_model_t *)vector_at(&r->models, i);
+            if (!pm || !ihandle_is_valid(pm->model))
+                continue;
+
+            asset_model_t *mdl = R_resolve_model(r, pm->model);
+            if (!mdl)
+                continue;
+
+            max_items += mdl->meshes.size;
+        }
+
+        if (max_items)
+        {
+            inst_item_t *items = (inst_item_t *)malloc(sizeof(inst_item_t) * (size_t)max_items);
+            if (items)
             {
-                pushed_model_t *pm = (pushed_model_t *)vector_at(&r->models, i);
-                if (!pm)
-                    continue;
-                if (!ihandle_is_valid(pm->model))
-                    continue;
+                uint32_t n = 0;
 
-                asset_model_t *mdl = R_resolve_model(r, pm->model);
-                uint32_t lod = 0;
-                if (mdl)
-                    lod = R_pick_lod_level_for_model(r, mdl, &pm->model_matrix);
+                for (uint32_t i = 0; i < r->models.size; ++i)
+                {
+                    pushed_model_t *pm = (pushed_model_t *)vector_at(&r->models, i);
+                    if (!pm || !ihandle_is_valid(pm->model))
+                        continue;
 
-                items[n].model = pm->model;
-                items[n].lod = lod;
-                items[n].m = pm->model_matrix;
-                n++;
+                    asset_model_t *mdl = R_resolve_model(r, pm->model);
+                    if (!mdl)
+                        continue;
+
+                    for (uint32_t mi = 0; mi < mdl->meshes.size; ++mi)
+                    {
+                        mesh_t *mesh = (mesh_t *)vector_at((vector_t *)&mdl->meshes, mi);
+                        if (!mesh)
+                            continue;
+
+                        uint32_t lod = R_pick_lod_level_for_mesh(r, mesh, &pm->model_matrix);
+
+                        items[n].model = pm->model;
+                        items[n].mesh_index = mi;
+                        items[n].lod = lod;
+                        items[n].m = pm->model_matrix;
+                        n++;
+                    }
+                }
+
+                if (n)
+                    R_emit_batches_from_items(r, items, n, &r->inst_batches);
+
+                free(items);
             }
-
-            if (n)
-                R_emit_batches_from_items(r, items, n, &r->inst_batches);
-
-            free(items);
         }
     }
 
     if (r->fwd_models.size)
     {
-        inst_item_t *items = (inst_item_t *)malloc(sizeof(inst_item_t) * (size_t)r->fwd_models.size);
-        if (items)
+        uint32_t max_items = 0;
+
+        for (uint32_t i = 0; i < r->fwd_models.size; ++i)
         {
-            uint32_t n = 0;
-            for (uint32_t i = 0; i < r->fwd_models.size; ++i)
+            pushed_model_t *pm = (pushed_model_t *)vector_at(&r->fwd_models, i);
+            if (!pm || !ihandle_is_valid(pm->model))
+                continue;
+
+            asset_model_t *mdl = R_resolve_model(r, pm->model);
+            if (!mdl)
+                continue;
+
+            max_items += mdl->meshes.size;
+        }
+
+        if (max_items)
+        {
+            inst_item_t *items = (inst_item_t *)malloc(sizeof(inst_item_t) * (size_t)max_items);
+            if (items)
             {
-                pushed_model_t *pm = (pushed_model_t *)vector_at(&r->fwd_models, i);
-                if (!pm)
-                    continue;
-                if (!ihandle_is_valid(pm->model))
-                    continue;
+                uint32_t n = 0;
 
-                asset_model_t *mdl = R_resolve_model(r, pm->model);
-                uint32_t lod = 0;
-                if (mdl)
-                    lod = R_pick_lod_level_for_model(r, mdl, &pm->model_matrix);
+                for (uint32_t i = 0; i < r->fwd_models.size; ++i)
+                {
+                    pushed_model_t *pm = (pushed_model_t *)vector_at(&r->fwd_models, i);
+                    if (!pm || !ihandle_is_valid(pm->model))
+                        continue;
 
-                items[n].model = pm->model;
-                items[n].lod = lod;
-                items[n].m = pm->model_matrix;
-                n++;
+                    asset_model_t *mdl = R_resolve_model(r, pm->model);
+                    if (!mdl)
+                        continue;
+
+                    for (uint32_t mi = 0; mi < mdl->meshes.size; ++mi)
+                    {
+                        mesh_t *mesh = (mesh_t *)vector_at((vector_t *)&mdl->meshes, mi);
+                        if (!mesh)
+                            continue;
+
+                        uint32_t lod = R_pick_lod_level_for_mesh(r, mesh, &pm->model_matrix);
+
+                        items[n].model = pm->model;
+                        items[n].mesh_index = mi;
+                        items[n].lod = lod;
+                        items[n].m = pm->model_matrix;
+                        n++;
+                    }
+                }
+
+                if (n)
+                    R_emit_batches_from_items(r, items, n, &r->fwd_inst_batches);
+
+                free(items);
             }
-
-            if (n)
-                R_emit_batches_from_items(r, items, n, &r->fwd_inst_batches);
-
-            free(items);
         }
     }
 }
@@ -875,36 +982,36 @@ static void R_deferred_geom_pass(renderer_t *r)
         if (!mats)
             continue;
 
+        if (b->mesh_index >= mdl->meshes.size)
+            continue;
+
+        mesh_t *mesh = (mesh_t *)vector_at((vector_t *)&mdl->meshes, b->mesh_index);
+        if (!mesh)
+            continue;
+
         uint32_t lod_level = b->lod;
 
         shader_set_int(gbuf, "u_DebugLod", (r->cfg.debug_mode != 0) ? (int)(lod_level + 1u) : 0);
 
         R_upload_instances(r, mats, b->count);
 
-        for (uint32_t mi = 0; mi < mdl->meshes.size; ++mi)
-        {
-            mesh_t *mesh = (mesh_t *)vector_at((vector_t *)&mdl->meshes, mi);
-            if (!mesh)
-                continue;
+        const mesh_lod_t *lod = R_mesh_get_lod(mesh, lod_level);
+        if (!lod || !lod->vao || !lod->index_count)
+            continue;
 
-            const mesh_lod_t *lod = R_mesh_get_lod(mesh, lod_level);
-            if (!lod || !lod->vao || !lod->index_count)
-                continue;
+        asset_material_t *mat = R_resolve_material(r, mesh->material);
+        if (R_mat_is_transparent(mat))
+            continue;
 
-            asset_material_t *mat = R_resolve_material(r, mesh->material);
-            if (R_mat_is_transparent(mat))
-                continue;
+        R_mesh_bind_instance_attribs(r, lod->vao);
 
-            R_mesh_bind_instance_attribs(r, lod->vao);
+        R_apply_material_or_default(r, gbuf, mat);
 
-            R_apply_material_or_default(r, gbuf, mat);
+        glBindVertexArray(lod->vao);
+        R_stats_add_draw_instanced(r, lod->index_count, b->count);
+        glDrawElementsInstanced(GL_TRIANGLES, (GLsizei)lod->index_count, GL_UNSIGNED_INT, 0, (GLsizei)b->count);
 
-            glBindVertexArray(lod->vao);
-            R_stats_add_draw_instanced(r, lod->index_count, b->count);
-            glDrawElementsInstanced(GL_TRIANGLES, (GLsizei)lod->index_count, GL_UNSIGNED_INT, 0, (GLsizei)b->count);
-
-            glBindVertexArray(0);
-        }
+        glBindVertexArray(0);
     }
 
     if (r->cfg.wireframe)
@@ -1097,13 +1204,13 @@ static void R_forward_transparent_pass(renderer_t *r)
 
         float d2 = R_dist2_to_cam_from_model_mtx(pm->model_matrix, r->camera.position);
 
-        uint32_t lod_level = R_pick_lod_level_for_model(r, mdl, &pm->model_matrix);
-
         for (uint32_t mi = 0; mi < mdl->meshes.size; ++mi)
         {
             mesh_t *mesh = (mesh_t *)vector_at((vector_t *)&mdl->meshes, mi);
             if (!mesh)
                 continue;
+
+            uint32_t lod_level = R_pick_lod_level_for_mesh(r, mesh, &pm->model_matrix);
 
             const mesh_lod_t *lod = R_mesh_get_lod(mesh, lod_level);
             if (!lod || !lod->vao || !lod->index_count)
@@ -1163,11 +1270,15 @@ static void R_forward_transparent_pass(renderer_t *r)
         if (!mdl)
             continue;
 
+        if (items[i].mesh_index >= mdl->meshes.size)
+            continue;
+
         mesh_t *mesh = (mesh_t *)vector_at((vector_t *)&mdl->meshes, items[i].mesh_index);
         if (!mesh)
             continue;
 
-        uint32_t lod_level = R_pick_lod_level_for_model(r, mdl, &pm->model_matrix);
+        uint32_t lod_level = R_pick_lod_level_for_mesh(r, mesh, &pm->model_matrix);
+
         const mesh_lod_t *lod = R_mesh_get_lod(mesh, lod_level);
         if (!lod || !lod->vao || !lod->index_count)
             continue;
@@ -1215,6 +1326,8 @@ static void R_forward_transparent_pass(renderer_t *r)
         shader_set_mat4(s, "u_Model", pm->model_matrix);
         R_bind_common_uniforms(r, s);
         R_apply_material_or_default(r, s, mat);
+
+        glBindVertexArray(lod->vao);
 
         R_stats_add_draw(r, lod->index_count);
         glCullFace(GL_FRONT);
@@ -1556,7 +1669,6 @@ void R_push_hdri(renderer_t *r, ihandle_t tex)
         return;
     r->hdri_tex = tex;
 }
-
 
 const render_stats_t *R_get_stats(const renderer_t *r)
 {

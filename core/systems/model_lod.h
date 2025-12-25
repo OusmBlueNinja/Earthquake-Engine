@@ -1,6 +1,7 @@
 #pragma once
 #include <stdint.h>
 #include <stdbool.h>
+#include "utils/logger.h"
 
 #include "asset_manager/asset_types/model.h"
 

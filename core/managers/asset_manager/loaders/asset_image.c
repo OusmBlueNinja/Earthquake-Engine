@@ -43,7 +43,6 @@ static bool asset_image_load_from_memory(const asset_image_mem_desc_t *src, asse
     if (!src || !out_asset || !src->bytes || src->bytes_n == 0)
         return false;
 
-    LOG_DEBUG("ASSET_IMAGE: load from memory (%s) bytes=%zu", (src->debug_name && src->debug_name[0]) ? src->debug_name : "(unnamed)", src->bytes_n);
 
     int w = 0;
     int h = 0;
@@ -124,7 +123,6 @@ static bool asset_image_load_from_file(const char *path, asset_any_t *out_asset)
     if (!path || !path[0] || !out_asset)
         return false;
 
-    LOG_DEBUG("ASSET_IMAGE: load from file (%s)", path);
 
     int w = 0;
     int h = 0;
@@ -313,7 +311,7 @@ asset_module_desc_t asset_module_image(void)
 {
     asset_module_desc_t m;
     m.type = ASSET_IMAGE;
-    m.name = "ASSET_IMAGE";
+    m.name = "ASSET_IMAGE_STB";
     m.load_fn = asset_image_load;
     m.init_fn = asset_image_init;
     m.cleanup_fn = asset_image_cleanup;

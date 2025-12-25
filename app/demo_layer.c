@@ -24,7 +24,6 @@
 #include <GL/glew.h>
 #endif
 
-#define TREE_COUNT 100000
 #define MOVING_LIGHTS 48
 
 static float demo_clampf(float x, float lo, float hi)
@@ -137,19 +136,10 @@ typedef struct moving_light_t
 
 typedef struct demo_layer_state_t
 {
-    ihandle_t tree_model_h;
     ihandle_t hdri_h;
-    vector_t tree_instances;
 
     ihandle_t model_h;
     mat4 model_m;
-    ihandle_t override_mat_h;
-    int did_patch_materials;
-
-    ihandle_t cube_model_h;
-    mat4 cube_model_m;
-    ihandle_t cube_mat_h;
-    int did_patch_cube;
 
     camera_t cam;
     float fovy_rad;
@@ -185,10 +175,10 @@ typedef struct demo_layer_state_t
 static void demo_layer_apply_camera(demo_layer_state_t *s, renderer_t *r)
 {
     float aspect = (r->fb_size.y != 0) ? ((float)r->fb_size.x / (float)r->fb_size.y) : 1.0f;
-    camera_set_perspective(&s->cam, s->fovy_rad, aspect, 0.1f, 800.0f);
+    camera_set_perspective(&s->cam, s->fovy_rad, aspect, 0.1f, 20000.0f);
 
     s->pitch = demo_clampf(s->pitch, -1.55f, 1.55f);
-    s->dist = demo_clampf(s->dist, 1.5f, 800.0f);
+    s->dist = demo_clampf(s->dist, 1.5f, 2000.0f);
 
     mat4 ry = demo_mat4_rotate_y(s->yaw);
     mat4 rx = demo_mat4_rotate_x(s->pitch);
@@ -226,7 +216,7 @@ static bool demo_layer_on_event(layer_t *layer, event_t *e)
     {
         double dy = e->as.mouse_scroll.dy;
         float k = powf(0.90f, (float)dy);
-        s->dist = demo_clampf(s->dist * k, 1.5f, 800.0f);
+        s->dist = demo_clampf(s->dist * k, 1.5f, 2000.0f);
         e->handled = true;
         return true;
     }
@@ -302,26 +292,6 @@ static bool demo_layer_on_event(layer_t *layer, event_t *e)
     return false;
 }
 
-static void demo_spawn_trees_disk(vector_t *out, uint32_t count, float radius, float y, float s0, float s1)
-{
-    float golden = 2.3999632297286533f;
-    for (uint32_t i = 0; i < count; ++i)
-    {
-        float u = ((float)i + 0.5f) / (float)count;
-        float r = sqrtf(u) * radius;
-        float a = (float)i * golden;
-
-        float px = cosf(a) * r;
-        float pz = sinf(a) * r;
-
-        float yaw = demo_frand_range(0.0f, 6.283185307179586f);
-        float sc = demo_frand_range(s0, s1);
-
-        mat4 M = demo_transform_trs((vec3){px, y, pz}, yaw, (vec3){sc, sc, sc});
-        vector_impl_push_back(out, &M);
-    }
-}
-
 static void demo_init_moving_lights(demo_layer_state_t *s)
 {
     for (int i = 0; i < MOVING_LIGHTS; ++i)
@@ -342,33 +312,6 @@ static void demo_init_moving_lights(demo_layer_state_t *s)
     }
 }
 
-static int demo_try_patch_model_materials(asset_manager_t *am, ihandle_t model_h, ihandle_t mat_h)
-{
-    if (!ihandle_is_valid(model_h) || !ihandle_is_valid(mat_h))
-        return 0;
-
-    asset_any_t *a = asset_manager_get_any(am, model_h);
-    if (!a)
-        return 0;
-
-    if (a->type != ASSET_MODEL)
-        return 0;
-
-    if (a->state != ASSET_STATE_READY)
-        return 0;
-
-    asset_model_t *m = &a->as.model;
-
-    for (uint32_t i = 0; i < m->meshes.size; ++i)
-    {
-        mesh_t *mesh = (mesh_t *)vector_impl_at(&m->meshes, i);
-        if (mesh)
-            mesh->material = mat_h;
-    }
-
-    return 1;
-}
-
 static void demo_layer_init(layer_t *layer)
 {
     demo_layer_state_t *s = (demo_layer_state_t *)calloc(1, sizeof(demo_layer_state_t));
@@ -379,72 +322,27 @@ static void demo_layer_init(layer_t *layer)
 
     layer->on_event = demo_layer_on_event;
 
-    s->tree_instances = vector_impl_create_vector(sizeof(mat4));
-
     s->cam = camera_create();
     s->fovy_rad = 60.0f * 0.017453292519943295f;
 
     s->yaw = 0.35f;
     s->pitch = -0.20f;
-    s->dist = 120.0f;
-    s->focus = (vec3){0.0f, 2.0f, 0.0f};
+    s->dist = 200.0f;
+    s->focus = (vec3){0.0f, 3.0f, 0.0f};
 
     s->move_speed = 10.0f;
     s->boost_mult = 1.0f;
 
     demo_layer_apply_camera(s, r);
+    s->hdri_h = asset_manager_request(am, ASSET_IMAGE, "C:/Users/spenc/Desktop/Bistro_v5_2/Bistro_v5_2/san_giuseppe_bridge_4k.hdr");
 
-    s->tree_model_h = asset_manager_request(am, ASSET_MODEL, "C:/Users/spenc/Desktop/tree_small_02_4k.gltf/tree_small_02_4k.gltf");
-    s->hdri_h = asset_manager_request(am, ASSET_IMAGE, "C:/Users/spenc/Desktop/barnaslingan_01_4k.hdr");
-
-    s->model_h = asset_manager_request(am, ASSET_MODEL, "C:/Users/spenc/Desktop/44-textures_dirt_separated/Cottage_FREE.obj");
+    s->model_h = asset_manager_request(am, ASSET_MODEL, "C:/Users/spenc/Desktop/Bistro.glb");
     s->model_m = mat4_identity();
-
-    asset_material_t mat = material_make_default(r->default_shader_id);
-
-    mat.albedo_tex = asset_manager_request(am, ASSET_IMAGE, "C:/Users/spenc/Desktop/44-textures_dirt_separated/Cottage_Dirt_Base_Color.png");
-    mat.normal_tex = asset_manager_request(am, ASSET_IMAGE, "C:/Users/spenc/Desktop/44-textures_dirt_separated/Cottage_Dirt_Normal.png");
-    mat.roughness_tex = asset_manager_request(am, ASSET_IMAGE, "C:/Users/spenc/Desktop/44-textures_dirt_separated/Cottage_Dirt_Roughness.png");
-    mat.metallic_tex = asset_manager_request(am, ASSET_IMAGE, "C:/Users/spenc/Desktop/44-textures_dirt_separated/Cottage_Dirt_Metallic.png");
-    mat.occlusion_tex = asset_manager_request(am, ASSET_IMAGE, "C:/Users/spenc/Desktop/44-textures_dirt_separated/Cottage_Dirt_AO.png");
-    mat.height_tex = asset_manager_request(am, ASSET_IMAGE, "C:/Users/spenc/Desktop/44-textures_dirt_separated/Cottage_Dirt_Height.png");
-
-    mat.opacity = 1.0f;
-
-    ihandle_t opacity_tex = asset_manager_request(am, ASSET_IMAGE, "C:/Users/spenc/Desktop/44-textures_dirt_separated/Cottage_Dirt_Opacity.png");
-    if (ihandle_is_valid(opacity_tex))
-        mat.opacity = 0.999f;
-
-    mat.roughness = 1.0f;
-    mat.metallic = 0.0f;
-    mat.normal_strength = 1.0f;
-    mat.height_scale = 0.03f;
-    mat.height_steps = 24;
-
-    s->override_mat_h = asset_manager_submit_raw(am, ASSET_MATERIAL, &mat);
-
-    s->cube_model_h = asset_manager_request(am, ASSET_MODEL, "res/models/cube.obj");
-    s->cube_model_m = mat4_identity();
-
-    asset_material_t cube_mat = material_make_default(r->default_shader_id);
-    cube_mat.albedo = (vec3){0.2f, 0.85f, 1.0f};
-    cube_mat.emissive = (vec3){0.0f, 0.0f, 0.0f};
-    cube_mat.opacity = 0.35f;
-    cube_mat.roughness = 0.08f;
-    cube_mat.metallic = 0.0f;
-    cube_mat.normal_strength = 1.0f;
-
-    s->cube_mat_h = asset_manager_submit_raw(am, ASSET_MATERIAL, &cube_mat);
-
-    s->did_patch_materials = 0;
-    s->did_patch_cube = 0;
 
     s->stats_accum = 0.0f;
     s->stats_frame_id = 0;
 
     srand(1337u);
-
-    demo_spawn_trees_disk(&s->tree_instances, TREE_COUNT, 600.0f, 0.0f, 0.75f, 1.15f);
 
     demo_init_moving_lights(s);
     s->t = 0.0f;
@@ -460,8 +358,6 @@ static void demo_layer_shutdown(layer_t *layer)
     if (!s)
         return;
 
-    vector_impl_free(&s->tree_instances);
-
     free(s);
     layer->data = NULL;
 }
@@ -473,13 +369,6 @@ static void demo_layer_update(layer_t *layer, float dt)
         return;
 
     renderer_t *r = &layer->app->renderer;
-    asset_manager_t *am = &layer->app->asset_manager;
-
-    if (!s->did_patch_materials)
-        s->did_patch_materials = demo_try_patch_model_materials(am, s->model_h, s->override_mat_h);
-
-    if (!s->did_patch_cube)
-        s->did_patch_cube = demo_try_patch_model_materials(am, s->cube_model_h, s->cube_mat_h);
 
     s->t += dt;
 
@@ -566,24 +455,11 @@ static void demo_layer_draw(layer_t *layer)
         s->model_m = H;
         R_push_model(r, s->model_h, s->model_m);
     }
-
-    {
-        mat4 C = demo_transform_trs((vec3){0.0f, 1.15f, 0.0f}, s->t * 0.35f, (vec3){1.0f, 1.0f, 1.0f});
-        s->cube_model_m = C;
-        R_push_model(r, s->cube_model_h, s->cube_model_m);
-    }
-
-    for (uint32_t i = 0; i < s->tree_instances.size; ++i)
-    {
-        mat4 *M = (mat4 *)vector_impl_at(&s->tree_instances, i);
-        if (M)
-            R_push_model(r, s->tree_model_h, *M);
-    }
 }
 
 layer_t create_demo_layer(void)
 {
-    layer_t layer = create_layer("Trees Disk");
+    layer_t layer = create_layer("Bistro");
     layer.init = demo_layer_init;
     layer.shutdown = demo_layer_shutdown;
     layer.update = demo_layer_update;
