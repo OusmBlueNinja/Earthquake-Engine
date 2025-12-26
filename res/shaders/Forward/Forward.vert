@@ -9,11 +9,13 @@ layout(location = 4) in vec4 a_I0;
 layout(location = 5) in vec4 a_I1;
 layout(location = 6) in vec4 a_I2;
 layout(location = 7) in vec4 a_I3;
+layout(location = 8) in float a_Fade01;
 
 uniform mat4 u_View;
 uniform mat4 u_Proj;
 uniform mat4 u_Model;
 uniform int u_UseInstancing;
+uniform float u_LodFade01;
 
 out VS_OUT
 {
@@ -21,6 +23,7 @@ out VS_OUT
     vec3 worldN;
     vec2 uv;
     vec4 tangent;
+    float lodFade01;
 } v;
 
 mat4 getModel()
@@ -41,6 +44,9 @@ void main()
 
     v.uv = a_UV;
     v.tangent = a_Tangent;
+
+    float f = (u_UseInstancing != 0) ? a_Fade01 : u_LodFade01;
+    v.lodFade01 = clamp(f, 0.0, 1.0);
 
     gl_Position = u_Proj * u_View * wpos;
 }

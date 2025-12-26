@@ -43,7 +43,6 @@ static bool asset_image_load_from_memory(const asset_image_mem_desc_t *src, asse
     if (!src || !out_asset || !src->bytes || src->bytes_n == 0)
         return false;
 
-
     int w = 0;
     int h = 0;
     int c = 0;
@@ -122,7 +121,6 @@ static bool asset_image_load_from_file(const char *path, asset_any_t *out_asset)
 {
     if (!path || !path[0] || !out_asset)
         return false;
-
 
     int w = 0;
     int h = 0;

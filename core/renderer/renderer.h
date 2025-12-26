@@ -39,6 +39,8 @@ typedef struct renderer_cfg_t
     uint32_t bloom_mips;
 
     float exposure;
+    bool exposure_auto;
+
     float output_gamma;
     int manual_srgb;
 
@@ -122,7 +124,6 @@ void R_end_frame(renderer_t *r);
 void R_push_camera(renderer_t *r, const camera_t *cam);
 void R_push_light(renderer_t *r, light_t light);
 void R_push_model(renderer_t *r, const ihandle_t model, mat4 model_matrix);
-void R_push_model_forward(renderer_t *r, const ihandle_t model, mat4 model_matrix);
 
 void R_push_hdri(renderer_t *r, ihandle_t tex);
 

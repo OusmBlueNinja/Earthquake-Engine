@@ -8,6 +8,7 @@ in VS_OUT
     vec3 worldN;
     vec2 uv;
     vec4 tangent;
+    float lodFade01;
 } v;
 
 uniform vec3 u_CameraPos;
@@ -49,8 +50,12 @@ uniform sampler2D u_BRDFLUT;
 uniform int u_TileSize;
 uniform int u_TileCountX;
 uniform int u_TileCountY;
+uniform int u_TileMax;
 
-uniform int u_DebugLod;
+uniform int u_DebugMode;
+
+uniform int u_LodXFadeEnabled;
+uniform int u_LodXFadeMode;
 
 struct GPU_Light
 {
@@ -86,23 +91,6 @@ vec3 srgb_to_linear(vec3 c)
     return pow(max(c, vec3(0.0)), vec3(2.2));
 }
 
-vec3 sample_albedo(vec2 uv)
-{
-    vec4 t = texture(u_AlbedoTex, uv);
-    vec3 c = t.rgb;
-    if (u_ManualSRGB != 0)
-        c = srgb_to_linear(c);
-    return c;
-}
-
-vec3 sample_emissive(vec2 uv)
-{
-    vec3 c = texture(u_EmissiveTex, uv).rgb;
-    if (u_ManualSRGB != 0)
-        c = srgb_to_linear(c);
-    return c;
-}
-
 vec3 tangent_space_normal(vec2 uv)
 {
     vec3 n = texture(u_NormalTex, uv).xyz * 2.0 - 1.0;
@@ -112,11 +100,21 @@ vec3 tangent_space_normal(vec2 uv)
 
 mat3 build_tbn(vec3 N, vec4 tangent)
 {
-    vec3 T = normalize(tangent.xyz);
-    vec3 B = normalize(cross(N, T)) * tangent.w;
-    T = normalize(T - N * dot(N, T));
-    B = normalize(cross(N, T)) * tangent.w;
-    return mat3(T, B, N);
+    vec3 n = normalize(N);
+    vec3 t = tangent.xyz;
+    float t2 = dot(t, t);
+    if (t2 < 1e-12)
+    {
+        vec3 up = (abs(n.z) < 0.999) ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
+        vec3 T = normalize(cross(up, n));
+        vec3 B = normalize(cross(n, T));
+        return mat3(T, B, n);
+    }
+
+    vec3 T = normalize(t);
+    T = normalize(T - n * dot(n, T));
+    vec3 B = normalize(cross(n, T)) * tangent.w;
+    return mat3(T, B, n);
 }
 
 float D_GGX(float NoH, float a)
@@ -158,6 +156,7 @@ vec2 parallax_uv(vec2 uv, vec3 V_ts)
     vec2 dUV = P / layerCount;
 
     vec2 curUV = uv;
+
     float h = texture(u_HeightTex, curUV).r;
     if (u_HeightInvert != 0)
         h = 1.0 - h;
@@ -166,6 +165,7 @@ vec2 parallax_uv(vec2 uv, vec3 V_ts)
     {
         curUV -= dUV;
         curDepth += layerDepth;
+
         h = texture(u_HeightTex, curUV).r;
         if (u_HeightInvert != 0)
             h = 1.0 - h;
@@ -174,19 +174,52 @@ vec2 parallax_uv(vec2 uv, vec3 V_ts)
     return curUV;
 }
 
+float sat(float x) { return clamp(x, 0.0, 1.0); }
+
+vec3 hsv2rgb(vec3 c)
+{
+    vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+
+vec3 heatmap(float t)
+{
+    t = sat(t);
+    float h = (1.0 - t) * 0.66;
+    return hsv2rgb(vec3(h, 1.0, 1.0));
+}
+
 vec3 debug_lod_tint(vec3 c, int d)
 {
     if (d <= 0)
-        return c;
-    int m = (d - 1) % 6;
+        return mix(c, c * vec3(0.2, 1.0, 0.2), 0.95);
+
     vec3 t = vec3(1.0);
-    if (m == 0) t = vec3(1.0, 0.3, 0.3);
-    if (m == 1) t = vec3(0.3, 1.0, 0.3);
-    if (m == 2) t = vec3(0.3, 0.3, 1.0);
-    if (m == 3) t = vec3(1.0, 1.0, 0.3);
-    if (m == 4) t = vec3(1.0, 0.3, 1.0);
-    if (m == 5) t = vec3(0.3, 1.0, 1.0);
-    return mix(c, c * t, 0.35);
+
+    if (d == 1) t = vec3(0.05, 0.35, 0.05);
+    else if (d == 2) t = vec3(0.05, 0.8, 0.7);
+    else if (d == 3) t = vec3(0.2, 0.35, 1.0);
+    else if (d == 4) t = vec3(0.65, 0.25, 1.0);
+    else t = vec3(1.0, 0.2, 1.0);
+
+    return mix(c, c * t, 0.95);
+}
+
+int dbg_mode()
+{
+    return (u_DebugMode & 255);
+}
+
+int dbg_lod_p1()
+{
+    return ((u_DebugMode >> 8) & 255);
+}
+
+float dither_noise(vec2 p)
+{
+    float x = dot(p, vec2(0.06711056, 0.00583715));
+    return fract(52.9829189 * fract(x));
 }
 
 void main()
@@ -204,15 +237,9 @@ void main()
         uv = parallax_uv(uv, Vts);
     }
 
-    vec3 albedo = u_Albedo;
     float alpha_tex = 1.0;
-
-    if ((u_MaterialTexMask & (1 << 0)) != 0)
-    {
-        vec4 t = texture(u_AlbedoTex, uv);
-        albedo *= (u_ManualSRGB != 0) ? srgb_to_linear(t.rgb) : t.rgb;
-        alpha_tex = t.a;
-    }
+    if ((u_MaterialTexMask & (1 << 0)) != 0 && (u_AlphaTest != 0 || u_Opacity < 0.999))
+        alpha_tex = texture(u_AlbedoTex, uv).a;
 
     float alpha = alpha_tex * u_Opacity;
 
@@ -223,39 +250,22 @@ void main()
         alpha = 1.0;
     }
 
-    float roughness = clamp(u_Roughness, 0.04, 1.0);
-    float metallic = clamp(u_Metallic, 0.0, 1.0);
-    float ao = 1.0;
+    if (u_LodXFadeEnabled != 0)
+    {
+        float f = clamp(v.lodFade01, 0.0, 1.0);
+        float n = dither_noise(gl_FragCoord.xy);
 
-    if ((u_MaterialTexMask & (1 << 7)) != 0)
-    {
-        vec3 arm = texture(u_ArmTex, uv).rgb;
-        ao *= arm.r;
-        roughness *= arm.g;
-        metallic *= arm.b;
-        roughness = clamp(roughness, 0.04, 1.0);
-        metallic = clamp(metallic, 0.0, 1.0);
-    }
-    else
-    {
-        if ((u_MaterialTexMask & (1 << 3)) != 0)
+        if (u_LodXFadeMode == 0)
         {
-            roughness *= texture(u_RoughnessTex, uv).r;
-            roughness = clamp(roughness, 0.04, 1.0);
+            if (n < f)
+                discard;
         }
-        if ((u_MaterialTexMask & (1 << 2)) != 0)
+        else
         {
-            metallic *= texture(u_MetallicTex, uv).r;
-            metallic = clamp(metallic, 0.0, 1.0);
+            if (n >= f)
+                discard;
         }
     }
-
-    if ((u_MaterialTexMask & (1 << 5)) != 0)
-        ao *= texture(u_OcclusionTex, uv).r;
-
-    vec3 emissive = u_Emissive;
-    if ((u_MaterialTexMask & (1 << 4)) != 0)
-        emissive *= ((u_ManualSRGB != 0) ? srgb_to_linear(texture(u_EmissiveTex, uv).rgb) : texture(u_EmissiveTex, uv).rgb);
 
     vec3 N = Nw;
     if ((u_MaterialTexMask & (1 << 1)) != 0)
@@ -264,11 +274,7 @@ void main()
         N = normalize(TBN * Nts);
     }
 
-    float NoV = saturate(dot(N, Vw));
-
-    vec3 F0 = mix(vec3(0.04), albedo, metallic);
-
-    vec3 Lo = vec3(0.0);
+    int mode = dbg_mode();
 
     ivec2 tileXY = ivec2(int(gl_FragCoord.x) / max(u_TileSize, 1), int(gl_FragCoord.y) / max(u_TileSize, 1));
     tileXY.x = clamp(tileXY.x, 0, max(u_TileCountX - 1, 0));
@@ -278,8 +284,85 @@ void main()
     uvec2 sc = g_TileIndex[uint(tileIndex)];
     uint start = sc.x;
     uint count = sc.y;
-    if (count > 2048u)
-        count = 2048u;
+
+    if (mode == 2)
+    {
+        float denom = float(max(u_TileMax, 1));
+        float tt = log2(1.0 + float(count)) / log2(1.0 + denom);
+        vec3 col = heatmap(tt);
+
+        vec2 f = fract(gl_FragCoord.xy / float(max(u_TileSize, 1)));
+        float edge = 0.0;
+        edge = max(edge, 1.0 - step(0.03, f.x));
+        edge = max(edge, 1.0 - step(0.03, f.y));
+        edge = max(edge, 1.0 - step(0.03, 1.0 - f.x));
+        edge = max(edge, 1.0 - step(0.03, 1.0 - f.y));
+        col = mix(col, vec3(0.0), edge);
+
+        o_Color = vec4(col, 1.0);
+        return;
+    }
+
+    if (mode == 3)
+    {
+        vec3 nn = normalize(N) * 0.5 + 0.5;
+        o_Color = vec4(nn, 1.0);
+        return;
+    }
+
+    if (mode == 4)
+    {
+        o_Color = vec4(1.0, 1.0, 1.0, alpha);
+        return;
+    }
+
+    vec3 albedo = (u_HasMaterial != 0) ? u_Albedo : vec3(1.0);
+    float roughness = (u_HasMaterial != 0) ? u_Roughness : 1.0;
+    float metallic = (u_HasMaterial != 0) ? u_Metallic : 0.0;
+    vec3 emissive = (u_HasMaterial != 0) ? u_Emissive : vec3(0.0);
+
+    if ((u_MaterialTexMask & (1 << 0)) != 0)
+    {
+        vec3 a = texture(u_AlbedoTex, uv).rgb;
+        if (u_ManualSRGB != 0)
+            a = srgb_to_linear(a);
+        albedo *= a;
+    }
+
+    if ((u_MaterialTexMask & (1 << 7)) != 0)
+    {
+        vec3 arm = texture(u_ArmTex, uv).rgb;
+        roughness *= arm.g;
+        metallic *= arm.b;
+    }
+    else
+    {
+        if ((u_MaterialTexMask & (1 << 3)) != 0)
+            roughness *= texture(u_RoughnessTex, uv).r;
+        if ((u_MaterialTexMask & (1 << 2)) != 0)
+            metallic *= texture(u_MetallicTex, uv).r;
+    }
+
+    float ao = 1.0;
+    if ((u_MaterialTexMask & (1 << 5)) != 0)
+        ao = texture(u_OcclusionTex, uv).r;
+
+    if ((u_MaterialTexMask & (1 << 4)) != 0)
+    {
+        vec3 e = texture(u_EmissiveTex, uv).rgb;
+        if (u_ManualSRGB != 0)
+            e = srgb_to_linear(e);
+        emissive *= e;
+    }
+
+    roughness = clamp(roughness, 0.02, 1.0);
+    metallic = clamp(metallic, 0.0, 1.0);
+    albedo = max(albedo, vec3(0.0));
+
+    float NoV = saturate(dot(N, Vw));
+    vec3 F0 = mix(vec3(0.04), albedo, metallic);
+
+    vec3 Lo = vec3(0.0);
 
     for (uint ii = 0u; ii < count; ++ii)
     {
@@ -338,33 +421,31 @@ void main()
         Lo += (diff + spec) * radiance * NoL;
     }
 
-    vec3 ambient = vec3(0.0);
+    vec3 color = Lo * ao;
 
     if (u_HasIBL != 0)
     {
-        vec3 R = reflect(-Vw, N);
-
-        vec3 F = F_Schlick(F0, NoV);
-        vec3 kS = F;
+        vec3 kS = F_Schlick(F0, NoV);
         vec3 kD = (vec3(1.0) - kS) * (1.0 - metallic);
 
         vec3 irradiance = texture(u_IrradianceMap, N).rgb;
-        vec3 diffuse = irradiance * albedo;
+        vec3 diffuseIBL = irradiance * albedo;
 
-        float maxLod = 8.0;
+        vec3 R = reflect(-Vw, N);
+        float maxLod = 5.0;
         vec3 prefiltered = textureLod(u_PrefilterMap, R, roughness * maxLod).rgb;
         vec2 brdf = texture(u_BRDFLUT, vec2(NoV, roughness)).rg;
-        vec3 specular = prefiltered * (F * brdf.x + brdf.y);
+        vec3 specIBL = prefiltered * (kS * brdf.x + brdf.y);
 
-        ambient = (kD * diffuse + specular) * ao * u_IBLIntensity;
+        color += (kD * diffuseIBL * ao + specIBL) * u_IBLIntensity;
     }
 
-    vec3 color = ambient + Lo + emissive;
+    color += emissive;
 
-    color = debug_lod_tint(color, u_DebugLod);
+    if (mode == 1)
+        color = debug_lod_tint(color, dbg_lod_p1());
 
-    float exposure = 1.0;
-    vec3 mapped = vec3(1.0) - exp(-color * exposure);
+    vec3 mapped = vec3(1.0) - exp(-color);
 
     o_Color = vec4(mapped, alpha);
 }

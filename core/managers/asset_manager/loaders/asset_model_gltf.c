@@ -108,6 +108,9 @@ static void mdl_vao_setup_model_vertex(void)
 
     glEnableVertexAttribArray(2);
     glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, (GLsizei)sizeof(model_vertex_t), (void *)offsetof(model_vertex_t, u));
+
+    glEnableVertexAttribArray(3);
+    glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, (GLsizei)sizeof(model_vertex_t), (void *)offsetof(model_vertex_t, tx));
 }
 
 static cgltf_attribute *mdl_gltf_find_attr(cgltf_primitive *prim, cgltf_attribute_type type, int index)
@@ -159,6 +162,19 @@ static vec3 mdl_vec3_norm_safe(vec3 v)
         return (vec3){0.0f, 0.0f, 1.0f};
     float inv = 1.0f / sqrtf(l2);
     return (vec3){v.x * inv, v.y * inv, v.z * inv};
+}
+
+static vec3 mdl_vec3_mul(vec3 a, float s)
+{
+    return (vec3){a.x * s, a.y * s, a.z * s};
+}
+
+static float mdl_mat3_det_from_mat4(mat4 m)
+{
+    float a00 = m.m[0], a01 = m.m[4], a02 = m.m[8];
+    float a10 = m.m[1], a11 = m.m[5], a12 = m.m[9];
+    float a20 = m.m[2], a21 = m.m[6], a22 = m.m[10];
+    return a00 * (a11 * a22 - a12 * a21) - a01 * (a10 * a22 - a12 * a20) + a02 * (a10 * a21 - a11 * a20);
 }
 
 static vec3 mdl_normal_xform(mat4 m, vec3 n)
@@ -546,7 +562,7 @@ static ihandle_t mdl_gltf_get_or_make_mat(asset_manager_t *am, const char *gltf_
     return h;
 }
 
-static bool mdl_gltf_read_vtx(model_vertex_t *dst, cgltf_primitive *prim, cgltf_size i, mat4 world)
+static bool mdl_gltf_read_vtx(model_vertex_t *dst, cgltf_primitive *prim, cgltf_size i, mat4 world, int want_tangent)
 {
     cgltf_attribute *a_pos = mdl_gltf_find_attr(prim, cgltf_attribute_type_position, 0);
     if (!a_pos || !a_pos->data)
@@ -596,6 +612,26 @@ static bool mdl_gltf_read_vtx(model_vertex_t *dst, cgltf_primitive *prim, cgltf_
     dst->ty = 0.0f;
     dst->tz = 0.0f;
     dst->tw = 1.0f;
+
+    if (want_tangent)
+    {
+        cgltf_attribute *a_tan = mdl_gltf_find_attr(prim, cgltf_attribute_type_tangent, 0);
+        if (a_tan && a_tan->data)
+        {
+            float t4[4] = {1, 0, 0, 1};
+            cgltf_accessor_read_float(a_tan->data, i, t4, 4);
+            vec3 t = {t4[0], t4[1], t4[2]};
+            t = mdl_normal_xform(world, t);
+            dst->tx = t.x;
+            dst->ty = t.y;
+            dst->tz = t.z;
+            float w = t4[3];
+            float det = mdl_mat3_det_from_mat4(world);
+            if (det < 0.0f)
+                w = -w;
+            dst->tw = w;
+        }
+    }
 
     return true;
 }
@@ -759,6 +795,116 @@ static aabb_t mdl_aabb_from_vertices(const model_vertex_t *vtx, uint32_t vcount)
     return b;
 }
 
+static void mdl_generate_tangents(model_vertex_t *vtx, uint32_t vcount, const uint32_t *idx, uint32_t icount)
+{
+    if (!vtx || !idx || vcount == 0 || icount < 3)
+        return;
+
+    vec3 *tan1 = (vec3 *)malloc((size_t)vcount * sizeof(vec3));
+    vec3 *tan2 = (vec3 *)malloc((size_t)vcount * sizeof(vec3));
+    if (!tan1 || !tan2)
+    {
+        free(tan1);
+        free(tan2);
+        return;
+    }
+
+    for (uint32_t i = 0; i < vcount; ++i)
+    {
+        tan1[i] = (vec3){0, 0, 0};
+        tan2[i] = (vec3){0, 0, 0};
+    }
+
+    uint32_t tri_count = icount / 3;
+    for (uint32_t t = 0; t < tri_count; ++t)
+    {
+        uint32_t i0 = idx[t * 3 + 0];
+        uint32_t i1 = idx[t * 3 + 1];
+        uint32_t i2 = idx[t * 3 + 2];
+        if (i0 >= vcount || i1 >= vcount || i2 >= vcount)
+            continue;
+
+        vec3 p0 = (vec3){vtx[i0].px, vtx[i0].py, vtx[i0].pz};
+        vec3 p1 = (vec3){vtx[i1].px, vtx[i1].py, vtx[i1].pz};
+        vec3 p2 = (vec3){vtx[i2].px, vtx[i2].py, vtx[i2].pz};
+
+        float u0 = vtx[i0].u, v0 = vtx[i0].v;
+        float u1 = vtx[i1].u, v1 = vtx[i1].v;
+        float u2 = vtx[i2].u, v2 = vtx[i2].v;
+
+        vec3 e1 = vec3_sub(p1, p0);
+        vec3 e2 = vec3_sub(p2, p0);
+
+        float du1 = u1 - u0;
+        float dv1 = v1 - v0;
+        float du2 = u2 - u0;
+        float dv2 = v2 - v0;
+
+        float denom = du1 * dv2 - dv1 * du2;
+        if (fabsf(denom) < 1e-20f)
+            continue;
+
+        float r = 1.0f / denom;
+
+        vec3 sdir = mdl_vec3_mul(vec3_sub(mdl_vec3_mul(e1, dv2), mdl_vec3_mul(e2, dv1)), r);
+        vec3 tdir = mdl_vec3_mul(vec3_sub(mdl_vec3_mul(e2, du1), mdl_vec3_mul(e1, du2)), r);
+
+        tan1[i0] = vec3_add(tan1[i0], sdir);
+        tan1[i1] = vec3_add(tan1[i1], sdir);
+        tan1[i2] = vec3_add(tan1[i2], sdir);
+
+        tan2[i0] = vec3_add(tan2[i0], tdir);
+        tan2[i1] = vec3_add(tan2[i1], tdir);
+        tan2[i2] = vec3_add(tan2[i2], tdir);
+    }
+
+    for (uint32_t i = 0; i < vcount; ++i)
+    {
+        vec3 n = (vec3){vtx[i].nx, vtx[i].ny, vtx[i].nz};
+        vec3 t = tan1[i];
+        vec3 b = tan2[i];
+
+        float n2 = vec3_dot(n, n);
+        float t2 = vec3_dot(t, t);
+
+        if (n2 < 1e-20f || t2 < 1e-20f)
+        {
+            vtx[i].tx = 1.0f;
+            vtx[i].ty = 0.0f;
+            vtx[i].tz = 0.0f;
+            vtx[i].tw = 1.0f;
+            continue;
+        }
+
+        n = mdl_vec3_norm_safe(n);
+
+        float ndott = vec3_dot(n, t);
+        vec3 ortho = vec3_sub(t, mdl_vec3_mul(n, ndott));
+        float o2 = vec3_dot(ortho, ortho);
+        if (o2 < 1e-20f)
+        {
+            vtx[i].tx = 1.0f;
+            vtx[i].ty = 0.0f;
+            vtx[i].tz = 0.0f;
+            vtx[i].tw = 1.0f;
+            continue;
+        }
+
+        vec3 tnorm = mdl_vec3_norm_safe(ortho);
+
+        vec3 c = vec3_cross(n, tnorm);
+        float handed = (vec3_dot(c, b) < 0.0f) ? -1.0f : 1.0f;
+
+        vtx[i].tx = tnorm.x;
+        vtx[i].ty = tnorm.y;
+        vtx[i].tz = tnorm.z;
+        vtx[i].tw = handed;
+    }
+
+    free(tan1);
+    free(tan2);
+}
+
 static bool mdl_emit_node_mesh(asset_manager_t *am, const char *path, cgltf_data *data, vector_t *mat_map, model_raw_t *raw, const cgltf_node *node, mat4 parent_world)
 {
     mat4 local = mdl_node_local_mtx(node);
@@ -787,6 +933,11 @@ static bool mdl_emit_node_mesh(asset_manager_t *am, const char *path, cgltf_data
             if (!vcount)
                 continue;
 
+            int has_tangent = 0;
+            cgltf_attribute *a_tan = mdl_gltf_find_attr(prim, cgltf_attribute_type_tangent, 0);
+            if (a_tan && a_tan->data)
+                has_tangent = 1;
+
             model_vertex_t *vtx = (model_vertex_t *)malloc((size_t)vcount * sizeof(model_vertex_t));
             if (!vtx)
                 return false;
@@ -795,7 +946,7 @@ static bool mdl_emit_node_mesh(asset_manager_t *am, const char *path, cgltf_data
             {
                 model_vertex_t v;
                 memset(&v, 0, sizeof(v));
-                if (!mdl_gltf_read_vtx(&v, prim, (cgltf_size)i, world))
+                if (!mdl_gltf_read_vtx(&v, prim, (cgltf_size)i, world, has_tangent))
                 {
                     free(vtx);
                     return false;
@@ -811,6 +962,9 @@ static bool mdl_emit_node_mesh(asset_manager_t *am, const char *path, cgltf_data
                 free(vtx);
                 return false;
             }
+
+            if (!has_tangent)
+                mdl_generate_tangents(vtx, vcount, idx, icount);
 
             model_cpu_lod_t lod0;
             memset(&lod0, 0, sizeof(lod0));
