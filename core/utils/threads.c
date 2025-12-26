@@ -2,7 +2,6 @@
 
 #if defined(_WIN32)
 
-// Target Windows 7 or higher for modern topology APIs
 #ifndef _WIN32_WINNT
 #define _WIN32_WINNT 0x0601
 #endif
@@ -11,8 +10,6 @@
 #include <windows.h>
 #include <tlhelp32.h>
 #include <malloc.h>
-
-/* --- Windows Implementation --- */
 
 static uint32_t threads_count_snapshot(DWORD pid_filter, int filter_enabled)
 {

@@ -718,6 +718,47 @@ static void mdl_gltf_free_raw(model_raw_t *raw)
     model_raw_destroy(raw);
 }
 
+static aabb_t mdl_aabb_from_vertices(const model_vertex_t *vtx, uint32_t vcount)
+{
+    aabb_t b;
+    b.min = (vec3){FLT_MAX, FLT_MAX, FLT_MAX};
+    b.max = (vec3){-FLT_MAX, -FLT_MAX, -FLT_MAX};
+
+    if (!vtx || vcount == 0)
+    {
+        b.min = (vec3){0, 0, 0};
+        b.max = (vec3){0, 0, 0};
+        return b;
+    }
+
+    for (uint32_t i = 0; i < vcount; ++i)
+    {
+        vec3 p = (vec3){vtx[i].px, vtx[i].py, vtx[i].pz};
+
+        if (p.x < b.min.x)
+            b.min.x = p.x;
+        if (p.y < b.min.y)
+            b.min.y = p.y;
+        if (p.z < b.min.z)
+            b.min.z = p.z;
+
+        if (p.x > b.max.x)
+            b.max.x = p.x;
+        if (p.y > b.max.y)
+            b.max.y = p.y;
+        if (p.z > b.max.z)
+            b.max.z = p.z;
+    }
+
+    if (b.min.x > b.max.x || b.min.y > b.max.y || b.min.z > b.max.z)
+    {
+        b.min = (vec3){0, 0, 0};
+        b.max = (vec3){0, 0, 0};
+    }
+
+    return b;
+}
+
 static bool mdl_emit_node_mesh(asset_manager_t *am, const char *path, cgltf_data *data, vector_t *mat_map, model_raw_t *raw, const cgltf_node *node, mat4 parent_world)
 {
     mat4 local = mdl_node_local_mtx(node);
@@ -784,7 +825,9 @@ static bool mdl_emit_node_mesh(asset_manager_t *am, const char *path, cgltf_data
             vector_impl_push_back(&sm.lods, &lod0);
             sm.material_name = NULL;
             sm.material = mdl_gltf_get_or_make_mat(am, path, data, mat_map, prim->material);
-            sm.flags = 0;
+
+            sm.aabb = mdl_aabb_from_vertices(vtx, vcount);
+            sm.flags = (uint8_t)(sm.flags | (uint8_t)CPU_SUBMESH_FLAG_HAS_AABB);
 
             vector_impl_push_back(&raw->submeshes, &sm);
         }
@@ -880,13 +923,6 @@ bool asset_model_gltf_load(asset_manager_t *am, const char *path, uint32_t path_
     return true;
 }
 
-static void mdl_mesh_flags_set_has_aabb(mesh_t *m)
-{
-    if (!m)
-        return;
-    m->flags |= (uint8_t)MESH_FLAG_HAS_AABB;
-}
-
 bool asset_model_gltf_init(asset_manager_t *am, asset_any_t *asset)
 {
     (void)am;
@@ -908,8 +944,11 @@ bool asset_model_gltf_init(asset_manager_t *am, asset_any_t *asset)
         gm.lods = vector_impl_create_vector(sizeof(mesh_lod_t));
         gm.flags = 0;
 
-        mesh_set_local_aabb_from_cpu(&gm, sm);
-        mdl_mesh_flags_set_has_aabb(&gm);
+        if (sm->flags & (uint8_t)CPU_SUBMESH_FLAG_HAS_AABB)
+        {
+            gm.local_aabb = sm->aabb;
+            gm.flags |= (uint8_t)MESH_FLAG_HAS_AABB;
+        }
 
         uint32_t want_lods = sm->lods.size;
         uint32_t uploaded = 0;

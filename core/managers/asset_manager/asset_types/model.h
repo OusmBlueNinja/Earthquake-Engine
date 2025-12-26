@@ -23,12 +23,26 @@ typedef struct model_cpu_lod_t
     uint32_t index_count;
 } model_cpu_lod_t;
 
+typedef struct aabb_t
+{
+    vec3 min;
+    vec3 max;
+} aabb_t;
+
+enum model_cpu_submesh_flags_t
+{
+    CPU_SUBMESH_FLAG_HAS_AABB = 1 << 0
+};
+
 typedef struct model_cpu_submesh_t
 {
     vector_t lods;
 
     char *material_name;
     ihandle_t material;
+
+    aabb_t aabb;
+    uint8_t flags;
 } model_cpu_submesh_t;
 
 typedef struct model_raw_t
@@ -39,12 +53,6 @@ typedef struct model_raw_t
     uint8_t lod_count;
 } model_raw_t;
 
-typedef struct aabb_t
-{
-    vec3 min;
-    vec3 max;
-} aabb_t;
-
 typedef struct mesh_lod_t
 {
     uint32_t vao;
@@ -53,13 +61,20 @@ typedef struct mesh_lod_t
     uint32_t index_count;
 } mesh_lod_t;
 
+enum mesh_flags_t
+{
+    MESH_FLAG_LOD0_READY = 1 << 0,
+    MESH_FLAG_LODS_READY = 1 << 1,
+    MESH_FLAG_HAS_AABB = 1 << 2
+};
+
 typedef struct mesh_t
 {
     vector_t lods;
     ihandle_t material;
 
     aabb_t local_aabb;
-    uint8_t has_aabb;
+    uint8_t flags;
 } mesh_t;
 
 typedef struct asset_model_t

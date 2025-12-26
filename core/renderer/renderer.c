@@ -611,7 +611,7 @@ static float R_mat4_max_scale_xyz(const mat4 *m)
 
 static float R_mesh_local_radius(const mesh_t *mesh)
 {
-    if (!mesh || !mesh->has_aabb)
+    if (!mesh || !(mesh->flags & MESH_FLAG_HAS_AABB))
         return 1.0f;
 
     float ex = 0.5f * (mesh->local_aabb.max.x - mesh->local_aabb.min.x);
@@ -627,7 +627,7 @@ static float R_mesh_local_radius(const mesh_t *mesh)
 
 static vec3 R_mesh_local_center(const mesh_t *mesh)
 {
-    if (!mesh || !mesh->has_aabb)
+    if (!mesh || !(mesh->flags & MESH_FLAG_HAS_AABB))
         return (vec3){0.0f, 0.0f, 0.0f};
     vec3 c;
     c.x = 0.5f * (mesh->local_aabb.min.x + mesh->local_aabb.max.x);

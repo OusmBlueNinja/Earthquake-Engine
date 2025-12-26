@@ -39,6 +39,9 @@ static void model_cpu_submesh_free(model_cpu_submesh_t *sm)
     free(sm->material_name);
     sm->material_name = NULL;
     sm->material = ihandle_invalid();
+    sm->flags = 0;
+    sm->aabb.min = (vec3){0, 0, 0};
+    sm->aabb.max = (vec3){0, 0, 0};
 }
 
 void model_raw_destroy(model_raw_t *r)
@@ -73,7 +76,7 @@ static void mesh_free_cpu_only(mesh_t *m)
         return;
     vector_impl_free(&m->lods);
     m->material = ihandle_invalid();
-    m->has_aabb = 0;
+    m->flags = 0;
     m->local_aabb.min = (vec3){0, 0, 0};
     m->local_aabb.max = (vec3){0, 0, 0};
 }
@@ -128,7 +131,13 @@ static aabb_t aabb_fix_if_empty(aabb_t b)
 
 aabb_t model_cpu_submesh_compute_aabb(const model_cpu_submesh_t *sm)
 {
-    if (!sm || sm->lods.size == 0)
+    if (!sm)
+        return (aabb_t){(vec3){0, 0, 0}, (vec3){0, 0, 0}};
+
+    if (sm->flags & (uint8_t)CPU_SUBMESH_FLAG_HAS_AABB)
+        return sm->aabb;
+
+    if (sm->lods.size == 0)
         return (aabb_t){(vec3){0, 0, 0}, (vec3){0, 0, 0}};
 
     aabb_t b = aabb_empty();
@@ -161,12 +170,12 @@ void mesh_set_local_aabb_from_cpu(mesh_t *dst, const model_cpu_submesh_t *src)
 
     if (!src)
     {
-        dst->has_aabb = 0;
+        dst->flags = (uint8_t)(dst->flags & (uint8_t)~MESH_FLAG_HAS_AABB);
         dst->local_aabb.min = (vec3){0, 0, 0};
         dst->local_aabb.max = (vec3){0, 0, 0};
         return;
     }
 
     dst->local_aabb = model_cpu_submesh_compute_aabb(src);
-    dst->has_aabb = 1;
+    dst->flags = (uint8_t)(dst->flags | MESH_FLAG_HAS_AABB);
 }

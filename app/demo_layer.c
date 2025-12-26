@@ -306,8 +306,8 @@ static void demo_init_moving_lights(demo_layer_state_t *s)
         s->lights[i].range = demo_frand_range(10.0f, 28.0f);
 
         float r = 0.5f + 0.5f * cosf(6.283185307179586f * (a + 0.00f));
-        float g = 0.5f + 0.5f * cosf(6.283185307179586f * (a + 0.33f));
-        float b = 0.5f + 0.5f * cosf(6.283185307179586f * (a + 0.66f));
+        float g = 0.5f + 0.5f * cosf(6.283185307179586f * (a + 0.11f));
+        float b = 0.5f + 0.5f * cosf(6.283185307179586f * (a + 0.22f));
         s->lights[i].color = (vec3){r, g, b};
     }
 }
