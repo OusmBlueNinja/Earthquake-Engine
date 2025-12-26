@@ -7,6 +7,7 @@
 #include <stddef.h>
 #include <ctype.h>
 #include <float.h>
+#include <math.h>
 
 #include "asset_manager/asset_types/model.h"
 #include "asset_manager/asset_types/material.h"
@@ -14,6 +15,8 @@
 #include "vector.h"
 #include "asset_image.h"
 #include "systems/model_lod.h"
+#include "types/mat4.h"
+#include "types/vec3.h"
 
 #if defined(__APPLE__)
 #include <OpenGL/gl3.h>
@@ -98,22 +101,13 @@ static float mdl_clamp01(float x)
 static void mdl_vao_setup_model_vertex(void)
 {
     glEnableVertexAttribArray(0);
-    glVertexAttribPointer(
-        0, 3, GL_FLOAT, GL_FALSE,
-        (GLsizei)sizeof(model_vertex_t),
-        (void *)offsetof(model_vertex_t, px));
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, (GLsizei)sizeof(model_vertex_t), (void *)offsetof(model_vertex_t, px));
 
     glEnableVertexAttribArray(1);
-    glVertexAttribPointer(
-        1, 3, GL_FLOAT, GL_FALSE,
-        (GLsizei)sizeof(model_vertex_t),
-        (void *)offsetof(model_vertex_t, nx));
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, (GLsizei)sizeof(model_vertex_t), (void *)offsetof(model_vertex_t, nx));
 
     glEnableVertexAttribArray(2);
-    glVertexAttribPointer(
-        2, 2, GL_FLOAT, GL_FALSE,
-        (GLsizei)sizeof(model_vertex_t),
-        (void *)offsetof(model_vertex_t, u));
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, (GLsizei)sizeof(model_vertex_t), (void *)offsetof(model_vertex_t, u));
 }
 
 static cgltf_attribute *mdl_gltf_find_attr(cgltf_primitive *prim, cgltf_attribute_type type, int index)
@@ -138,6 +132,139 @@ static const cgltf_image *mdl_gltf_tex_image(const cgltf_texture *t)
     if (t->basisu_image)
         return t->basisu_image;
     return NULL;
+}
+
+static vec3 mdl_mat4_mul_point(mat4 m, vec3 p)
+{
+    vec3 o;
+    o.x = m.m[0] * p.x + m.m[4] * p.y + m.m[8] * p.z + m.m[12];
+    o.y = m.m[1] * p.x + m.m[5] * p.y + m.m[9] * p.z + m.m[13];
+    o.z = m.m[2] * p.x + m.m[6] * p.y + m.m[10] * p.z + m.m[14];
+    return o;
+}
+
+static vec3 mdl_mat4_mul_dir(mat4 m, vec3 v)
+{
+    vec3 o;
+    o.x = m.m[0] * v.x + m.m[4] * v.y + m.m[8] * v.z;
+    o.y = m.m[1] * v.x + m.m[5] * v.y + m.m[9] * v.z;
+    o.z = m.m[2] * v.x + m.m[6] * v.y + m.m[10] * v.z;
+    return o;
+}
+
+static vec3 mdl_vec3_norm_safe(vec3 v)
+{
+    float l2 = v.x * v.x + v.y * v.y + v.z * v.z;
+    if (l2 < 1e-20f)
+        return (vec3){0.0f, 0.0f, 1.0f};
+    float inv = 1.0f / sqrtf(l2);
+    return (vec3){v.x * inv, v.y * inv, v.z * inv};
+}
+
+static vec3 mdl_normal_xform(mat4 m, vec3 n)
+{
+    float a00 = m.m[0], a01 = m.m[4], a02 = m.m[8];
+    float a10 = m.m[1], a11 = m.m[5], a12 = m.m[9];
+    float a20 = m.m[2], a21 = m.m[6], a22 = m.m[10];
+
+    float b01 = a22 * a11 - a12 * a21;
+    float b11 = -a22 * a10 + a12 * a20;
+    float b21 = a21 * a10 - a11 * a20;
+
+    float det = a00 * b01 + a01 * b11 + a02 * b21;
+
+    if (fabsf(det) < 1e-20f)
+        return mdl_vec3_norm_safe(mdl_mat4_mul_dir(m, n));
+
+    float invdet = 1.0f / det;
+
+    float i00 = b01 * invdet;
+    float i01 = (a02 * a21 - a22 * a01) * invdet;
+    float i02 = (a12 * a01 - a02 * a11) * invdet;
+
+    float i10 = b11 * invdet;
+    float i11 = (a22 * a00 - a02 * a20) * invdet;
+    float i12 = (a02 * a10 - a12 * a00) * invdet;
+
+    float i20 = b21 * invdet;
+    float i21 = (a01 * a20 - a21 * a00) * invdet;
+    float i22 = (a11 * a00 - a01 * a10) * invdet;
+
+    vec3 o;
+    o.x = i00 * n.x + i10 * n.y + i20 * n.z;
+    o.y = i01 * n.x + i11 * n.y + i21 * n.z;
+    o.z = i02 * n.x + i12 * n.y + i22 * n.z;
+
+    return mdl_vec3_norm_safe(o);
+}
+
+static mat4 mdl_mat4_from_quat(float x, float y, float z, float w)
+{
+    float xx = x * x;
+    float yy = y * y;
+    float zz = z * z;
+    float xy = x * y;
+    float xz = x * z;
+    float yz = y * z;
+    float wx = w * x;
+    float wy = w * y;
+    float wz = w * z;
+
+    mat4 r = mat4_identity();
+
+    r.m[0] = 1.0f - 2.0f * (yy + zz);
+    r.m[1] = 2.0f * (xy + wz);
+    r.m[2] = 2.0f * (xz - wy);
+
+    r.m[4] = 2.0f * (xy - wz);
+    r.m[5] = 1.0f - 2.0f * (xx + zz);
+    r.m[6] = 2.0f * (yz + wx);
+
+    r.m[8] = 2.0f * (xz + wy);
+    r.m[9] = 2.0f * (yz - wx);
+    r.m[10] = 1.0f - 2.0f * (xx + yy);
+
+    return r;
+}
+
+static mat4 mdl_mat4_from_trs(vec3 t, float qx, float qy, float qz, float qw, vec3 s)
+{
+    mat4 T = mat4_translate(t);
+    mat4 R = mdl_mat4_from_quat(qx, qy, qz, qw);
+    mat4 S = mat4_scale(s);
+    return mat4_mul(mat4_mul(T, R), S);
+}
+
+static mat4 mdl_node_local_mtx(const cgltf_node *n)
+{
+    if (!n)
+        return mat4_identity();
+
+    if (n->has_matrix)
+    {
+        mat4 m;
+        for (int i = 0; i < 16; ++i)
+            m.m[i] = n->matrix[i];
+        return m;
+    }
+
+    vec3 t = {0.0f, 0.0f, 0.0f};
+    vec3 s = {1.0f, 1.0f, 1.0f};
+    float qx = 0.0f, qy = 0.0f, qz = 0.0f, qw = 1.0f;
+
+    if (n->has_translation)
+        t = (vec3){n->translation[0], n->translation[1], n->translation[2]};
+    if (n->has_scale)
+        s = (vec3){n->scale[0], n->scale[1], n->scale[2]};
+    if (n->has_rotation)
+    {
+        qx = n->rotation[0];
+        qy = n->rotation[1];
+        qz = n->rotation[2];
+        qw = n->rotation[3];
+    }
+
+    return mdl_mat4_from_trs(t, qx, qy, qz, qw, s);
 }
 
 static int mdl_b64_val(unsigned char c)
@@ -419,7 +546,7 @@ static ihandle_t mdl_gltf_get_or_make_mat(asset_manager_t *am, const char *gltf_
     return h;
 }
 
-static bool mdl_gltf_read_vtx(model_vertex_t *dst, cgltf_primitive *prim, cgltf_size i)
+static bool mdl_gltf_read_vtx(model_vertex_t *dst, cgltf_primitive *prim, cgltf_size i, mat4 world)
 {
     cgltf_attribute *a_pos = mdl_gltf_find_attr(prim, cgltf_attribute_type_position, 0);
     if (!a_pos || !a_pos->data)
@@ -427,18 +554,22 @@ static bool mdl_gltf_read_vtx(model_vertex_t *dst, cgltf_primitive *prim, cgltf_
 
     float v3[3] = {0, 0, 0};
     cgltf_accessor_read_float(a_pos->data, i, v3, 3);
-    dst->px = v3[0];
-    dst->py = v3[1];
-    dst->pz = v3[2];
+    vec3 p = {v3[0], v3[1], v3[2]};
+    p = mdl_mat4_mul_point(world, p);
+    dst->px = p.x;
+    dst->py = p.y;
+    dst->pz = p.z;
 
     cgltf_attribute *a_nrm = mdl_gltf_find_attr(prim, cgltf_attribute_type_normal, 0);
     if (a_nrm && a_nrm->data)
     {
         float n3[3] = {0, 0, 1};
         cgltf_accessor_read_float(a_nrm->data, i, n3, 3);
-        dst->nx = n3[0];
-        dst->ny = n3[1];
-        dst->nz = n3[2];
+        vec3 n = {n3[0], n3[1], n3[2]};
+        n = mdl_normal_xform(world, n);
+        dst->nx = n.x;
+        dst->ny = n.y;
+        dst->nz = n.z;
     }
     else
     {
@@ -460,6 +591,11 @@ static bool mdl_gltf_read_vtx(model_vertex_t *dst, cgltf_primitive *prim, cgltf_
         dst->u = 0.0f;
         dst->v = 0.0f;
     }
+
+    dst->tx = 1.0f;
+    dst->ty = 0.0f;
+    dst->tz = 0.0f;
+    dst->tw = 1.0f;
 
     return true;
 }
@@ -582,6 +718,93 @@ static void mdl_gltf_free_raw(model_raw_t *raw)
     model_raw_destroy(raw);
 }
 
+static bool mdl_emit_node_mesh(asset_manager_t *am, const char *path, cgltf_data *data, vector_t *mat_map, model_raw_t *raw, const cgltf_node *node, mat4 parent_world)
+{
+    mat4 local = mdl_node_local_mtx(node);
+    mat4 world = mat4_mul(parent_world, local);
+
+    if (node && node->mesh)
+    {
+        cgltf_mesh *mesh = node->mesh;
+
+        for (cgltf_size pi = 0; pi < mesh->primitives_count; ++pi)
+        {
+            cgltf_primitive *prim = &mesh->primitives[pi];
+            if (!prim)
+                continue;
+
+            cgltf_attribute *a_pos = mdl_gltf_find_attr(prim, cgltf_attribute_type_position, 0);
+            if (!a_pos || !a_pos->data)
+                continue;
+
+            if (!(prim->type == cgltf_primitive_type_triangles ||
+                  prim->type == cgltf_primitive_type_triangle_strip ||
+                  prim->type == cgltf_primitive_type_triangle_fan))
+                continue;
+
+            uint32_t vcount = (uint32_t)a_pos->data->count;
+            if (!vcount)
+                continue;
+
+            model_vertex_t *vtx = (model_vertex_t *)malloc((size_t)vcount * sizeof(model_vertex_t));
+            if (!vtx)
+                return false;
+
+            for (uint32_t i = 0; i < vcount; ++i)
+            {
+                model_vertex_t v;
+                memset(&v, 0, sizeof(v));
+                if (!mdl_gltf_read_vtx(&v, prim, (cgltf_size)i, world))
+                {
+                    free(vtx);
+                    return false;
+                }
+                vtx[i] = v;
+            }
+
+            uint32_t icount = 0;
+            uint32_t *idx = mdl_gltf_build_indices(prim, vcount, &icount);
+            if (!idx || !icount)
+            {
+                free(idx);
+                free(vtx);
+                return false;
+            }
+
+            model_cpu_lod_t lod0;
+            memset(&lod0, 0, sizeof(lod0));
+            lod0.vertices = vtx;
+            lod0.vertex_count = vcount;
+            lod0.indices = idx;
+            lod0.index_count = icount;
+
+            model_cpu_submesh_t sm;
+            memset(&sm, 0, sizeof(sm));
+            sm.lods = vector_impl_create_vector(sizeof(model_cpu_lod_t));
+            vector_impl_push_back(&sm.lods, &lod0);
+            sm.material_name = NULL;
+            sm.material = mdl_gltf_get_or_make_mat(am, path, data, mat_map, prim->material);
+            sm.flags = 0;
+
+            vector_impl_push_back(&raw->submeshes, &sm);
+        }
+    }
+
+    if (node && node->children_count)
+    {
+        for (cgltf_size ci = 0; ci < node->children_count; ++ci)
+        {
+            cgltf_node *ch = node->children[ci];
+            if (!ch)
+                continue;
+            if (!mdl_emit_node_mesh(am, path, data, mat_map, raw, ch, world))
+                return false;
+        }
+    }
+
+    return true;
+}
+
 bool asset_model_gltf_load(asset_manager_t *am, const char *path, uint32_t path_is_ptr, asset_any_t *out_asset)
 {
     if (!am || !out_asset || !path)
@@ -620,98 +843,34 @@ bool asset_model_gltf_load(asset_manager_t *am, const char *path, uint32_t path_
 
     vector_t mat_map = vector_impl_create_vector(sizeof(mdl_gltf_mat_entry_t));
 
-    for (cgltf_size mi = 0; mi < data->meshes_count; ++mi)
+    cgltf_scene *scene = NULL;
+    if (data->scene)
+        scene = data->scene;
+    else if (data->scenes_count)
+        scene = &data->scenes[0];
+
+    if (scene && scene->nodes_count)
     {
-        cgltf_mesh *mesh = &data->meshes[mi];
-        if (!mesh)
-            continue;
-
-        for (cgltf_size pi = 0; pi < mesh->primitives_count; ++pi)
+        mat4 I = mat4_identity();
+        for (cgltf_size ni = 0; ni < scene->nodes_count; ++ni)
         {
-            cgltf_primitive *prim = &mesh->primitives[pi];
-            if (!prim)
+            cgltf_node *n = scene->nodes[ni];
+            if (!n)
                 continue;
-
-            cgltf_attribute *a_pos = mdl_gltf_find_attr(prim, cgltf_attribute_type_position, 0);
-            if (!a_pos || !a_pos->data)
-                continue;
-
-            if (!(prim->type == cgltf_primitive_type_triangles ||
-                  prim->type == cgltf_primitive_type_triangle_strip ||
-                  prim->type == cgltf_primitive_type_triangle_fan))
-                continue;
-
-            uint32_t vcount = (uint32_t)a_pos->data->count;
-            if (!vcount)
-                continue;
-
-            model_vertex_t *vtx = (model_vertex_t *)malloc((size_t)vcount * sizeof(model_vertex_t));
-            if (!vtx)
+            if (!mdl_emit_node_mesh(am, path, data, &mat_map, &raw, n, I))
             {
                 vector_impl_free(&mat_map);
                 mdl_gltf_free_raw(&raw);
                 cgltf_free(data);
                 return false;
             }
-
-            for (uint32_t i = 0; i < vcount; ++i)
-            {
-                model_vertex_t v;
-                memset(&v, 0, sizeof(v));
-                if (!mdl_gltf_read_vtx(&v, prim, (cgltf_size)i))
-                {
-                    free(vtx);
-                    vector_impl_free(&mat_map);
-                    mdl_gltf_free_raw(&raw);
-                    cgltf_free(data);
-                    return false;
-                }
-                vtx[i] = v;
-            }
-
-            uint32_t icount = 0;
-            uint32_t *idx = mdl_gltf_build_indices(prim, vcount, &icount);
-            if (!idx || !icount)
-            {
-                free(vtx);
-                vector_impl_free(&mat_map);
-                mdl_gltf_free_raw(&raw);
-                cgltf_free(data);
-                return false;
-            }
-
-            model_cpu_lod_t lod0;
-            memset(&lod0, 0, sizeof(lod0));
-            lod0.vertices = vtx;
-            lod0.vertex_count = vcount;
-            lod0.indices = idx;
-            lod0.index_count = icount;
-
-            model_cpu_submesh_t sm;
-            memset(&sm, 0, sizeof(sm));
-            sm.lods = vector_impl_create_vector(sizeof(model_cpu_lod_t));
-            vector_impl_push_back(&sm.lods, &lod0);
-            sm.material_name = NULL;
-            sm.material = mdl_gltf_get_or_make_mat(am, path, data, &mat_map, prim->material);
-
-            vector_impl_push_back(&raw.submeshes, &sm);
         }
     }
 
     vector_impl_free(&mat_map);
     cgltf_free(data);
 
-    model_lod_settings_t s;
-    memset(&s, 0, sizeof(s));
-    s.lod_count = 7;
-    s.triangle_ratio[0] = 1.0f;
-    s.triangle_ratio[1] = 0.70f;
-    s.triangle_ratio[2] = 0.50f;
-    s.triangle_ratio[3] = 0.35f;
-    s.triangle_ratio[4] = 0.25f;
-    s.triangle_ratio[5] = 0.18f;
-    s.triangle_ratio[6] = 0.12f;
-    model_raw_generate_lods(&raw, &s);
+    model_raw_generate_lods(&raw);
 
     memset(out_asset, 0, sizeof(*out_asset));
     out_asset->type = ASSET_MODEL;
@@ -719,6 +878,13 @@ bool asset_model_gltf_load(asset_manager_t *am, const char *path, uint32_t path_
     out_asset->as.model_raw = raw;
 
     return true;
+}
+
+static void mdl_mesh_flags_set_has_aabb(mesh_t *m)
+{
+    if (!m)
+        return;
+    m->flags |= (uint8_t)MESH_FLAG_HAS_AABB;
 }
 
 bool asset_model_gltf_init(asset_manager_t *am, asset_any_t *asset)
@@ -740,8 +906,13 @@ bool asset_model_gltf_init(asset_manager_t *am, asset_any_t *asset)
         memset(&gm, 0, sizeof(gm));
         gm.material = sm->material;
         gm.lods = vector_impl_create_vector(sizeof(mesh_lod_t));
+        gm.flags = 0;
 
         mesh_set_local_aabb_from_cpu(&gm, sm);
+        mdl_mesh_flags_set_has_aabb(&gm);
+
+        uint32_t want_lods = sm->lods.size;
+        uint32_t uploaded = 0;
 
         for (uint32_t li = 0; li < sm->lods.size; ++li)
         {
@@ -766,13 +937,28 @@ bool asset_model_gltf_init(asset_manager_t *am, asset_any_t *asset)
 
             mdl_vao_setup_model_vertex();
 
+            glBindVertexArray(0);
+            glBindBuffer(GL_ARRAY_BUFFER, 0);
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+
             vector_impl_push_back(&gm.lods, &glod);
+            uploaded++;
+
+            if (li == 0)
+                gm.flags |= (uint8_t)MESH_FLAG_LOD0_READY;
         }
 
-        if (gm.lods.size > 0)
+        if (uploaded > 0)
+        {
+            if (uploaded == want_lods)
+                gm.flags |= (uint8_t)MESH_FLAG_LODS_READY;
+
             vector_impl_push_back(&model.meshes, &gm);
+        }
         else
+        {
             vector_impl_free(&gm.lods);
+        }
     }
 
     model_raw_destroy(&asset->as.model_raw);
@@ -813,7 +999,7 @@ void asset_model_gltf_cleanup(asset_manager_t *am, asset_any_t *asset)
 
         vector_impl_free(&m->lods);
         m->material = ihandle_invalid();
-        m->has_aabb = 0;
+        m->flags = 0;
         m->local_aabb.min = (vec3){0, 0, 0};
         m->local_aabb.max = (vec3){0, 0, 0};
     }
