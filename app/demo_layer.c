@@ -446,6 +446,7 @@ static void demo_layer_draw(layer_t *layer)
         lt.color = L->color;
         lt.intensity = L->intensity;
         lt.range = L->range;
+        lt.radius = 400.0f;
 
         R_push_light(r, lt);
     }

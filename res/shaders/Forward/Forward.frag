@@ -4,54 +4,27 @@ layout(location = 0) out vec4 o_Color;
 
 in VS_OUT
 {
-    vec3 wPos;
+    vec3 worldPos;
+    vec3 worldN;
     vec2 uv;
-    vec3 wN;
-    vec3 wT;
-    vec3 wB;
-} f;
-
-struct GpuLight
-{
-    vec4 position;
-    vec4 direction;
-    vec4 color;
-    vec4 params;
-    ivec4 meta;
-};
-
-layout(std430, binding = 0) readonly buffer LightsBuf
-{
-    GpuLight lights[];
-};
-
-layout(std430, binding = 1) readonly buffer TileIndexBuf
-{
-    uvec2 tileIndex[];
-};
-
-layout(std430, binding = 2) readonly buffer TileListBuf
-{
-    uint tileList[];
-};
-
-uniform uvec2 u_TileCount;
-uniform uint u_TileSize;
+    vec4 tangent;
+} v;
 
 uniform vec3 u_CameraPos;
 
 uniform int u_HasMaterial;
+
 uniform vec3 u_Albedo;
 uniform vec3 u_Emissive;
 uniform float u_Roughness;
 uniform float u_Metallic;
 uniform float u_Opacity;
-uniform float u_NormalStrength;
-uniform int u_MaterialTexMask;
 
-uniform int u_AlphaTest;
-uniform float u_AlphaCutoff;
-uniform int u_ManualSRGB;
+uniform float u_NormalStrength;
+uniform float u_HeightScale;
+uniform int u_HeightSteps;
+
+uniform int u_MaterialTexMask;
 
 uniform sampler2D u_AlbedoTex;
 uniform sampler2D u_NormalTex;
@@ -62,240 +35,336 @@ uniform sampler2D u_OcclusionTex;
 uniform sampler2D u_HeightTex;
 uniform sampler2D u_ArmTex;
 
+uniform int u_HeightInvert;
+uniform int u_AlphaTest;
+uniform float u_AlphaCutoff;
+uniform int u_ManualSRGB;
+
+uniform int u_HasIBL;
+uniform float u_IBLIntensity;
 uniform samplerCube u_IrradianceMap;
 uniform samplerCube u_PrefilterMap;
 uniform sampler2D u_BRDFLUT;
-uniform int u_HasIBL;
-uniform float u_IBLIntensity;
+
+uniform int u_TileSize;
+uniform int u_TileCountX;
+uniform int u_TileCountY;
 
 uniform int u_DebugLod;
 
-const float PI = 3.14159265358979323846;
-
-vec3 srgb_to_linear(vec3 c)
+struct GPU_Light
 {
-    return pow(max(c, vec3(0.0)), vec3(2.2));
-}
+    vec4 position;
+    vec4 direction;
+    vec4 color;
+    vec4 params;
+    ivec4 meta;
+};
+
+layout(std430, binding = 0) readonly buffer B_Lights
+{
+    GPU_Light g_Lights[];
+};
+
+layout(std430, binding = 1) readonly buffer B_TileIndex
+{
+    uvec2 g_TileIndex[];
+};
+
+layout(std430, binding = 2) readonly buffer B_TileList
+{
+    uint g_TileList[];
+};
 
 float saturate(float x)
 {
     return clamp(x, 0.0, 1.0);
 }
 
-vec3 normal_from_map(vec3 nGeom)
+vec3 srgb_to_linear(vec3 c)
 {
-    if ((u_MaterialTexMask & (1 << 1)) == 0)
-        return normalize(nGeom);
-
-    vec3 t = normalize(f.wT);
-    vec3 b = normalize(f.wB);
-    vec3 n = normalize(nGeom);
-    mat3 TBN = mat3(t, b, n);
-
-    vec3 nm = texture(u_NormalTex, f.uv).xyz * 2.0 - 1.0;
-    nm.xy *= u_NormalStrength;
-    nm = normalize(nm);
-
-    return normalize(TBN * nm);
+    return pow(max(c, vec3(0.0)), vec3(2.2));
 }
 
-float D_GGX(float NdotH, float a)
+vec3 sample_albedo(vec2 uv)
+{
+    vec4 t = texture(u_AlbedoTex, uv);
+    vec3 c = t.rgb;
+    if (u_ManualSRGB != 0)
+        c = srgb_to_linear(c);
+    return c;
+}
+
+vec3 sample_emissive(vec2 uv)
+{
+    vec3 c = texture(u_EmissiveTex, uv).rgb;
+    if (u_ManualSRGB != 0)
+        c = srgb_to_linear(c);
+    return c;
+}
+
+vec3 tangent_space_normal(vec2 uv)
+{
+    vec3 n = texture(u_NormalTex, uv).xyz * 2.0 - 1.0;
+    n.xy *= u_NormalStrength;
+    return normalize(n);
+}
+
+mat3 build_tbn(vec3 N, vec4 tangent)
+{
+    vec3 T = normalize(tangent.xyz);
+    vec3 B = normalize(cross(N, T)) * tangent.w;
+    T = normalize(T - N * dot(N, T));
+    B = normalize(cross(N, T)) * tangent.w;
+    return mat3(T, B, N);
+}
+
+float D_GGX(float NoH, float a)
 {
     float a2 = a * a;
-    float d = (NdotH * NdotH) * (a2 - 1.0) + 1.0;
-    return a2 / (PI * d * d);
+    float d = (NoH * NoH) * (a2 - 1.0) + 1.0;
+    return a2 / max(3.14159265 * d * d, 1e-8);
 }
 
-float G_SchlickGGX(float NdotV, float k)
+float G_SchlickGGX(float NoV, float k)
 {
-    return NdotV / (NdotV * (1.0 - k) + k);
+    return NoV / max(NoV * (1.0 - k) + k, 1e-8);
 }
 
-float G_Smith(float NdotV, float NdotL, float k)
+float G_Smith(float NoV, float NoL, float a)
 {
-    return G_SchlickGGX(NdotV, k) * G_SchlickGGX(NdotL, k);
+    float r = a + 1.0;
+    float k = (r * r) / 8.0;
+    return G_SchlickGGX(NoV, k) * G_SchlickGGX(NoL, k);
 }
 
-vec3 F_Schlick(float cosTheta, vec3 F0)
+vec3 F_Schlick(vec3 F0, float VoH)
 {
-    return F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);
+    return F0 + (1.0 - F0) * pow(1.0 - VoH, 5.0);
 }
 
-vec3 F_SchlickRoughness(float cosTheta, vec3 F0, float roughness)
+vec2 parallax_uv(vec2 uv, vec3 V_ts)
 {
-    vec3 Fr = max(vec3(1.0 - roughness), F0);
-    return F0 + (Fr - F0) * pow(1.0 - cosTheta, 5.0);
+    int steps = u_HeightSteps;
+    float scale = u_HeightScale;
+    if (steps < 1 || scale <= 0.0)
+        return uv;
+
+    float layerCount = float(steps);
+    float layerDepth = 1.0 / layerCount;
+    float curDepth = 0.0;
+
+    vec2 P = (V_ts.xy / max(V_ts.z, 1e-4)) * scale;
+    vec2 dUV = P / layerCount;
+
+    vec2 curUV = uv;
+    float h = texture(u_HeightTex, curUV).r;
+    if (u_HeightInvert != 0)
+        h = 1.0 - h;
+
+    while (curDepth < h)
+    {
+        curUV -= dUV;
+        curDepth += layerDepth;
+        h = texture(u_HeightTex, curUV).r;
+        if (u_HeightInvert != 0)
+            h = 1.0 - h;
+    }
+
+    return curUV;
 }
 
-vec3 sample_prefilter(vec3 R, float roughness)
+vec3 debug_lod_tint(vec3 c, int d)
 {
-    float maxMip = 5.0;
-    float mip = roughness * maxMip;
-    return textureLod(u_PrefilterMap, R, mip).rgb;
+    if (d <= 0)
+        return c;
+    int m = (d - 1) % 6;
+    vec3 t = vec3(1.0);
+    if (m == 0) t = vec3(1.0, 0.3, 0.3);
+    if (m == 1) t = vec3(0.3, 1.0, 0.3);
+    if (m == 2) t = vec3(0.3, 0.3, 1.0);
+    if (m == 3) t = vec3(1.0, 1.0, 0.3);
+    if (m == 4) t = vec3(1.0, 0.3, 1.0);
+    if (m == 5) t = vec3(0.3, 1.0, 1.0);
+    return mix(c, c * t, 0.35);
 }
 
 void main()
 {
-    vec4 albedoTex = vec4(1.0);
+    vec3 Nw = normalize(v.worldN);
+    vec3 Vw = normalize(u_CameraPos - v.worldPos);
+
+    mat3 TBN = build_tbn(Nw, v.tangent);
+
+    vec2 uv = v.uv;
+
+    if ((u_MaterialTexMask & (1 << 6)) != 0 && u_HeightScale > 0.0 && u_HeightSteps > 0)
+    {
+        vec3 Vts = normalize(transpose(TBN) * Vw);
+        uv = parallax_uv(uv, Vts);
+    }
+
+    vec3 albedo = u_Albedo;
+    float alpha_tex = 1.0;
+
     if ((u_MaterialTexMask & (1 << 0)) != 0)
-        albedoTex = texture(u_AlbedoTex, f.uv);
+    {
+        vec4 t = texture(u_AlbedoTex, uv);
+        albedo *= (u_ManualSRGB != 0) ? srgb_to_linear(t.rgb) : t.rgb;
+        alpha_tex = t.a;
+    }
 
-    vec3 baseColor = u_Albedo * albedoTex.rgb;
-    if (u_ManualSRGB != 0 && (u_MaterialTexMask & (1 << 0)) != 0)
-        baseColor = srgb_to_linear(baseColor);
-
-    float alpha = u_Opacity * albedoTex.a;
+    float alpha = alpha_tex * u_Opacity;
 
     if (u_AlphaTest != 0)
     {
         if (alpha < u_AlphaCutoff)
             discard;
+        alpha = 1.0;
     }
 
-    float roughness = u_Roughness;
-    float metallic = u_Metallic;
+    float roughness = clamp(u_Roughness, 0.04, 1.0);
+    float metallic = clamp(u_Metallic, 0.0, 1.0);
     float ao = 1.0;
 
     if ((u_MaterialTexMask & (1 << 7)) != 0)
     {
-        vec3 arm = texture(u_ArmTex, f.uv).rgb;
-        ao = arm.r;
+        vec3 arm = texture(u_ArmTex, uv).rgb;
+        ao *= arm.r;
         roughness *= arm.g;
         metallic *= arm.b;
+        roughness = clamp(roughness, 0.04, 1.0);
+        metallic = clamp(metallic, 0.0, 1.0);
     }
     else
     {
-        if ((u_MaterialTexMask & (1 << 5)) != 0)
-            ao = texture(u_OcclusionTex, f.uv).r;
-
         if ((u_MaterialTexMask & (1 << 3)) != 0)
-            roughness *= texture(u_RoughnessTex, f.uv).r;
-
+        {
+            roughness *= texture(u_RoughnessTex, uv).r;
+            roughness = clamp(roughness, 0.04, 1.0);
+        }
         if ((u_MaterialTexMask & (1 << 2)) != 0)
-            metallic *= texture(u_MetallicTex, f.uv).r;
+        {
+            metallic *= texture(u_MetallicTex, uv).r;
+            metallic = clamp(metallic, 0.0, 1.0);
+        }
     }
 
-    roughness = clamp(roughness, 0.04, 1.0);
-    metallic = clamp(metallic, 0.0, 1.0);
-    ao = clamp(ao, 0.0, 1.0);
+    if ((u_MaterialTexMask & (1 << 5)) != 0)
+        ao *= texture(u_OcclusionTex, uv).r;
 
     vec3 emissive = u_Emissive;
     if ((u_MaterialTexMask & (1 << 4)) != 0)
+        emissive *= ((u_ManualSRGB != 0) ? srgb_to_linear(texture(u_EmissiveTex, uv).rgb) : texture(u_EmissiveTex, uv).rgb);
+
+    vec3 N = Nw;
+    if ((u_MaterialTexMask & (1 << 1)) != 0)
     {
-        vec3 e = texture(u_EmissiveTex, f.uv).rgb;
-        if (u_ManualSRGB != 0)
-            e = srgb_to_linear(e);
-        emissive *= e;
+        vec3 Nts = tangent_space_normal(uv);
+        N = normalize(TBN * Nts);
     }
 
-    vec3 N = normal_from_map(f.wN);
-    vec3 V = normalize(u_CameraPos - f.wPos);
+    float NoV = saturate(dot(N, Vw));
 
-    vec3 F0 = mix(vec3(0.04), baseColor, metallic);
-
-    uvec2 tile = uvec2(gl_FragCoord.xy) / u_TileSize;
-    tile.x = min(tile.x, u_TileCount.x - 1u);
-    tile.y = min(tile.y, u_TileCount.y - 1u);
-
-    uint tileId = tile.y * u_TileCount.x + tile.x;
-    uvec2 oc = tileIndex[tileId];
-    uint off = oc.x;
-    uint cnt = oc.y;
+    vec3 F0 = mix(vec3(0.04), albedo, metallic);
 
     vec3 Lo = vec3(0.0);
 
-    float NdotV = max(dot(N, V), 0.0);
-    float a = roughness * roughness;
-    float k = (roughness + 1.0);
-    k = (k * k) * 0.125;
+    ivec2 tileXY = ivec2(int(gl_FragCoord.x) / max(u_TileSize, 1), int(gl_FragCoord.y) / max(u_TileSize, 1));
+    tileXY.x = clamp(tileXY.x, 0, max(u_TileCountX - 1, 0));
+    tileXY.y = clamp(tileXY.y, 0, max(u_TileCountY - 1, 0));
+    int tileIndex = tileXY.x + tileXY.y * u_TileCountX;
 
-    for (uint i = 0u; i < cnt; ++i)
+    uvec2 sc = g_TileIndex[uint(tileIndex)];
+    uint start = sc.x;
+    uint count = sc.y;
+    if (count > 2048u)
+        count = 2048u;
+
+    for (uint ii = 0u; ii < count; ++ii)
     {
-        uint li = tileList[off + i];
-        GpuLight Lg = lights[li];
+        uint li = g_TileList[start + ii];
+        GPU_Light Ld = g_Lights[li];
 
-        int type = Lg.meta.x;
+        vec3 L;
+        float atten = 1.0;
 
-        vec3 Ldir = vec3(0.0);
-        vec3 radiance = vec3(0.0);
-
-        if (type == 1)
+        if (Ld.meta.x == 1)
         {
-            Ldir = normalize(-Lg.direction.xyz);
-            radiance = Lg.color.rgb * Lg.params.x;
+            L = normalize(-Ld.direction.xyz);
+            atten = 1.0;
         }
         else
         {
-            vec3 toL = Lg.position.xyz - f.wPos;
-            float dist = length(toL);
-            float range = max(Lg.params.z, 0.0001);
-            if (dist > range)
-                continue;
+            vec3 toL = Ld.position.xyz - v.worldPos;
+            float d2 = dot(toL, toL);
+            float d = sqrt(max(d2, 1e-8));
+            L = toL / d;
 
-            Ldir = toL / max(dist, 1e-6);
-
-            float att = 1.0 - saturate(dist / range);
-            att = att * att;
-            att = att / (1.0 + dist * dist);
-
-            radiance = Lg.color.rgb * Lg.params.x * att;
+            float range = Ld.params.z;
+            if (range > 1e-4)
+            {
+                float x = saturate(1.0 - d / range);
+                atten = x * x;
+            }
+            else
+            {
+                atten = 1.0 / max(d2, 1e-4);
+            }
         }
 
-        float NdotL = max(dot(N, Ldir), 0.0);
-        if (NdotL <= 0.0)
+        float NoL = saturate(dot(N, L));
+        if (NoL <= 1e-5)
             continue;
 
-        vec3 H = normalize(V + Ldir);
-        float NdotH = max(dot(N, H), 0.0);
-        float VdotH = max(dot(V, H), 0.0);
+        vec3 H = normalize(Vw + L);
+        float NoH = saturate(dot(N, H));
+        float VoH = saturate(dot(Vw, H));
 
-        float D = D_GGX(NdotH, a);
-        float G = G_Smith(NdotV, NdotL, k);
-        vec3 F = F_Schlick(VdotH, F0);
+        float a = roughness * roughness;
 
-        vec3 num = D * G * F;
-        float denom = max(4.0 * NdotV * NdotL, 1e-6);
-        vec3 spec = num / denom;
+        float D = D_GGX(NoH, a);
+        float G = G_Smith(NoV, NoL, a);
+        vec3  F = F_Schlick(F0, VoH);
 
         vec3 kS = F;
         vec3 kD = (vec3(1.0) - kS) * (1.0 - metallic);
 
-        vec3 diff = kD * baseColor / PI;
+        vec3 radiance = Ld.color.rgb * Ld.params.x * atten;
 
-        Lo += (diff + spec) * radiance * NdotL;
+        vec3 spec = (D * G * F) / max(4.0 * NoV * NoL, 1e-6);
+        vec3 diff = kD * (albedo / 3.14159265);
+
+        Lo += (diff + spec) * radiance * NoL;
     }
 
     vec3 ambient = vec3(0.0);
 
     if (u_HasIBL != 0)
     {
-        vec3 F = F_SchlickRoughness(NdotV, F0, roughness);
+        vec3 R = reflect(-Vw, N);
+
+        vec3 F = F_Schlick(F0, NoV);
         vec3 kS = F;
         vec3 kD = (vec3(1.0) - kS) * (1.0 - metallic);
 
         vec3 irradiance = texture(u_IrradianceMap, N).rgb;
-        vec3 diffuse = irradiance * baseColor;
+        vec3 diffuse = irradiance * albedo;
 
-        vec3 R = reflect(-V, N);
-        vec3 prefiltered = sample_prefilter(R, roughness);
-        vec2 brdf = texture(u_BRDFLUT, vec2(NdotV, roughness)).rg;
-        vec3 specIBL = prefiltered * (F * brdf.x + brdf.y);
+        float maxLod = 8.0;
+        vec3 prefiltered = textureLod(u_PrefilterMap, R, roughness * maxLod).rgb;
+        vec2 brdf = texture(u_BRDFLUT, vec2(NoV, roughness)).rg;
+        vec3 specular = prefiltered * (F * brdf.x + brdf.y);
 
-        ambient = (kD * diffuse + specIBL) * ao * u_IBLIntensity;
-    }
-    else
-    {
-        ambient = baseColor * 0.03 * ao;
+        ambient = (kD * diffuse + specular) * ao * u_IBLIntensity;
     }
 
     vec3 color = ambient + Lo + emissive;
 
-    if (u_DebugLod != 0)
-    {
-        float t = clamp(float(u_DebugLod) / 6.0, 0.0, 1.0);
-        vec3 dbg = vec3(t, 1.0 - t, 0.2);
-        color = mix(color, dbg, 0.35);
-    }
+    color = debug_lod_tint(color, u_DebugLod);
 
-    o_Color = vec4(color, alpha);
+    float exposure = 1.0;
+    vec3 mapped = vec3(1.0) - exp(-color * exposure);
+
+    o_Color = vec4(mapped, alpha);
 }

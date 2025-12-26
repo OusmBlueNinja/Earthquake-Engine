@@ -1,0 +1,125 @@
+#version 430
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+uniform mat4 u_View;
+uniform mat4 u_Proj;
+uniform ivec2 u_ScreenSize;
+uniform ivec2 u_TileCount;
+uniform int u_TileSize;
+uniform int u_LightCount;
+uniform int u_TileMax;
+
+struct GPU_Light
+{
+    vec4 position;
+    vec4 direction;
+    vec4 color;
+    vec4 params;
+    ivec4 meta;
+};
+
+layout(std430, binding = 0) readonly buffer B_Lights
+{
+    GPU_Light g_Lights[];
+};
+
+layout(std430, binding = 1) buffer B_TileIndex
+{
+    uvec2 g_TileIndex[];
+};
+
+layout(std430, binding = 2) buffer B_TileList
+{
+    uint g_TileList[];
+};
+
+float max3(float a, float b, float c)
+{
+    return max(a, max(b, c));
+}
+
+void append_to_tile(uint tile, uint lightIndex)
+{
+    uvec2 sc = g_TileIndex[tile];
+    uint start = sc.x;
+    uint idx = atomicAdd(g_TileIndex[tile].y, 1u);
+    if (idx < uint(u_TileMax))
+        g_TileList[start + idx] = lightIndex;
+}
+
+void main()
+{
+    uint li = gl_GlobalInvocationID.x;
+    if (li >= uint(u_LightCount))
+        return;
+
+    GPU_Light L = g_Lights[li];
+
+    if (L.meta.x == 1)
+    {
+        uint tiles = uint(u_TileCount.x * u_TileCount.y);
+        for (uint t = 0u; t < tiles; ++t)
+            append_to_tile(t, li);
+        return;
+    }
+
+    vec4 pv4 = u_View * vec4(L.position.xyz, 1.0);
+    vec3 pv = pv4.xyz;
+
+    float z = -pv.z;
+    if (z <= 1e-4)
+        return;
+
+    float radius = max(L.params.y, L.params.z);
+    if (radius <= 1e-6)
+        radius = 0.5;
+
+    vec4 clip = u_Proj * vec4(pv, 1.0);
+    if (clip.w <= 1e-6)
+        return;
+
+    vec3 ndc = clip.xyz / clip.w;
+
+    float cx = (ndc.x * 0.5 + 0.5) * float(u_ScreenSize.x);
+    float cy = (ndc.y * 0.5 + 0.5) * float(u_ScreenSize.y);
+
+    float rx = abs(radius * u_Proj[0][0] * 0.5 * float(u_ScreenSize.x) / z);
+    float ry = abs(radius * u_Proj[1][1] * 0.5 * float(u_ScreenSize.y) / z);
+    float rpx = max(rx, ry);
+
+    if (rpx < 1.0)
+        rpx = 1.0;
+
+    float minx = cx - rpx;
+    float maxx = cx + rpx;
+    float miny = cy - rpx;
+    float maxy = cy + rpx;
+
+    if (maxx < 0.0 || maxy < 0.0 || minx > float(u_ScreenSize.x) || miny > float(u_ScreenSize.y))
+        return;
+
+    minx = clamp(minx, 0.0, float(u_ScreenSize.x - 1));
+    maxx = clamp(maxx, 0.0, float(u_ScreenSize.x - 1));
+    miny = clamp(miny, 0.0, float(u_ScreenSize.y - 1));
+    maxy = clamp(maxy, 0.0, float(u_ScreenSize.y - 1));
+
+    int tx0 = int(floor(minx / float(u_TileSize)));
+    int tx1 = int(floor(maxx / float(u_TileSize)));
+    int ty0 = int(floor(miny / float(u_TileSize)));
+    int ty1 = int(floor(maxy / float(u_TileSize)));
+
+    tx0 = clamp(tx0, 0, u_TileCount.x - 1);
+    tx1 = clamp(tx1, 0, u_TileCount.x - 1);
+    ty0 = clamp(ty0, 0, u_TileCount.y - 1);
+    ty1 = clamp(ty1, 0, u_TileCount.y - 1);
+
+    for (int ty = ty0; ty <= ty1; ++ty)
+    {
+        for (int tx = tx0; tx <= tx1; ++tx)
+        {
+            uint tile = uint(tx + ty * u_TileCount.x);
+            append_to_tile(tile, li);
+        }
+    }
+}
