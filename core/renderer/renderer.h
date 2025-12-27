@@ -40,7 +40,7 @@ typedef struct renderer_cfg_t
 
     float exposure;
     bool exposure_auto;
-
+    
     float output_gamma;
     int manual_srgb;
 

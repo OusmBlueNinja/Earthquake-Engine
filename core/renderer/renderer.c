@@ -711,6 +711,79 @@ static vec3 R_transform_point(mat4 m, vec3 p)
     return o;
 }
 
+typedef struct frustum_plane_t
+{
+    float a, b, c, d;
+} frustum_plane_t;
+
+typedef struct frustum_t
+{
+    frustum_plane_t p[6];
+} frustum_t;
+
+
+
+static void R_plane_normalize(frustum_plane_t *pl)
+{
+    float len2 = pl->a * pl->a + pl->b * pl->b + pl->c * pl->c;
+    if (len2 < 1e-20f)
+        return;
+    float inv = 1.0f / sqrtf(len2);
+    pl->a *= inv;
+    pl->b *= inv;
+    pl->c *= inv;
+    pl->d *= inv;
+}
+
+static void R_frustum_build(frustum_t *f, const renderer_t *r)
+{
+    mat4 vp = mat4_mul(r->camera.proj, r->camera.view);
+
+    float r0x = vp.m[0], r0y = vp.m[4], r0z = vp.m[8], r0w = vp.m[12];
+    float r1x = vp.m[1], r1y = vp.m[5], r1z = vp.m[9], r1w = vp.m[13];
+    float r2x = vp.m[2], r2y = vp.m[6], r2z = vp.m[10], r2w = vp.m[14];
+    float r3x = vp.m[3], r3y = vp.m[7], r3z = vp.m[11], r3w = vp.m[15];
+
+    f->p[0] = (frustum_plane_t){r3x + r0x, r3y + r0y, r3z + r0z, r3w + r0w};
+    f->p[1] = (frustum_plane_t){r3x - r0x, r3y - r0y, r3z - r0z, r3w - r0w};
+    f->p[2] = (frustum_plane_t){r3x + r1x, r3y + r1y, r3z + r1z, r3w + r1w};
+    f->p[3] = (frustum_plane_t){r3x - r1x, r3y - r1y, r3z - r1z, r3w - r1w};
+    f->p[4] = (frustum_plane_t){r3x + r2x, r3y + r2y, r3z + r2z, r3w + r2w};
+    f->p[5] = (frustum_plane_t){r3x - r2x, r3y - r2y, r3z - r2z, r3w - r2w};
+
+    for (int i = 0; i < 6; ++i)
+        R_plane_normalize(&f->p[i]);
+}
+
+static int R_frustum_sphere_visible(const frustum_t *f, vec3 c, float r)
+{
+    for (int i = 0; i < 6; ++i)
+    {
+        const frustum_plane_t *p = &f->p[i];
+        float d = p->a * c.x + p->b * c.y + p->c * c.z + p->d;
+        if (d < -r)
+            return 0;
+    }
+    return 1;
+}
+
+static int R_mesh_visible_frustum(const frustum_t *f, const mesh_t *mesh, const mat4 *model_mtx)
+{
+    if (!mesh || !model_mtx)
+        return 1;
+    if (!(mesh->flags & MESH_FLAG_HAS_AABB))
+        return 1;
+
+    vec3 lc = R_mesh_local_center(mesh);
+    vec3 wc = R_transform_point(*model_mtx, lc);
+
+    float radius_world = R_mesh_local_radius(mesh) * R_mat4_max_scale_xyz(model_mtx);
+    if (radius_world < 1e-6f)
+        radius_world = 1e-6f;
+
+    return R_frustum_sphere_visible(f, wc, radius_world);
+}
+
 static void R_log_missing_forced_lod_once(ihandle_t model, uint32_t mesh_index, uint32_t lod_wanted, uint32_t lods)
 {
     static uint32_t budget = 64u;
@@ -992,6 +1065,9 @@ static void R_build_instancing(renderer_t *r)
     vector_clear(&r->fwd_inst_batches);
     vector_clear(&r->inst_mats);
 
+    frustum_t fr;
+    R_frustum_build(&fr, r);
+
     uint32_t max_items = 0;
 
     for (uint32_t i = 0; i < r->models.size; ++i)
@@ -1045,6 +1121,9 @@ static void R_build_instancing(renderer_t *r)
             if (!mesh)
                 continue;
 
+            if (!R_mesh_visible_frustum(&fr, mesh, &pm->model_matrix))
+                continue;
+
             float fade01 = 0.0f;
             int xfade01 = 0;
             uint32_t lod = R_pick_lod_level_for_mesh_fade01(r, mesh, &pm->model_matrix, pm->model, mi, &fade01, &xfade01);
@@ -1095,6 +1174,9 @@ static void R_build_instancing(renderer_t *r)
         {
             mesh_t *mesh = (mesh_t *)vector_at((vector_t *)&mdl->meshes, mi);
             if (!mesh)
+                continue;
+
+            if (!R_mesh_visible_frustum(&fr, mesh, &pm->model_matrix))
                 continue;
 
             float fade01 = 0.0f;
