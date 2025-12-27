@@ -64,11 +64,27 @@ target_link_libraries(core PUBLIC
     meshoptimizer
 )
 
+file(GLOB_RECURSE EDITOR_SRC CONFIGURE_DEPENDS
+    "${CMAKE_SOURCE_DIR}/editor/*.c"
+)
+
+add_library(editor STATIC ${EDITOR_SRC})
+set_property(TARGET editor PROPERTY LINKER_LANGUAGE CXX)
+
+target_include_directories(editor PUBLIC
+    "${CMAKE_SOURCE_DIR}"
+    "${CMAKE_SOURCE_DIR}/editor"
+    "${CMAKE_SOURCE_DIR}/editor/include"
+)
+
+target_link_libraries(editor PUBLIC core)
+
 file(GLOB_RECURSE APP_SRC CONFIGURE_DEPENDS
     "${CMAKE_SOURCE_DIR}/app/*.c"
 )
 
 add_executable(app ${APP_SRC})
+set_property(TARGET app PROPERTY LINKER_LANGUAGE CXX)
 
 target_include_directories(app PRIVATE
     "${CMAKE_SOURCE_DIR}"
@@ -76,9 +92,10 @@ target_include_directories(app PRIVATE
     "${CMAKE_SOURCE_DIR}/app/include"
 )
 
-target_link_libraries(app PRIVATE core)
-set_property(TARGET app PROPERTY LINKER_LANGUAGE CXX)
+target_link_libraries(app PRIVATE core editor)
 
 target_compile_definitions(core PRIVATE $<$<CONFIG:Debug>:_DEBUG>)
+target_compile_definitions(editor PRIVATE $<$<CONFIG:Debug>:_DEBUG>)
 target_compile_definitions(app PRIVATE $<$<CONFIG:Debug>:_DEBUG>)
+
 add_compile_options($<$<CONFIG:Debug>:-g>)

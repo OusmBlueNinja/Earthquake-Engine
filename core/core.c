@@ -1,4 +1,5 @@
 #include "core.h"
+#include "utils/title_builder.h"
 
 Application g_application;
 
@@ -110,6 +111,15 @@ void init_application(Application *app)
                 LOG_INFO("Initializing Layer: '%s'", layer->name);
                 layer->init(layer);
             }
+        }
+    }
+
+    {
+        char *title = app_build_title(&g_application);
+        if (title)
+        {
+            wm_set_title(&g_application.window_manager, title);
+            free(title);
         }
     }
 
