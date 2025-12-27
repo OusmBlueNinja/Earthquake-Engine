@@ -227,6 +227,17 @@ float dither_noise(vec2 p)
 
 void main()
 {
+
+    //if (!gl_FrontFacing)
+    //{
+    //    o_Color = vec4(1,0,1,1);
+    //    return;
+    //}
+    //o_Color = vec4(0,1,0,1);
+    //return;
+    
+    
+    
     vec3 Nw = normalize(v.worldN);
     vec3 Vw = normalize(u_CameraPos - v.worldPos);
 
