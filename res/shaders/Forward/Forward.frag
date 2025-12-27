@@ -248,7 +248,7 @@ void main()
     if (u_HasMaterial != 0)
         alpha = clamp(alpha_tex * u_Opacity, 0.0, 1.0);
 
-    if ( u_AlphaTest && u_MatAlphaCutout )
+    if ((u_AlphaTest != 0) && (u_MatAlphaCutout != 0))
     {
         float w = max(fwidth(alpha), 1e-4);
         float a = smoothstep(u_AlphaCutoff - w, u_AlphaCutoff + w, alpha);
