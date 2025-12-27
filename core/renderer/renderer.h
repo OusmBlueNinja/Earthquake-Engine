@@ -1,5 +1,6 @@
 #pragma once
 #include <stdint.h>
+#include <stdbool.h>
 #include "types/vec2i.h"
 #include "types/mat4.h"
 #include "types/vec4.h"
@@ -39,6 +40,8 @@ typedef struct renderer_cfg_t
     uint32_t bloom_mips;
 
     float exposure;
+    bool exposure_auto;
+
     float output_gamma;
     int manual_srgb;
 
@@ -57,6 +60,25 @@ typedef struct renderer_cfg_t
 
     bool wireframe;
 } renderer_cfg_t;
+
+typedef struct renderer_fp_t
+{
+    uint8_t shader_init_id;
+    uint8_t shader_cull_id;
+    uint8_t shader_finalize_id;
+
+    uint32_t lights_ssbo;
+    uint32_t tile_index_ssbo;
+    uint32_t tile_list_ssbo;
+    uint32_t tile_depth_ssbo;
+
+    uint32_t lights_cap;
+    uint32_t tile_max;
+
+    int tile_count_x;
+    int tile_count_y;
+    int tiles;
+} renderer_fp_t;
 
 typedef struct renderer_t
 {
@@ -77,12 +99,12 @@ typedef struct renderer_t
     ihandle_t hdri_tex;
 
     uint32_t instance_vbo;
+    uint32_t instance_cap;
     vector_t inst_batches;
     vector_t fwd_inst_batches;
     vector_t inst_mats;
 
     uint32_t fs_vao;
-    uint32_t lights_ubo;
 
     uint32_t gbuf_fbo;
     uint32_t light_fbo;
@@ -103,12 +125,18 @@ typedef struct renderer_t
     uint8_t sky_shader_id;
     uint8_t present_shader_id;
 
+    uint8_t depth_shader_id;
+
+    uint32_t black_tex;
+    uint32_t black_cube;
+
+    renderer_fp_t fp;
+
     ibl_t ibl;
     bloom_t bloom;
     ssr_t ssr;
 
     render_stats_t stats;
-
 } renderer_t;
 
 int R_init(renderer_t *r, asset_manager_t *assets);
@@ -122,7 +150,6 @@ void R_end_frame(renderer_t *r);
 void R_push_camera(renderer_t *r, const camera_t *cam);
 void R_push_light(renderer_t *r, light_t light);
 void R_push_model(renderer_t *r, const ihandle_t model, mat4 model_matrix);
-void R_push_model_forward(renderer_t *r, const ihandle_t model, mat4 model_matrix);
 
 void R_push_hdri(renderer_t *r, ihandle_t tex);
 
@@ -133,4 +160,4 @@ shader_t *R_get_shader(const renderer_t *r, uint8_t shader_id);
 const shader_t *R_get_shader_const(const renderer_t *r, uint8_t shader_id);
 uint32_t R_get_final_fbo(const renderer_t *r);
 
-shader_t *R_new_shader_from_files_with_defines(const char *vp, const char *fp);
+shader_t *R_new_shader_from_files(const char *vp, const char *fp);

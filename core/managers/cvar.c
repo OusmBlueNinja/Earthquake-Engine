@@ -62,7 +62,8 @@ static cvar_entry_t g_cvars[SV_CVAR_COUNT] = {
     [CL_R_BLOOM_INTENSITY] = {.name = "cl_r_bloom_intensity", .type = CVAR_FLOAT, .def.f = 0.10f, .flags = CVAR_FLAG_NONE},
     [CL_R_BLOOM_MIPS] = {.name = "cl_r_bloom_mips", .type = CVAR_INT, .def.i = 6, .flags = CVAR_FLAG_NONE},
 
-    [CL_R_EXPOSURE] = {.name = "cl_r_exposure", .type = CVAR_FLOAT, .def.f = 1.0f, .flags = CVAR_FLAG_NONE},
+    [CL_R_EXPOSURE_LEVEL] = {.name = "cl_r_exposure_level", .type = CVAR_FLOAT, .def.f = 1.0f, .flags = CVAR_FLAG_NONE},
+    [CL_R_EXPOSURE_AUTO] = {.name = "cl_r_exposure_auto", .type = CVAR_BOOL, .def.b = true, .flags = CVAR_FLAG_NONE},
     [CL_R_OUTPUT_GAMMA] = {.name = "cl_r_output_gamma", .type = CVAR_FLOAT, .def.f = 2.2f, .flags = CVAR_FLAG_NONE},
     [CL_R_MANUAL_SRGB] = {.name = "cl_r_manual_srgb", .type = CVAR_BOOL, .def.b = false, .flags = CVAR_FLAG_NONE},
 

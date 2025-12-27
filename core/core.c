@@ -274,6 +274,11 @@ Application *get_application()
     return &g_application;
 }
 
+renderer_t *get_renderer()
+{
+    return &g_application.renderer;
+}
+
 const char *app_status_to_string(app_status_t status)
 {
     switch (status)

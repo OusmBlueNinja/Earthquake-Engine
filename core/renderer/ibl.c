@@ -161,10 +161,10 @@ int ibl_init(renderer_t *r)
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glBindRenderbuffer(GL_RENDERBUFFER, 0);
 
-    shader_t *s0 = R_new_shader_from_files_with_defines("res/shaders/fs_tri.vert", "res/shaders/ibl_equirect_to_cube.frag");
-    shader_t *s1 = R_new_shader_from_files_with_defines("res/shaders/fs_tri.vert", "res/shaders/ibl_irradiance_convolve.frag");
-    shader_t *s2 = R_new_shader_from_files_with_defines("res/shaders/fs_tri.vert", "res/shaders/ibl_prefilter_env.frag");
-    shader_t *s3 = R_new_shader_from_files_with_defines("res/shaders/fs_tri.vert", "res/shaders/ibl_brdf_lut.frag");
+    shader_t *s0 = R_new_shader_from_files("res/shaders/fs_tri.vert", "res/shaders/ibl_equirect_to_cube.frag");
+    shader_t *s1 = R_new_shader_from_files("res/shaders/fs_tri.vert", "res/shaders/ibl_irradiance_convolve.frag");
+    shader_t *s2 = R_new_shader_from_files("res/shaders/fs_tri.vert", "res/shaders/ibl_prefilter_env.frag");
+    shader_t *s3 = R_new_shader_from_files("res/shaders/fs_tri.vert", "res/shaders/ibl_brdf_lut.frag");
 
     if (!s0 || !s1 || !s2 || !s3)
         return 0;

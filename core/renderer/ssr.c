@@ -60,7 +60,7 @@ int ssr_init(renderer_t *r)
 
     memset(&r->ssr, 0, sizeof(r->ssr));
 
-    shader_t *ss = R_new_shader_from_files_with_defines("res/shaders/fs_tri.vert", "res/shaders/ssr.frag");
+    shader_t *ss = R_new_shader_from_files("res/shaders/fs_tri.vert", "res/shaders/ssr.frag");
     if (!ss)
         return 0;
 

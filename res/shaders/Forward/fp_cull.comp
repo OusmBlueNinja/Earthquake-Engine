@@ -1,0 +1,180 @@
+#version 430 core
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+struct GPU_Light
+{
+    vec4 position;
+    vec4 direction;
+    vec4 color;
+    vec4 params;
+    ivec4 meta;
+};
+
+layout(std430, binding = 0) readonly buffer B_Lights
+{
+    GPU_Light g_Lights[];
+};
+
+layout(std430, binding = 1) buffer B_TileIndex
+{
+    uvec2 g_TileIndex[];
+};
+
+layout(std430, binding = 2) buffer B_TileList
+{
+    uint g_TileList[];
+};
+
+layout(std430, binding = 3) readonly buffer B_TileDepth
+{
+    vec2 g_TileDepth[];
+};
+
+uniform mat4 u_View;
+uniform mat4 u_Proj;
+
+uniform ivec2 u_ScreenSize;
+uniform ivec2 u_TileCount;
+uniform int u_TileSize;
+
+uniform int u_LightCount;
+uniform int u_TileMax;
+
+float sat(float x) { return clamp(x, 0.0, 1.0); }
+
+bool finite1(float x) { return !(isnan(x) || isinf(x)); }
+bool finite2(vec2 v) { return finite1(v.x) && finite1(v.y); }
+
+void main()
+{
+    uint li = gl_GlobalInvocationID.x;
+    if (li >= uint(max(u_LightCount, 0)))
+        return;
+
+    GPU_Light Ld = g_Lights[li];
+
+    int maxTX = max(u_TileCount.x - 1, 0);
+    int maxTY = max(u_TileCount.y - 1, 0);
+
+    if (Ld.meta.x == 1)
+    {
+        for (int ty = 0; ty <= maxTY; ++ty)
+        for (int tx = 0; tx <= maxTX; ++tx)
+        {
+            int tile = tx + ty * u_TileCount.x;
+            if (tile < 0)
+                continue;
+
+            uint idx = atomicAdd(g_TileIndex[uint(tile)].y, 1u);
+            if (idx < uint(max(u_TileMax, 0)))
+                g_TileList[g_TileIndex[uint(tile)].x + idx] = li;
+        }
+        return;
+    }
+
+    vec3 wp = Ld.position.xyz;
+    float range = Ld.params.z;
+    float radius = (range > 1e-4) ? range : max(Ld.params.y, 0.0);
+
+    vec4 viewP4 = u_View * vec4(wp, 1.0);
+    vec3 viewP = viewP4.xyz;
+    float z = -viewP.z;
+
+    vec4 clip = u_Proj * vec4(viewP, 1.0);
+
+    bool full = false;
+    float eps = 1e-5;
+
+    if (clip.w <= eps)
+        full = true;
+
+    vec2 centerPx = vec2(0.0);
+    float rpx = 0.0;
+
+    if (!full)
+    {
+        vec2 ndc = clip.xy / clip.w;
+
+        if (!finite2(ndc))
+            full = true;
+        else
+        {
+            centerPx = (ndc * 0.5 + 0.5) * vec2(float(u_ScreenSize.x), float(u_ScreenSize.y));
+            if (!finite2(centerPx))
+                full = true;
+        }
+    }
+
+    if (!full)
+    {
+        if (z <= eps || radius <= 0.0)
+            full = true;
+        else
+        {
+            float fy = u_Proj[1][1];
+            if (!finite1(fy) || abs(fy) < 1e-8)
+                fy = 1.0;
+
+            float rNdcY = (radius * fy) / z;
+            rpx = rNdcY * 0.5 * float(u_ScreenSize.y);
+
+            if (!finite1(rpx))
+                full = true;
+
+            float huge = float(max(u_ScreenSize.x, u_ScreenSize.y)) * 4.0;
+            if (rpx > huge)
+                full = true;
+        }
+    }
+
+    int minTX2 = 0;
+    int minTY2 = 0;
+    int maxTX2 = maxTX;
+    int maxTY2 = maxTY;
+
+    if (!full)
+    {
+        float x0 = centerPx.x - rpx;
+        float x1 = centerPx.x + rpx;
+        float y0 = centerPx.y - rpx;
+        float y1 = centerPx.y + rpx;
+
+        float invTS = 1.0 / float(max(u_TileSize, 1));
+
+        int t0x = int(floor(x0 * invTS));
+        int t1x = int(floor(x1 * invTS));
+        int t0y = int(floor(y0 * invTS));
+        int t1y = int(floor(y1 * invTS));
+
+        minTX2 = clamp(t0x, 0, maxTX2);
+        maxTX2 = clamp(t1x, 0, maxTX2);
+        minTY2 = clamp(t0y, 0, maxTY2);
+        maxTY2 = clamp(t1y, 0, maxTY2);
+
+        if (minTX2 > maxTX2 || minTY2 > maxTY2)
+            return;
+    }
+
+    float zNear = z - radius;
+
+    for (int ty = minTY2; ty <= maxTY2; ++ty)
+    {
+        for (int tx = minTX2; tx <= maxTX2; ++tx)
+        {
+            int tile = tx + ty * u_TileCount.x;
+            if (tile < 0)
+                continue;
+
+            vec2 dz = g_TileDepth[uint(tile)];
+            float tileMaxZ = dz.y;
+
+            if (zNear > tileMaxZ)
+                continue;
+
+            uint idx = atomicAdd(g_TileIndex[uint(tile)].y, 1u);
+            if (idx < uint(max(u_TileMax, 0)))
+                g_TileList[g_TileIndex[uint(tile)].x + idx] = li;
+        }
+    }
+}

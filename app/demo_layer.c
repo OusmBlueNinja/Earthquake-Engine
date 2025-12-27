@@ -24,7 +24,7 @@
 #include <GL/glew.h>
 #endif
 
-#define MOVING_LIGHTS 48
+#define MOVING_LIGHTS 100
 
 static float demo_clampf(float x, float lo, float hi)
 {
@@ -303,7 +303,7 @@ static void demo_init_moving_lights(demo_layer_state_t *s)
         s->lights[i].phase = demo_frand_range(0.0f, 6.283185307179586f);
         s->lights[i].height = demo_frand_range(1.2f, 3.5f);
         s->lights[i].intensity = demo_frand_range(1.0f, 10.0f);
-        s->lights[i].range = demo_frand_range(10.0f, 28.0f);
+        s->lights[i].range = demo_frand_range(5.0f, 10.0f);
 
         float r = 0.5f + 0.5f * cosf(6.283185307179586f * (a + 0.00f));
         float g = 0.5f + 0.5f * cosf(6.283185307179586f * (a + 0.11f));
@@ -446,6 +446,7 @@ static void demo_layer_draw(layer_t *layer)
         lt.color = L->color;
         lt.intensity = L->intensity;
         lt.range = L->range;
+        lt.radius = L->range;
 
         R_push_light(r, lt);
     }

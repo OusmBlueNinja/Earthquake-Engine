@@ -67,7 +67,6 @@ typedef struct Application
     bool running;
 
     vector_t layers;
-    
 
 } Application;
 
@@ -85,6 +84,7 @@ uint32_t push_layer(layer_t layer);
 void app_dispatch_event(Application *app, event_t *e);
 
 Application *get_application();
+renderer_t *get_renderer();
 
 //! PRIVATE
 void loop_application();

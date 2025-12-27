@@ -38,11 +38,87 @@ static int asset_path_has_ext(const char *path, const char *ext_lower)
     return 1;
 }
 
+static int rgba_has_any_alpha(const uint8_t *rgba, uint32_t w, uint32_t h)
+{
+    size_t n = (size_t)w * (size_t)h;
+    for (size_t i = 0; i < n; ++i)
+    {
+        if (rgba[i * 4u + 3u] != 255u)
+            return 1;
+    }
+    return 0;
+}
+
+static void rgba_dilate_rgb_into_zero_alpha(uint8_t *rgba, uint32_t w, uint32_t h, int passes)
+{
+    if (!rgba || w == 0 || h == 0 || passes <= 0)
+        return;
+
+    size_t n = (size_t)w * (size_t)h * 4u;
+    uint8_t *tmp = (uint8_t *)malloc(n);
+    if (!tmp)
+        return;
+
+    for (int p = 0; p < passes; ++p)
+    {
+        memcpy(tmp, rgba, n);
+
+        for (uint32_t y = 0; y < h; ++y)
+        {
+            for (uint32_t x = 0; x < w; ++x)
+            {
+                size_t i = ((size_t)y * (size_t)w + (size_t)x) * 4u;
+                uint8_t a0 = tmp[i + 3u];
+                if (a0 != 0u)
+                    continue;
+
+                uint8_t best_a = 0u;
+                uint8_t best_r = 0u, best_g = 0u, best_b = 0u;
+
+                for (int oy = -1; oy <= 1; ++oy)
+                {
+                    int yy = (int)y + oy;
+                    if (yy < 0 || yy >= (int)h)
+                        continue;
+
+                    for (int ox = -1; ox <= 1; ++ox)
+                    {
+                        int xx = (int)x + ox;
+                        if (xx < 0 || xx >= (int)w)
+                            continue;
+                        if (ox == 0 && oy == 0)
+                            continue;
+
+                        size_t j = ((size_t)yy * (size_t)w + (size_t)xx) * 4u;
+                        uint8_t aj = tmp[j + 3u];
+                        if (aj > best_a)
+                        {
+                            best_a = aj;
+                            best_r = tmp[j + 0u];
+                            best_g = tmp[j + 1u];
+                            best_b = tmp[j + 2u];
+                        }
+                    }
+                }
+
+                if (best_a != 0u)
+                {
+                    rgba[i + 0u] = best_r;
+                    rgba[i + 1u] = best_g;
+                    rgba[i + 2u] = best_b;
+                    rgba[i + 3u] = 0u;
+                }
+            }
+        }
+    }
+
+    free(tmp);
+}
+
 static bool asset_image_load_from_memory(const asset_image_mem_desc_t *src, asset_any_t *out_asset)
 {
     if (!src || !out_asset || !src->bytes || src->bytes_n == 0)
         return false;
-
 
     int w = 0;
     int h = 0;
@@ -100,6 +176,9 @@ static bool asset_image_load_from_memory(const asset_image_mem_desc_t *src, asse
         memcpy(copy, data, sz);
         stbi_image_free(data);
 
+        if (want_channels == 4 && rgba_has_any_alpha(copy, (uint32_t)w, (uint32_t)h))
+            rgba_dilate_rgb_into_zero_alpha(copy, (uint32_t)w, (uint32_t)h, 6);
+
         pixels = copy;
         channels = (uint32_t)want_channels;
         is_float = 0;
@@ -122,7 +201,6 @@ static bool asset_image_load_from_file(const char *path, asset_any_t *out_asset)
 {
     if (!path || !path[0] || !out_asset)
         return false;
-
 
     int w = 0;
     int h = 0;
@@ -175,6 +253,9 @@ static bool asset_image_load_from_file(const char *path, asset_any_t *out_asset)
 
         memcpy(copy, data, sz);
         stbi_image_free(data);
+
+        if (want_channels == 4 && rgba_has_any_alpha(copy, (uint32_t)w, (uint32_t)h))
+            rgba_dilate_rgb_into_zero_alpha(copy, (uint32_t)w, (uint32_t)h, 6);
 
         pixels = copy;
         channels = (uint32_t)want_channels;
@@ -259,10 +340,14 @@ static bool asset_image_init(asset_manager_t *am, asset_any_t *asset)
     }
     else
     {
+        int has_alpha = 0;
+        if (img->channels == 4)
+            has_alpha = rgba_has_any_alpha((const uint8_t *)img->pixels, img->width, img->height);
+
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, has_alpha ? GL_CLAMP_TO_EDGE : GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, has_alpha ? GL_CLAMP_TO_EDGE : GL_REPEAT);
 
         GLenum fmt = (img->channels == 4) ? GL_RGBA : (img->channels == 3 ? GL_RGB : GL_RED);
         GLint internal = (img->channels == 4) ? GL_RGBA8 : (img->channels == 3 ? GL_RGB8 : GL_R8);
