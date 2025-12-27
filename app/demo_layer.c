@@ -301,7 +301,7 @@ static void demo_init_moving_lights(demo_layer_state_t *s)
         s->lights[i].radius = demo_frand_range(10.0f, 55.0f);
         s->lights[i].speed = demo_frand_range(0.25f, 1.10f) * (demo_frand01() < 0.5f ? -1.0f : 1.0f);
         s->lights[i].phase = demo_frand_range(0.0f, 6.283185307179586f);
-        s->lights[i].height = demo_frand_range(1.2f, 3.5f);
+        s->lights[i].height = demo_frand_range(1.0f, 15.0f);
         s->lights[i].intensity = demo_frand_range(1.0f, 10.0f);
         s->lights[i].range = demo_frand_range(5.0f, 10.0f);
 
@@ -386,9 +386,9 @@ static void demo_layer_update(layer_t *layer, float dt)
         delta = demo_vec3_add(delta, fwd);
     if (s->key_s)
         delta = demo_vec3_sub(delta, fwd);
-    if (s->key_d)
-        delta = demo_vec3_add(delta, right);
     if (s->key_a)
+        delta = demo_vec3_add(delta, right);
+    if (s->key_d)
         delta = demo_vec3_sub(delta, right);
 
     float dl = demo_vec3_len(delta);
