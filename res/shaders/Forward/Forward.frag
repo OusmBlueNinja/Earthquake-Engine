@@ -285,6 +285,9 @@ void main()
     uint start = sc.x;
     uint count = sc.y;
 
+        vec3 overlay2 = vec3(0.0);
+    float overlay2_w = 0.0;
+
     if (mode == 2)
     {
         float denom = float(max(u_TileMax, 1));
@@ -299,9 +302,10 @@ void main()
         edge = max(edge, 1.0 - step(0.03, 1.0 - f.y));
         col = mix(col, vec3(0.0), edge);
 
-        o_Color = vec4(col, 1.0);
-        return;
+        overlay2 = col;
+        overlay2_w = 0.5;
     }
+
 
     if (mode == 3)
     {
@@ -445,7 +449,12 @@ void main()
     if (mode == 1)
         color = debug_lod_tint(color, dbg_lod_p1());
 
-    vec3 mapped = vec3(1.0) - exp(-color);
+        vec3 mapped = vec3(1.0) - exp(-color);
+
+    if (mode == 2)
+        mapped = mix(mapped, overlay2, overlay2_w);
+
+
 
     o_Color = vec4(mapped, alpha);
 }

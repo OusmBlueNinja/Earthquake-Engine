@@ -153,14 +153,16 @@ void main()
     }
 
     for (int ty = minTY; ty <= maxTY; ++ty)
-    for (int tx = minTX; tx <= maxTX; ++tx)
     {
-        int tile = tx + ty * u_TileCount.x;
-        if (tile < 0)
-            continue;
+        for (int tx = minTX; tx <= maxTX; ++tx)
+        {
+            int tile = tx + ty * u_TileCount.x;
+            if (tile < 0)
+                continue;
 
-        uint idx = atomicAdd(g_TileIndex[uint(tile)].y, 1u);
-        if (idx < uint(max(u_TileMax, 0)))
-            g_TileList[g_TileIndex[uint(tile)].x + idx] = li;
+            uint idx = atomicAdd(g_TileIndex[uint(tile)].y, 1u);
+            if (idx < uint(max(u_TileMax, 0)))
+                g_TileList[g_TileIndex[uint(tile)].x + idx] = li;
+        }
     }
 }
