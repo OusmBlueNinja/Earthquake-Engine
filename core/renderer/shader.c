@@ -2,7 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
+#include "utils/logger.h"
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -98,29 +98,62 @@ static int sh_get_uniform_location_cached(shader_t *shader, const char *name)
 static char *sh_read_text_file(const char *path)
 {
     if (!path)
+    {
+        LOG_ERROR("path is NULL");
         return NULL;
+    }
+
     FILE *f = fopen(path, "rb");
     if (!f)
-        return NULL;
-    fseek(f, 0, SEEK_END);
-    long len = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    if (len < 0)
     {
+        LOG_ERROR("fopen failed: %s", path);
+        return NULL;
+    }
+
+    if (fseek(f, 0, SEEK_END) != 0)
+    {
+        LOG_ERROR("fseek(SEEK_END) failed: %s", path);
         fclose(f);
         return NULL;
     }
+
+    long len = ftell(f);
+    if (len < 0)
+    {
+        LOG_ERROR("ftell failed: %s", path);
+        fclose(f);
+        return NULL;
+    }
+
+    if (fseek(f, 0, SEEK_SET) != 0)
+    {
+        LOG_ERROR("fseek(SEEK_SET) failed: %s", path);
+        fclose(f);
+        return NULL;
+    }
+
     char *buf = (char *)malloc((size_t)len + 1);
     if (!buf)
     {
+        LOG_ERROR("malloc failed (%ld bytes): %s", len, path);
         fclose(f);
         return NULL;
     }
+
     size_t rd = fread(buf, 1, (size_t)len, f);
+    if (rd != (size_t)len)
+    {
+        LOG_ERROR("fread short read (%zu/%ld): %s", rd, len, path);
+        free(buf);
+        fclose(f);
+        return NULL;
+    }
+
     fclose(f);
     buf[rd] = 0;
     return buf;
 }
+
 
 static void sh_print_shader_log(GLuint shader, const char *stage, const char *label)
 {

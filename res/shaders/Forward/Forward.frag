@@ -238,17 +238,20 @@ void main()
     }
 
     float alpha_tex = 1.0;
-    if ((u_MaterialTexMask & (1 << 0)) != 0 && (u_AlphaTest != 0 || u_Opacity < 0.999))
+    if ((u_MaterialTexMask & (1 << 0)) != 0)
         alpha_tex = texture(u_AlbedoTex, uv).a;
-
+    
     float alpha = alpha_tex * u_Opacity;
-
+    
     if (u_AlphaTest != 0)
     {
-        if (alpha < u_AlphaCutoff)
+        float w = max(fwidth(alpha), 1e-4);
+        float a = smoothstep(u_AlphaCutoff - w, u_AlphaCutoff + w, alpha);
+        if (a <= 0.0)
             discard;
         alpha = 1.0;
     }
+
 
     if (u_LodXFadeEnabled != 0)
     {
@@ -285,7 +288,7 @@ void main()
     uint start = sc.x;
     uint count = sc.y;
 
-        vec3 overlay2 = vec3(0.0);
+    vec3 overlay2 = vec3(0.0);
     float overlay2_w = 0.0;
 
     if (mode == 2)
@@ -305,7 +308,6 @@ void main()
         overlay2 = col;
         overlay2_w = 0.5;
     }
-
 
     if (mode == 3)
     {
@@ -412,7 +414,7 @@ void main()
 
         float D = D_GGX(NoH, a);
         float G = G_Smith(NoV, NoL, a);
-        vec3  F = F_Schlick(F0, VoH);
+        vec3 F = F_Schlick(F0, VoH);
 
         vec3 kS = F;
         vec3 kD = (vec3(1.0) - kS) * (1.0 - metallic);
@@ -449,12 +451,10 @@ void main()
     if (mode == 1)
         color = debug_lod_tint(color, dbg_lod_p1());
 
-        vec3 mapped = vec3(1.0) - exp(-color);
+    vec3 mapped = vec3(1.0) - exp(-color);
 
     if (mode == 2)
         mapped = mix(mapped, overlay2, overlay2_w);
-
-
 
     o_Color = vec4(mapped, alpha);
 }

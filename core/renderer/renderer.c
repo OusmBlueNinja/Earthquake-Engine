@@ -73,40 +73,6 @@ typedef struct instance_gpu_t
     float pad2;
 } instance_gpu_t;
 
-static uint32_t g_black_tex = 0;
-static uint32_t g_black_cube = 0;
-
-static uint32_t g_fp_prog_init = 0;
-static uint32_t g_fp_prog_cull = 0;
-static uint32_t g_fp_prog_finalize = 0;
-
-static int g_fp_loc_init_tc = -1;
-static int g_fp_loc_init_tm = -1;
-
-static int g_fp_loc_cull_view = -1;
-static int g_fp_loc_cull_proj = -1;
-static int g_fp_loc_cull_scr = -1;
-static int g_fp_loc_cull_tc = -1;
-static int g_fp_loc_cull_ts = -1;
-static int g_fp_loc_cull_lc = -1;
-static int g_fp_loc_cull_tm = -1;
-
-static int g_fp_loc_fin_tc = -1;
-static int g_fp_loc_fin_tm = -1;
-
-static uint32_t g_fp_lights_ssbo = 0;
-static uint32_t g_fp_tile_index_ssbo = 0;
-static uint32_t g_fp_tile_list_ssbo = 0;
-
-static uint32_t g_fp_lights_cap = 0;
-static uint32_t g_fp_tile_max = 1u;
-
-static int g_fp_tile_count_x = 1;
-static int g_fp_tile_count_y = 1;
-static int g_fp_tiles = 1;
-
-static uint32_t g_instance_cap = 0;
-
 static uint32_t u32_next_pow2(uint32_t x)
 {
     if (x <= 1u)
@@ -134,12 +100,6 @@ static void R_stats_begin_frame(renderer_t *r)
     memset(&r->stats, 0, sizeof(r->stats));
 }
 
-static void R_stats_add_draw(renderer_t *r, uint32_t index_count)
-{
-    r->stats.draw_calls += 1;
-    r->stats.triangles += (uint64_t)(index_count / 3u);
-}
-
 static void R_stats_add_draw_instanced(renderer_t *r, uint32_t index_count, uint32_t instance_count)
 {
     r->stats.draw_calls += 1;
@@ -151,13 +111,13 @@ static void R_stats_add_draw_instanced(renderer_t *r, uint32_t index_count, uint
     r->stats.instanced_triangles += tris * (uint64_t)instance_count;
 }
 
-static void R_make_black_tex(void)
+static void R_make_black_tex(renderer_t *r)
 {
-    if (g_black_tex)
+    if (r->black_tex)
         return;
 
-    glGenTextures(1, &g_black_tex);
-    glBindTexture(GL_TEXTURE_2D, g_black_tex);
+    glGenTextures(1, &r->black_tex);
+    glBindTexture(GL_TEXTURE_2D, r->black_tex);
 
     {
         const float px[4] = {0.0f, 0.0f, 0.0f, 0.0f};
@@ -172,13 +132,13 @@ static void R_make_black_tex(void)
     glBindTexture(GL_TEXTURE_2D, 0);
 }
 
-static void R_make_black_cube(void)
+static void R_make_black_cube(renderer_t *r)
 {
-    if (g_black_cube)
+    if (r->black_cube)
         return;
 
-    glGenTextures(1, &g_black_cube);
-    glBindTexture(GL_TEXTURE_CUBE_MAP, g_black_cube);
+    glGenTextures(1, &r->black_cube);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, r->black_cube);
 
     {
         const float px[4] = {0.0f, 0.0f, 0.0f, 0.0f};
@@ -283,10 +243,30 @@ static void R_on_wireframe_change(sv_cvar_key_t key, const void *old_state, cons
     R_on_cvar_any(r);
 }
 
-shader_t *R_new_shader_from_files_with_defines(const char *vp, const char *fp)
+shader_t *R_new_shader_from_files(const char *vp, const char *fp)
 {
     shader_t tmp = shader_create();
     if (!shader_load_from_files(&tmp, vp, fp))
+    {
+        shader_destroy(&tmp);
+        return NULL;
+    }
+
+    shader_t *out = (shader_t *)malloc(sizeof(shader_t));
+    if (!out)
+    {
+        shader_destroy(&tmp);
+        return NULL;
+    }
+
+    *out = tmp;
+    return out;
+}
+
+static shader_t *R_new_compute_shader_from_file(const char *path)
+{
+    shader_t tmp = shader_create();
+    if (!shader_load_compute_from_file(&tmp, path))
     {
         shader_destroy(&tmp);
         return NULL;
@@ -353,47 +333,50 @@ static void R_gl_delete_targets(renderer_t *r)
     r->final_color_tex = 0;
 }
 
-static void R_fp_delete_buffers(void)
+static void R_fp_delete_buffers(renderer_t *r)
 {
-    if (g_fp_lights_ssbo)
-        glDeleteBuffers(1, &g_fp_lights_ssbo);
-    if (g_fp_tile_index_ssbo)
-        glDeleteBuffers(1, &g_fp_tile_index_ssbo);
-    if (g_fp_tile_list_ssbo)
-        glDeleteBuffers(1, &g_fp_tile_list_ssbo);
+    if (r->fp.lights_ssbo)
+        glDeleteBuffers(1, &r->fp.lights_ssbo);
+    if (r->fp.tile_index_ssbo)
+        glDeleteBuffers(1, &r->fp.tile_index_ssbo);
+    if (r->fp.tile_list_ssbo)
+        glDeleteBuffers(1, &r->fp.tile_list_ssbo);
+    if (r->fp.tile_depth_ssbo)
+        glDeleteBuffers(1, &r->fp.tile_depth_ssbo);
 
-    g_fp_lights_ssbo = 0;
-    g_fp_tile_index_ssbo = 0;
-    g_fp_tile_list_ssbo = 0;
+    r->fp.lights_ssbo = 0;
+    r->fp.tile_index_ssbo = 0;
+    r->fp.tile_list_ssbo = 0;
+    r->fp.tile_depth_ssbo = 0;
 
-    g_fp_lights_cap = 0;
-    g_fp_tile_max = 1u;
+    r->fp.lights_cap = 0;
+    r->fp.tile_max = 1u;
 
-    g_fp_tile_count_x = 1;
-    g_fp_tile_count_y = 1;
-    g_fp_tiles = 1;
+    r->fp.tile_count_x = 1;
+    r->fp.tile_count_y = 1;
+    r->fp.tiles = 1;
 }
 
-static void R_fp_ensure_lights_capacity(uint32_t needed)
+static void R_fp_ensure_lights_capacity(renderer_t *r, uint32_t needed)
 {
     if (needed < 1u)
         needed = 1u;
 
-    if (needed <= g_fp_lights_cap && g_fp_lights_ssbo)
+    if (needed <= r->fp.lights_cap && r->fp.lights_ssbo)
         return;
 
     uint32_t new_cap = u32_next_pow2(needed);
     if (new_cap < 256u)
         new_cap = 256u;
 
-    if (!g_fp_lights_ssbo)
-        glGenBuffers(1, &g_fp_lights_ssbo);
+    if (!r->fp.lights_ssbo)
+        glGenBuffers(1, &r->fp.lights_ssbo);
 
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, g_fp_lights_ssbo);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, r->fp.lights_ssbo);
     glBufferData(GL_SHADER_STORAGE_BUFFER, (GLsizeiptr)(sizeof(gpu_light_t) * (size_t)new_cap), 0, GL_DYNAMIC_DRAW);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
-    g_fp_lights_cap = new_cap;
+    r->fp.lights_cap = new_cap;
 }
 
 static uint32_t R_fp_pick_tile_max(uint32_t light_count)
@@ -403,7 +386,7 @@ static uint32_t R_fp_pick_tile_max(uint32_t light_count)
     return u32_next_pow2(light_count);
 }
 
-static void R_fp_resize_tile_buffers(vec2i fb, uint32_t light_count)
+static void R_fp_resize_tile_buffers(renderer_t *r, vec2i fb, uint32_t light_count)
 {
     if (fb.x < 1)
         fb.x = 1;
@@ -419,30 +402,35 @@ static void R_fp_resize_tile_buffers(vec2i fb, uint32_t light_count)
     uint32_t new_tile_max = R_fp_pick_tile_max(light_count);
 
     int need_realloc = 0;
-    if (!g_fp_tile_index_ssbo || !g_fp_tile_list_ssbo)
+    if (!r->fp.tile_index_ssbo || !r->fp.tile_list_ssbo || !r->fp.tile_depth_ssbo)
         need_realloc = 1;
-    if (new_tiles != g_fp_tiles)
+    if (new_tiles != r->fp.tiles)
         need_realloc = 1;
-    if (new_tile_max != g_fp_tile_max)
+    if (new_tile_max != r->fp.tile_max)
         need_realloc = 1;
 
-    g_fp_tile_count_x = new_tc_x;
-    g_fp_tile_count_y = new_tc_y;
-    g_fp_tiles = new_tiles;
-    g_fp_tile_max = new_tile_max;
+    r->fp.tile_count_x = new_tc_x;
+    r->fp.tile_count_y = new_tc_y;
+    r->fp.tiles = new_tiles;
+    r->fp.tile_max = new_tile_max;
 
     if (need_realloc)
     {
-        if (!g_fp_tile_index_ssbo)
-            glGenBuffers(1, &g_fp_tile_index_ssbo);
-        if (!g_fp_tile_list_ssbo)
-            glGenBuffers(1, &g_fp_tile_list_ssbo);
+        if (!r->fp.tile_index_ssbo)
+            glGenBuffers(1, &r->fp.tile_index_ssbo);
+        if (!r->fp.tile_list_ssbo)
+            glGenBuffers(1, &r->fp.tile_list_ssbo);
+        if (!r->fp.tile_depth_ssbo)
+            glGenBuffers(1, &r->fp.tile_depth_ssbo);
 
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, g_fp_tile_index_ssbo);
-        glBufferData(GL_SHADER_STORAGE_BUFFER, (GLsizeiptr)(sizeof(uint32_t) * 2u * (size_t)g_fp_tiles), 0, GL_DYNAMIC_DRAW);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, r->fp.tile_index_ssbo);
+        glBufferData(GL_SHADER_STORAGE_BUFFER, (GLsizeiptr)(sizeof(uint32_t) * 2u * (size_t)r->fp.tiles), 0, GL_DYNAMIC_DRAW);
 
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, g_fp_tile_list_ssbo);
-        glBufferData(GL_SHADER_STORAGE_BUFFER, (GLsizeiptr)(sizeof(uint32_t) * (size_t)g_fp_tiles * (size_t)g_fp_tile_max), 0, GL_DYNAMIC_DRAW);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, r->fp.tile_list_ssbo);
+        glBufferData(GL_SHADER_STORAGE_BUFFER, (GLsizeiptr)(sizeof(uint32_t) * (size_t)r->fp.tiles * (size_t)r->fp.tile_max), 0, GL_DYNAMIC_DRAW);
+
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, r->fp.tile_depth_ssbo);
+        glBufferData(GL_SHADER_STORAGE_BUFFER, (GLsizeiptr)(sizeof(float) * 2u * (size_t)r->fp.tiles), 0, GL_DYNAMIC_DRAW);
 
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
     }
@@ -470,7 +458,6 @@ static void R_create_targets(renderer_t *r)
 
     R_alloc_tex2d(&r->light_color_tex, GL_RGBA16F, r->fb_size.x, r->fb_size.y, GL_RGBA, GL_FLOAT, GL_LINEAR, GL_LINEAR);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, r->light_color_tex, 0);
-
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, r->gbuf_depth, 0);
 
     {
@@ -503,8 +490,8 @@ static void R_create_targets(renderer_t *r)
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-    R_fp_resize_tile_buffers(r->fb_size, 1u);
-    R_fp_ensure_lights_capacity(1u);
+    R_fp_resize_tile_buffers(r, r->fb_size, 1u);
+    R_fp_ensure_lights_capacity(r, 1u);
 }
 
 static uint32_t R_resolve_image_gl(const renderer_t *r, ihandle_t h)
@@ -561,7 +548,7 @@ static asset_model_t *R_resolve_model(const renderer_t *r, ihandle_t h)
     return (asset_model_t *)&a->as.model;
 }
 
-static void R_bind_image_slot_mask(renderer_t *r, shader_t *s, const char *sampler_name, int unit, ihandle_t h, uint32_t bit, uint32_t *mask)
+static void R_bind_image_slot_mask(renderer_t *r, const shader_t *s, const char *sampler_name, int unit, ihandle_t h, uint32_t bit, uint32_t *mask)
 {
     uint32_t glh = R_resolve_image_gl(r, h);
 
@@ -574,7 +561,7 @@ static void R_bind_image_slot_mask(renderer_t *r, shader_t *s, const char *sampl
     }
     else
     {
-        glBindTexture(GL_TEXTURE_2D, g_black_tex);
+        glBindTexture(GL_TEXTURE_2D, r->black_tex);
     }
 
     shader_set_int(s, sampler_name, unit);
@@ -587,7 +574,7 @@ static void R_draw_fs_tri(renderer_t *r)
     glBindVertexArray(0);
 }
 
-static void R_apply_material_or_default(renderer_t *r, shader_t *s, asset_material_t *mat)
+static void R_apply_material_or_default(renderer_t *r, const shader_t *s, asset_material_t *mat)
 {
     shader_set_int(s, "u_HasMaterial", mat ? 1 : 0);
 
@@ -638,7 +625,7 @@ static void R_apply_material_or_default(renderer_t *r, shader_t *s, asset_materi
     }
 }
 
-static void R_bind_common_uniforms(renderer_t *r, shader_t *s)
+static void R_bind_common_uniforms(renderer_t *r, const shader_t *s)
 {
     shader_set_mat4(s, "u_View", r->camera.view);
     shader_set_mat4(s, "u_Proj", r->camera.proj);
@@ -720,8 +707,6 @@ typedef struct frustum_t
 {
     frustum_plane_t p[6];
 } frustum_t;
-
-
 
 static void R_plane_normalize(frustum_plane_t *pl)
 {
@@ -910,8 +895,8 @@ static void R_instance_stream_init(renderer_t *r)
     glGenBuffers(1, &r->instance_vbo);
     glBindBuffer(GL_ARRAY_BUFFER, r->instance_vbo);
 
-    g_instance_cap = 1024u;
-    glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(sizeof(instance_gpu_t) * (size_t)g_instance_cap), 0, GL_STREAM_DRAW);
+    r->instance_cap = 1024u;
+    glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(sizeof(instance_gpu_t) * (size_t)r->instance_cap), 0, GL_STREAM_DRAW);
 
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 }
@@ -922,7 +907,7 @@ static void R_instance_stream_shutdown(renderer_t *r)
         glDeleteBuffers(1, &r->instance_vbo);
     r->instance_vbo = 0;
 
-    g_instance_cap = 0;
+    r->instance_cap = 0;
 
     vector_free(&r->inst_batches);
     vector_free(&r->fwd_inst_batches);
@@ -934,11 +919,11 @@ static void R_upload_instances(renderer_t *r, const instance_gpu_t *inst, uint32
     if (!count)
         return;
 
-    if (count > g_instance_cap)
+    if (count > r->instance_cap)
     {
-        g_instance_cap = u32_next_pow2(count);
+        r->instance_cap = u32_next_pow2(count);
         glBindBuffer(GL_ARRAY_BUFFER, r->instance_vbo);
-        glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(sizeof(instance_gpu_t) * (size_t)g_instance_cap), 0, GL_STREAM_DRAW);
+        glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(sizeof(instance_gpu_t) * (size_t)r->instance_cap), 0, GL_STREAM_DRAW);
         glBindBuffer(GL_ARRAY_BUFFER, 0);
     }
 
@@ -949,7 +934,6 @@ static void R_upload_instances(renderer_t *r, const instance_gpu_t *inst, uint32
 
 static void R_mesh_bind_instance_attribs(renderer_t *r, uint32_t vao)
 {
-    (void)r;
     GLsizei stride = (GLsizei)sizeof(instance_gpu_t);
 
     glBindVertexArray(vao);
@@ -1221,97 +1205,6 @@ static void R_build_instancing(renderer_t *r)
     free(items);
 }
 
-static char *R_read_text_file(const char *path)
-{
-    FILE *f = fopen(path, "rb");
-    if (!f)
-        return NULL;
-
-    if (fseek(f, 0, SEEK_END) != 0)
-    {
-        fclose(f);
-        return NULL;
-    }
-
-    long n = ftell(f);
-    if (n <= 0)
-    {
-        fclose(f);
-        return NULL;
-    }
-
-    if (fseek(f, 0, SEEK_SET) != 0)
-    {
-        fclose(f);
-        return NULL;
-    }
-
-    char *buf = (char *)malloc((size_t)n + 1);
-    if (!buf)
-    {
-        fclose(f);
-        return NULL;
-    }
-
-    size_t rd = fread(buf, 1, (size_t)n, f);
-    fclose(f);
-
-    if (rd != (size_t)n)
-    {
-        free(buf);
-        return NULL;
-    }
-
-    buf[n] = 0;
-    return buf;
-}
-
-static uint32_t R_build_compute_program_from_file(const char *path)
-{
-    char *src = R_read_text_file(path);
-    if (!src)
-    {
-        LOG_ERROR("Compute shader read failed: %s", path);
-        return 0;
-    }
-
-    uint32_t sh = glCreateShader(GL_COMPUTE_SHADER);
-    const char *psrc = src;
-    glShaderSource(sh, 1, &psrc, 0);
-    glCompileShader(sh);
-    free(src);
-
-    int ok = 0;
-    glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);
-    if (!ok)
-    {
-        char log[4096];
-        int ln = 0;
-        glGetShaderInfoLog(sh, (int)sizeof(log), &ln, log);
-        LOG_ERROR("Compute compile failed (%s): %s", path, log);
-        glDeleteShader(sh);
-        return 0;
-    }
-
-    uint32_t prog = glCreateProgram();
-    glAttachShader(prog, sh);
-    glLinkProgram(prog);
-    glDeleteShader(sh);
-
-    glGetProgramiv(prog, GL_LINK_STATUS, &ok);
-    if (!ok)
-    {
-        char log[4096];
-        int ln = 0;
-        glGetProgramInfoLog(prog, (int)sizeof(log), &ln, log);
-        LOG_ERROR("Compute link failed (%s): %s", path, log);
-        glDeleteProgram(prog);
-        return 0;
-    }
-
-    return prog;
-}
-
 static int R_gpu_light_type(int t)
 {
     if (t == (int)LIGHT_DIRECTIONAL)
@@ -1325,9 +1218,9 @@ static uint32_t R_fp_upload_lights(renderer_t *r)
     if (count < 1u)
         count = 1u;
 
-    R_fp_ensure_lights_capacity(count);
+    R_fp_ensure_lights_capacity(r, count);
 
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, g_fp_lights_ssbo);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, r->fp.lights_ssbo);
 
     gpu_light_t *dst = (gpu_light_t *)glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, (GLsizeiptr)(sizeof(gpu_light_t) * (size_t)count),
                                                        GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_RANGE_BIT);
@@ -1380,67 +1273,164 @@ static uint32_t R_fp_upload_lights(renderer_t *r)
     return real;
 }
 
-static void R_fp_dispatch(renderer_t *r)
+static void R_depth_prepass(renderer_t *r)
 {
-    if (!g_fp_prog_init || !g_fp_prog_cull || !g_fp_prog_finalize)
+    shader_t *depth = (r->depth_shader_id != 0xFF) ? R_get_shader(r, r->depth_shader_id) : NULL;
+    if (!r || !depth)
         return;
 
-    uint32_t light_count = r ? r->lights.size : 0u;
+    glBindFramebuffer(GL_FRAMEBUFFER, r->light_fbo);
+    glViewport(0, 0, r->fb_size.x, r->fb_size.y);
 
-    R_fp_resize_tile_buffers(r->fb_size, light_count ? light_count : 1u);
-    R_fp_ensure_lights_capacity(light_count ? light_count : 1u);
+    glDisable(GL_BLEND);
+    glEnable(GL_DEPTH_TEST);
+    glDepthMask(GL_TRUE);
+    glDepthFunc(GL_LEQUAL);
+
+    glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+
+    shader_bind(depth);
+    shader_set_mat4(depth, "u_View", r->camera.view);
+    shader_set_mat4(depth, "u_Proj", r->camera.proj);
+    shader_set_int(depth, "u_UseInstancing", 1);
+
+    for (uint32_t bi = 0; bi < r->inst_batches.size; ++bi)
+    {
+        inst_batch_t *b = (inst_batch_t *)vector_at(&r->inst_batches, bi);
+        if (!b || !ihandle_is_valid(b->model) || b->count == 0)
+            continue;
+
+        asset_model_t *mdl = R_resolve_model(r, b->model);
+        if (!mdl)
+            continue;
+
+        if (b->mesh_index >= mdl->meshes.size)
+            continue;
+
+        mesh_t *mesh = (mesh_t *)vector_at((vector_t *)&mdl->meshes, b->mesh_index);
+        if (!mesh)
+            continue;
+
+        const mesh_lod_t *lod = R_mesh_get_lod(mesh, b->lod);
+        if (!lod || !lod->vao || !lod->index_count)
+            continue;
+
+        instance_gpu_t *inst = (instance_gpu_t *)vector_at(&r->inst_mats, b->start);
+        if (!inst)
+            continue;
+
+        R_upload_instances(r, inst, b->count);
+        R_mesh_bind_instance_attribs(r, lod->vao);
+
+        glBindVertexArray(lod->vao);
+        glDrawElementsInstanced(GL_TRIANGLES, (GLsizei)lod->index_count, GL_UNSIGNED_INT, 0, (GLsizei)b->count);
+        glBindVertexArray(0);
+    }
+
+    shader_unbind();
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+
+    shader_memory_barrier(GL_TEXTURE_FETCH_BARRIER_BIT | GL_FRAMEBUFFER_BARRIER_BIT);
+}
+
+static void R_fp_dispatch(renderer_t *r)
+{
+    if (!r)
+        return;
+
+    shader_t *init = (r->fp.shader_init_id != 0xFF) ? R_get_shader(r, r->fp.shader_init_id) : NULL;
+    shader_t *cull = (r->fp.shader_cull_id != 0xFF) ? R_get_shader(r, r->fp.shader_cull_id) : NULL;
+    shader_t *fin = (r->fp.shader_finalize_id != 0xFF) ? R_get_shader(r, r->fp.shader_finalize_id) : NULL;
+
+    if (!init || !cull || !fin)
+        return;
+
+    uint32_t light_count = r->lights.size;
+
+    R_fp_resize_tile_buffers(r, r->fb_size, light_count ? light_count : 1u);
+    R_fp_ensure_lights_capacity(r, light_count ? light_count : 1u);
 
     uint32_t uploaded = R_fp_upload_lights(r);
 
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, g_fp_lights_ssbo);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, g_fp_tile_index_ssbo);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, g_fp_tile_list_ssbo);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, r->fp.lights_ssbo);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, r->fp.tile_index_ssbo);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, r->fp.tile_list_ssbo);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, r->fp.tile_depth_ssbo);
 
-    glUseProgram(g_fp_prog_init);
+    float m22 = r->camera.proj.m[10];
+    float m32 = r->camera.proj.m[14];
+
+    float nearZ = 0.1f;
+    float farZ = 1000.0f;
+
+    float dn = (m22 - 1.0f);
+    float df = (m22 + 1.0f);
+
+    if (fabsf(dn) > 1e-8f && fabsf(df) > 1e-8f)
     {
-        glUniform1i(g_fp_loc_init_tc, g_fp_tiles);
-        glUniform1i(g_fp_loc_init_tm, (int)g_fp_tile_max);
-
-        uint32_t gx = (uint32_t)((g_fp_tiles + 255) / 256);
-        if (gx < 1)
-            gx = 1;
-        glDispatchCompute(gx, 1, 1);
+        float n = m32 / dn;
+        float f = m32 / df;
+        if (n > 1e-6f && f > n)
+        {
+            nearZ = n;
+            farZ = f;
+        }
     }
 
-    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+    shader_bind(init);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, r->gbuf_depth);
+    shader_set_int(init, "u_DepthTex", 0);
+    shader_set_ivec2(init, "u_ScreenSize", r->fb_size);
+    shader_set_ivec2(init, "u_TileCount", (vec2i){r->fp.tile_count_x, r->fp.tile_count_y});
+    shader_set_int(init, "u_TileSize", FP_TILE_SIZE);
+    shader_set_int(init, "u_TileMax", (int)r->fp.tile_max);
+    shader_set_float(init, "u_Near", nearZ);
+    shader_set_float(init, "u_Far", farZ);
 
-    glUseProgram(g_fp_prog_cull);
     {
-        glUniformMatrix4fv(g_fp_loc_cull_view, 1, GL_FALSE, (const float *)r->camera.view.m);
-        glUniformMatrix4fv(g_fp_loc_cull_proj, 1, GL_FALSE, (const float *)r->camera.proj.m);
-        glUniform2i(g_fp_loc_cull_scr, r->fb_size.x, r->fb_size.y);
-        glUniform2i(g_fp_loc_cull_tc, g_fp_tile_count_x, g_fp_tile_count_y);
-        glUniform1i(g_fp_loc_cull_ts, FP_TILE_SIZE);
-        glUniform1i(g_fp_loc_cull_lc, (int)uploaded);
-        glUniform1i(g_fp_loc_cull_tm, (int)g_fp_tile_max);
+        uint32_t gx = (uint32_t)r->fp.tile_count_x;
+        uint32_t gy = (uint32_t)r->fp.tile_count_y;
+        if (gx < 1)
+            gx = 1;
+        if (gy < 1)
+            gy = 1;
+        shader_dispatch_compute(init, gx, gy, 1);
+    }
 
+    shader_memory_barrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
+
+    shader_bind(cull);
+    shader_set_mat4(cull, "u_View", r->camera.view);
+    shader_set_mat4(cull, "u_Proj", r->camera.proj);
+    shader_set_ivec2(cull, "u_ScreenSize", r->fb_size);
+    shader_set_ivec2(cull, "u_TileCount", (vec2i){r->fp.tile_count_x, r->fp.tile_count_y});
+    shader_set_int(cull, "u_TileSize", FP_TILE_SIZE);
+    shader_set_int(cull, "u_LightCount", (int)uploaded);
+    shader_set_int(cull, "u_TileMax", (int)r->fp.tile_max);
+
+    {
         uint32_t gx = (uint32_t)((uploaded + 63u) / 64u);
         if (gx < 1)
             gx = 1;
-        glDispatchCompute(gx, 1, 1);
+        shader_dispatch_compute(cull, gx, 1, 1);
     }
 
-    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+    shader_memory_barrier(GL_SHADER_STORAGE_BARRIER_BIT);
 
-    glUseProgram(g_fp_prog_finalize);
+    shader_bind(fin);
+    shader_set_int(fin, "u_TileCount", r->fp.tiles);
+    shader_set_int(fin, "u_TileMax", (int)r->fp.tile_max);
+
     {
-        glUniform1i(g_fp_loc_fin_tc, g_fp_tiles);
-        glUniform1i(g_fp_loc_fin_tm, (int)g_fp_tile_max);
-
-        uint32_t gx = (uint32_t)((g_fp_tiles + 255) / 256);
+        uint32_t gx = (uint32_t)((r->fp.tiles + 255) / 256);
         if (gx < 1)
             gx = 1;
-        glDispatchCompute(gx, 1, 1);
+        shader_dispatch_compute(fin, gx, 1, 1);
     }
 
-    glUseProgram(0);
-
-    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
+    shader_unbind();
+    shader_memory_barrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
 }
 
 static void R_sky_pass(renderer_t *r)
@@ -1464,7 +1454,7 @@ static void R_sky_pass(renderer_t *r)
     uint32_t env = ibl_get_env(r);
 
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_CUBE_MAP, env ? env : g_black_cube);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, env ? env : r->black_cube);
     shader_set_int(sky, "u_Env", 0);
     shader_set_int(sky, "u_HasEnv", env ? 1 : 0);
 
@@ -1505,31 +1495,31 @@ static void R_forward_one_pass(renderer_t *r)
     if (r->cfg.wireframe)
         glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
 
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, g_fp_lights_ssbo);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, g_fp_tile_index_ssbo);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, g_fp_tile_list_ssbo);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, r->fp.lights_ssbo);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, r->fp.tile_index_ssbo);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, r->fp.tile_list_ssbo);
 
     shader_bind(fwd);
 
     glActiveTexture(GL_TEXTURE8);
-    glBindTexture(GL_TEXTURE_CUBE_MAP, irr ? irr : g_black_cube);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, irr ? irr : r->black_cube);
     shader_set_int(fwd, "u_IrradianceMap", 8);
 
     glActiveTexture(GL_TEXTURE9);
-    glBindTexture(GL_TEXTURE_CUBE_MAP, pre ? pre : g_black_cube);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, pre ? pre : r->black_cube);
     shader_set_int(fwd, "u_PrefilterMap", 9);
 
     glActiveTexture(GL_TEXTURE10);
-    glBindTexture(GL_TEXTURE_2D, brdf ? brdf : g_black_tex);
+    glBindTexture(GL_TEXTURE_2D, brdf ? brdf : r->black_tex);
     shader_set_int(fwd, "u_BRDFLUT", 10);
 
     shader_set_int(fwd, "u_HasIBL", has_ibl);
     shader_set_float(fwd, "u_IBLIntensity", r->cfg.ibl_intensity);
 
     shader_set_int(fwd, "u_TileSize", FP_TILE_SIZE);
-    shader_set_int(fwd, "u_TileCountX", g_fp_tile_count_x);
-    shader_set_int(fwd, "u_TileCountY", g_fp_tile_count_y);
-    shader_set_int(fwd, "u_TileMax", (int)g_fp_tile_max);
+    shader_set_int(fwd, "u_TileCountX", r->fp.tile_count_x);
+    shader_set_int(fwd, "u_TileCountY", r->fp.tile_count_y);
+    shader_set_int(fwd, "u_TileMax", (int)r->fp.tile_max);
 
     shader_set_int(fwd, "u_UseInstancing", 1);
 
@@ -1565,9 +1555,14 @@ static void R_forward_one_pass(renderer_t *r)
         asset_material_t *mat = R_resolve_material(r, mesh->material);
 
         int is_blended = (mat && mat->opacity < 0.999f) ? 1 : 0;
-        int wants_two_sided = (r->cfg.alpha_test || is_blended) ? 1 : 0;
+        int is_cutout = (r->cfg.alpha_test != 0);
 
-        if (is_blended)
+        if (is_cutout)
+        {
+            glDisable(GL_BLEND);
+            glDepthMask(GL_TRUE);
+        }
+        else if (is_blended)
         {
             glEnable(GL_BLEND);
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -1577,16 +1572,6 @@ static void R_forward_one_pass(renderer_t *r)
         {
             glDisable(GL_BLEND);
             glDepthMask(GL_TRUE);
-        }
-
-        if (wants_two_sided)
-        {
-            glDisable(GL_CULL_FACE);
-        }
-        else
-        {
-            glEnable(GL_CULL_FACE);
-            glCullFace(GL_BACK);
         }
 
         instance_gpu_t *inst = (instance_gpu_t *)vector_at(&r->inst_mats, b->start);
@@ -1599,7 +1584,7 @@ static void R_forward_one_pass(renderer_t *r)
 
         int xfade_enabled = (b->lod == 0 || b->lod == 1) ? 1 : 0;
         int xfade_mode = (b->lod == 1) ? 1 : 0;
-        shader_set_int(fwd, "u_LodXFadeEnable", xfade_enabled);
+        shader_set_int(fwd, "u_LodXFadeEnabled", xfade_enabled);
         shader_set_int(fwd, "u_LodXFadeMode", xfade_mode);
 
         R_upload_instances(r, inst, b->count);
@@ -1666,6 +1651,11 @@ int R_init(renderer_t *r, asset_manager_t *assets)
     r->default_shader_id = 0xFF;
     r->sky_shader_id = 0xFF;
     r->present_shader_id = 0xFF;
+    r->depth_shader_id = 0xFF;
+
+    r->fp.shader_init_id = 0xFF;
+    r->fp.shader_cull_id = 0xFF;
+    r->fp.shader_finalize_id = 0xFF;
 
     R_cfg_pull_from_cvars(r);
 
@@ -1680,31 +1670,8 @@ int R_init(renderer_t *r, asset_manager_t *assets)
 
     glGenVertexArrays(1, &r->fs_vao);
 
-    R_make_black_tex();
-    R_make_black_cube();
-
-    g_fp_prog_init = R_build_compute_program_from_file("res/shaders/Forward/fp_init.comp");
-    g_fp_prog_cull = R_build_compute_program_from_file("res/shaders/Forward/fp_cull.comp");
-    g_fp_prog_finalize = R_build_compute_program_from_file("res/shaders/Forward/fp_finalize.comp");
-
-    if (!g_fp_prog_init || !g_fp_prog_cull || !g_fp_prog_finalize)
-        return 1;
-
-    g_fp_loc_init_tc = glGetUniformLocation(g_fp_prog_init, "u_TileCount");
-    g_fp_loc_init_tm = glGetUniformLocation(g_fp_prog_init, "u_TileMax");
-
-    g_fp_loc_cull_view = glGetUniformLocation(g_fp_prog_cull, "u_View");
-    g_fp_loc_cull_proj = glGetUniformLocation(g_fp_prog_cull, "u_Proj");
-    g_fp_loc_cull_scr = glGetUniformLocation(g_fp_prog_cull, "u_ScreenSize");
-    g_fp_loc_cull_tc = glGetUniformLocation(g_fp_prog_cull, "u_TileCount");
-    g_fp_loc_cull_ts = glGetUniformLocation(g_fp_prog_cull, "u_TileSize");
-    g_fp_loc_cull_lc = glGetUniformLocation(g_fp_prog_cull, "u_LightCount");
-    g_fp_loc_cull_tm = glGetUniformLocation(g_fp_prog_cull, "u_TileMax");
-
-    g_fp_loc_fin_tc = glGetUniformLocation(g_fp_prog_finalize, "u_TileCount");
-    g_fp_loc_fin_tm = glGetUniformLocation(g_fp_prog_finalize, "u_TileMax");
-
-    R_create_targets(r);
+    R_make_black_tex(r);
+    R_make_black_cube(r);
 
     r->lights = create_vector(light_t);
     r->models = create_vector(pushed_model_t);
@@ -1713,17 +1680,38 @@ int R_init(renderer_t *r, asset_manager_t *assets)
 
     R_instance_stream_init(r);
 
-    shader_t *forward_shader = R_new_shader_from_files_with_defines("res/shaders/Forward/Forward.vert", "res/shaders/Forward/Forward.frag");
+    shader_t *fp_init = R_new_compute_shader_from_file("res/shaders/Forward/fp_init.comp");
+    shader_t *fp_cull = R_new_compute_shader_from_file("res/shaders/Forward/fp_cull.comp");
+    shader_t *fp_fin = R_new_compute_shader_from_file("res/shaders/Forward/fp_finalize.comp");
+
+    if (!fp_init || !fp_cull || !fp_fin)
+        return 1;
+
+    r->fp.shader_init_id = R_add_shader(r, fp_init);
+    r->fp.shader_cull_id = R_add_shader(r, fp_cull);
+    r->fp.shader_finalize_id = R_add_shader(r, fp_fin);
+
+    R_create_targets(r);
+
+    shader_t *depth_shader = R_new_shader_from_files("res/shaders/Forward/depth.vert", "res/shaders/Forward/depth.frag");
+    if (!depth_shader)
+    {
+        LOG_WARN("Failed to load depth shader");
+    }
+
+    r->depth_shader_id = R_add_shader(r, depth_shader);
+
+    shader_t *forward_shader = R_new_shader_from_files("res/shaders/Forward/Forward.vert", "res/shaders/Forward/Forward.frag");
     if (!forward_shader)
         return 1;
     r->default_shader_id = R_add_shader(r, forward_shader);
 
-    shader_t *sky_shader = R_new_shader_from_files_with_defines("res/shaders/sky.vert", "res/shaders/sky.frag");
+    shader_t *sky_shader = R_new_shader_from_files("res/shaders/sky.vert", "res/shaders/sky.frag");
     if (!sky_shader)
         return 1;
     r->sky_shader_id = R_add_shader(r, sky_shader);
 
-    shader_t *present_shader = R_new_shader_from_files_with_defines("res/shaders/fs_tri.vert", "res/shaders/present.frag");
+    shader_t *present_shader = R_new_shader_from_files("res/shaders/fs_tri.vert", "res/shaders/present.frag");
     if (!present_shader)
         return 1;
     r->present_shader_id = R_add_shader(r, present_shader);
@@ -1808,40 +1796,15 @@ void R_shutdown(renderer_t *r)
 
     r->assets = NULL;
 
-    if (g_black_tex)
-        glDeleteTextures(1, &g_black_tex);
-    g_black_tex = 0;
+    if (r->black_tex)
+        glDeleteTextures(1, &r->black_tex);
+    r->black_tex = 0;
 
-    if (g_black_cube)
-        glDeleteTextures(1, &g_black_cube);
-    g_black_cube = 0;
+    if (r->black_cube)
+        glDeleteTextures(1, &r->black_cube);
+    r->black_cube = 0;
 
-    R_fp_delete_buffers();
-
-    if (g_fp_prog_init)
-        glDeleteProgram(g_fp_prog_init);
-    if (g_fp_prog_cull)
-        glDeleteProgram(g_fp_prog_cull);
-    if (g_fp_prog_finalize)
-        glDeleteProgram(g_fp_prog_finalize);
-
-    g_fp_prog_init = 0;
-    g_fp_prog_cull = 0;
-    g_fp_prog_finalize = 0;
-
-    g_fp_loc_init_tc = -1;
-    g_fp_loc_init_tm = -1;
-
-    g_fp_loc_cull_view = -1;
-    g_fp_loc_cull_proj = -1;
-    g_fp_loc_cull_scr = -1;
-    g_fp_loc_cull_tc = -1;
-    g_fp_loc_cull_ts = -1;
-    g_fp_loc_cull_lc = -1;
-    g_fp_loc_cull_tm = -1;
-
-    g_fp_loc_fin_tc = -1;
-    g_fp_loc_fin_tm = -1;
+    R_fp_delete_buffers(r);
 }
 
 void R_resize(renderer_t *r, vec2i size)
@@ -1904,6 +1867,8 @@ void R_end_frame(renderer_t *r)
 
     R_build_instancing(r);
 
+    R_depth_prepass(r);
+
     R_fp_dispatch(r);
 
     R_sky_pass(r);
@@ -1912,10 +1877,10 @@ void R_end_frame(renderer_t *r)
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-    bloom_run(r, r->light_color_tex, g_black_tex);
+    bloom_run(r, r->light_color_tex, r->black_tex);
 
     uint32_t bloom_tex = (r->cfg.bloom && r->bloom.mips) ? r->bloom.tex_up[0] : 0;
-    bloom_composite_to_final(r, r->light_color_tex, bloom_tex, r->gbuf_depth, g_black_tex);
+    bloom_composite_to_final(r, r->light_color_tex, bloom_tex, r->gbuf_depth, r->black_tex);
 }
 
 void R_push_camera(renderer_t *r, const camera_t *cam)

@@ -15,7 +15,6 @@ uniform mat4 u_View;
 uniform mat4 u_Proj;
 uniform mat4 u_Model;
 uniform int u_UseInstancing;
-uniform float u_LodFade01;
 
 out VS_OUT
 {
@@ -36,17 +35,19 @@ mat4 getModel()
 void main()
 {
     mat4 M = getModel();
+
     vec4 wpos = M * vec4(a_Position, 1.0);
     v.worldPos = wpos.xyz;
 
-    mat3 Nrm = mat3(transpose(inverse(M)));
+    mat3 Nrm = mat3(M);
     v.worldN = normalize(Nrm * a_Normal);
 
     v.uv = a_UV;
-    v.tangent = a_Tangent;
 
-    float f = (u_UseInstancing != 0) ? a_Fade01 : u_LodFade01;
-    v.lodFade01 = clamp(f, 0.0, 1.0);
+    vec3 T = normalize(Nrm * a_Tangent.xyz);
+    v.tangent = vec4(T, a_Tangent.w);
+
+    v.lodFade01 = (u_UseInstancing != 0) ? a_Fade01 : 0.0;
 
     gl_Position = u_Proj * u_View * wpos;
 }

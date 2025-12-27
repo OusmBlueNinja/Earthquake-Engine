@@ -109,12 +109,12 @@ int bloom_init(renderer_t *r)
     bloom_t *b = &r->bloom;
     memset(b, 0, sizeof(*b));
 
-    shader_t *pref = R_new_shader_from_files_with_defines("res/shaders/fs_tri.vert", "res/shaders/bloom_prefilter.frag");
-    shader_t *down = R_new_shader_from_files_with_defines("res/shaders/fs_tri.vert", "res/shaders/bloom_downsample.frag");
-    shader_t *bh = R_new_shader_from_files_with_defines("res/shaders/fs_tri.vert", "res/shaders/bloom_blur_h.frag");
-    shader_t *bv = R_new_shader_from_files_with_defines("res/shaders/fs_tri.vert", "res/shaders/bloom_blur_v.frag");
-    shader_t *up = R_new_shader_from_files_with_defines("res/shaders/fs_tri.vert", "res/shaders/bloom_upsample.frag");
-    shader_t *comp = R_new_shader_from_files_with_defines("res/shaders/fs_tri.vert", "res/shaders/present.frag");
+    shader_t *pref = R_new_shader_from_files("res/shaders/fs_tri.vert", "res/shaders/bloom_prefilter.frag");
+    shader_t *down = R_new_shader_from_files("res/shaders/fs_tri.vert", "res/shaders/bloom_downsample.frag");
+    shader_t *bh = R_new_shader_from_files("res/shaders/fs_tri.vert", "res/shaders/bloom_blur_h.frag");
+    shader_t *bv = R_new_shader_from_files("res/shaders/fs_tri.vert", "res/shaders/bloom_blur_v.frag");
+    shader_t *up = R_new_shader_from_files("res/shaders/fs_tri.vert", "res/shaders/bloom_upsample.frag");
+    shader_t *comp = R_new_shader_from_files("res/shaders/fs_tri.vert", "res/shaders/present.frag");
 
     if (!pref || !down || !bh || !bv || !up || !comp)
     {

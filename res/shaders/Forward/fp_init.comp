@@ -1,20 +1,89 @@
-#version 430
+#version 430 core
 
-layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
-uniform int u_TileCount;
-uniform int u_TileMax;
+layout(binding = 0) uniform sampler2D u_DepthTex;
 
 layout(std430, binding = 1) buffer B_TileIndex
 {
     uvec2 g_TileIndex[];
 };
 
+layout(std430, binding = 3) buffer B_TileDepth
+{
+    vec2 g_TileDepth[];
+};
+
+uniform ivec2 u_ScreenSize;
+uniform ivec2 u_TileCount;
+uniform int u_TileSize;
+uniform int u_TileMax;
+
+uniform float u_Near;
+uniform float u_Far;
+
+shared float sMinZ[256];
+shared float sMaxZ[256];
+
+float depth_to_viewz(float depth01)
+{
+    float zNdc = depth01 * 2.0 - 1.0;
+    float n = u_Near;
+    float f = u_Far;
+    float viewZ = (2.0 * n * f) / (f + n - zNdc * (f - n));
+    return viewZ;
+}
+
 void main()
 {
-    uint i = gl_GlobalInvocationID.x;
-    if (i >= uint(u_TileCount))
+    ivec2 tile = ivec2(gl_WorkGroupID.xy);
+    if (tile.x >= u_TileCount.x || tile.y >= u_TileCount.y)
         return;
 
-    g_TileIndex[i] = uvec2(i * uint(u_TileMax), 0u);
+    ivec2 local = ivec2(gl_LocalInvocationID.xy);
+    int lid = local.x + local.y * 16;
+
+    float mn = u_Far;
+    float mx = 0.0;
+
+    int ts = max(u_TileSize, 1);
+    ivec2 base = tile * ts;
+
+    for (int oy = local.y; oy < ts; oy += 16)
+    {
+        for (int ox = local.x; ox < ts; ox += 16)
+        {
+            ivec2 px = base + ivec2(ox, oy);
+            if (px.x < u_ScreenSize.x && px.y < u_ScreenSize.y)
+            {
+                float d = texelFetch(u_DepthTex, px, 0).r;
+                float z = depth_to_viewz(d);
+                z = clamp(z, u_Near, u_Far);
+                mn = min(mn, z);
+                mx = max(mx, z);
+            }
+        }
+    }
+
+    sMinZ[lid] = mn;
+    sMaxZ[lid] = mx;
+
+    barrier();
+
+    for (int stride = 128; stride > 0; stride >>= 1)
+    {
+        if (lid < stride)
+        {
+            sMinZ[lid] = min(sMinZ[lid], sMinZ[lid + stride]);
+            sMaxZ[lid] = max(sMaxZ[lid], sMaxZ[lid + stride]);
+        }
+        barrier();
+    }
+
+    if (lid == 0)
+    {
+        int tileIndex = tile.x + tile.y * u_TileCount.x;
+        g_TileIndex[uint(tileIndex)] = uvec2(uint(tileIndex) * uint(max(u_TileMax, 0)), 0u);
+        g_TileDepth[uint(tileIndex)] = vec2(sMinZ[0], sMaxZ[0]);
+    }
 }
