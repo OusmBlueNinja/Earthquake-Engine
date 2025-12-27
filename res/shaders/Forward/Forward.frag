@@ -41,6 +41,9 @@ uniform int u_AlphaTest;
 uniform float u_AlphaCutoff;
 uniform int u_ManualSRGB;
 
+uniform int u_MatAlphaCutout;
+uniform int u_MatAlphaBlend;
+
 uniform int u_HasIBL;
 uniform float u_IBLIntensity;
 uniform samplerCube u_IrradianceMap;
@@ -240,18 +243,27 @@ void main()
     float alpha_tex = 1.0;
     if ((u_MaterialTexMask & (1 << 0)) != 0)
         alpha_tex = texture(u_AlbedoTex, uv).a;
-    
-    float alpha = alpha_tex * u_Opacity;
-    
-    if (u_AlphaTest != 0)
+
+    float alpha = 1.0;
+    if (u_HasMaterial != 0)
+        alpha = clamp(alpha_tex * u_Opacity, 0.0, 1.0);
+
+    if ( u_AlphaTest && u_MatAlphaCutout )
     {
         float w = max(fwidth(alpha), 1e-4);
         float a = smoothstep(u_AlphaCutoff - w, u_AlphaCutoff + w, alpha);
-        if (a <= 0.0)
+        if (a < 0.5)
             discard;
         alpha = 1.0;
     }
-
+    else if (u_MatAlphaBlend != 0)
+    {
+        alpha = clamp(alpha, 0.0, 1.0);
+    }
+    else
+    {
+        alpha = 1.0;
+    }
 
     if (u_LodXFadeEnabled != 0)
     {
@@ -445,6 +457,7 @@ void main()
 
         color += (kD * diffuseIBL * ao + specIBL) * u_IBLIntensity;
     }
+
 
     color += emissive;
 

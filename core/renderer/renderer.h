@@ -100,6 +100,7 @@ typedef struct renderer_t
 
     uint32_t instance_vbo;
     uint32_t instance_cap;
+
     vector_t inst_batches;
     vector_t fwd_inst_batches;
     vector_t inst_mats;
@@ -135,7 +136,6 @@ typedef struct renderer_t
     ibl_t ibl;
     bloom_t bloom;
     ssr_t ssr;
-
     render_stats_t stats;
 } renderer_t;
 

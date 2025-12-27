@@ -481,63 +481,66 @@ static ihandle_t mdl_gltf_material_to_handle(asset_manager_t *am, const char *gl
             memcpy(cur.name, m->name, strlen(m->name) + 1);
     }
 
-    if (m)
+    if (!m)
     {
-        material_set_flag(&cur, MAT_FLAG_DOUBLE_SIDED, m->double_sided ? true : false);
-        material_set_flag(&cur, MAT_FLAG_ALPHA_CUTOUT, m->alpha_mode == cgltf_alpha_mode_mask);
+        cur.opacity = 1.0f;
+        return asset_manager_submit_raw(am, ASSET_MATERIAL, &cur);
+    }
 
-        if (m->has_pbr_metallic_roughness)
+    material_set_flag(&cur, MAT_FLAG_DOUBLE_SIDED, m->double_sided ? true : false);
+
+    material_set_flag(&cur, MAT_FLAG_ALPHA_CUTOUT, (m->alpha_mode == cgltf_alpha_mode_mask));
+    material_set_flag(&cur, MAT_FLAG_ALPHA_BLEND, (m->alpha_mode == cgltf_alpha_mode_blend));
+
+    if (m->has_pbr_metallic_roughness)
+    {
+        const cgltf_pbr_metallic_roughness *p = &m->pbr_metallic_roughness;
+
+        cur.albedo = (vec3){p->base_color_factor[0], p->base_color_factor[1], p->base_color_factor[2]};
+        cur.opacity = mdl_clamp01(p->base_color_factor[3]);
+        cur.metallic = mdl_clamp01(p->metallic_factor);
+        cur.roughness = mdl_clamp01(p->roughness_factor);
+
+        if (p->base_color_texture.texture)
         {
-            const cgltf_pbr_metallic_roughness *p = &m->pbr_metallic_roughness;
-
-            cur.albedo = (vec3){p->base_color_factor[0], p->base_color_factor[1], p->base_color_factor[2]};
-            cur.opacity = mdl_clamp01(p->base_color_factor[3]);
-            cur.metallic = mdl_clamp01(p->metallic_factor);
-            cur.roughness = mdl_clamp01(p->roughness_factor);
-
-            if (p->base_color_texture.texture)
-            {
-                const cgltf_image *img = mdl_gltf_tex_image(p->base_color_texture.texture);
-                cur.albedo_tex = mdl_gltf_request_image(am, gltf_path, data, img);
-            }
-
-            if (p->metallic_roughness_texture.texture)
-            {
-                const cgltf_image *img = mdl_gltf_tex_image(p->metallic_roughness_texture.texture);
-                ihandle_t t = mdl_gltf_request_image(am, gltf_path, data, img);
-                cur.roughness_tex = t;
-                cur.metallic_tex = t;
-            }
+            const cgltf_image *img = mdl_gltf_tex_image(p->base_color_texture.texture);
+            cur.albedo_tex = mdl_gltf_request_image(am, gltf_path, data, img);
         }
 
-        cur.emissive = (vec3){m->emissive_factor[0], m->emissive_factor[1], m->emissive_factor[2]};
-
-        if (m->emissive_texture.texture)
+        if (p->metallic_roughness_texture.texture)
         {
-            const cgltf_image *img = mdl_gltf_tex_image(m->emissive_texture.texture);
-            cur.emissive_tex = mdl_gltf_request_image(am, gltf_path, data, img);
+            const cgltf_image *img = mdl_gltf_tex_image(p->metallic_roughness_texture.texture);
+            ihandle_t t = mdl_gltf_request_image(am, gltf_path, data, img);
+            cur.roughness_tex = t;
+            cur.metallic_tex = t;
         }
+    }
 
-        if (m->normal_texture.texture)
-        {
-            const cgltf_image *img = mdl_gltf_tex_image(m->normal_texture.texture);
-            cur.normal_tex = mdl_gltf_request_image(am, gltf_path, data, img);
-            if (m->normal_texture.scale > 0.0f)
-                cur.normal_strength = m->normal_texture.scale;
-        }
+    cur.emissive = (vec3){m->emissive_factor[0], m->emissive_factor[1], m->emissive_factor[2]};
 
-        if (m->occlusion_texture.texture)
-        {
-            const cgltf_image *img = mdl_gltf_tex_image(m->occlusion_texture.texture);
-            cur.occlusion_tex = mdl_gltf_request_image(am, gltf_path, data, img);
-        }
+    if (m->emissive_texture.texture)
+    {
+        const cgltf_image *img = mdl_gltf_tex_image(m->emissive_texture.texture);
+        cur.emissive_tex = mdl_gltf_request_image(am, gltf_path, data, img);
+    }
 
-        if (m->alpha_mode == cgltf_alpha_mode_blend)
-            cur.opacity = mdl_clamp01(cur.opacity);
-        else if (m->alpha_mode == cgltf_alpha_mode_mask)
-            cur.opacity = mdl_clamp01(cur.opacity);
-        else
-            cur.opacity = 1.0f;
+    if (m->normal_texture.texture)
+    {
+        const cgltf_image *img = mdl_gltf_tex_image(m->normal_texture.texture);
+        cur.normal_tex = mdl_gltf_request_image(am, gltf_path, data, img);
+        if (m->normal_texture.scale > 0.0f)
+            cur.normal_strength = m->normal_texture.scale;
+    }
+
+    if (m->occlusion_texture.texture)
+    {
+        const cgltf_image *img = mdl_gltf_tex_image(m->occlusion_texture.texture);
+        cur.occlusion_tex = mdl_gltf_request_image(am, gltf_path, data, img);
+    }
+
+    if (m->alpha_mode == cgltf_alpha_mode_blend)
+    {
+        cur.opacity = mdl_clamp01(cur.opacity);
     }
     else
     {

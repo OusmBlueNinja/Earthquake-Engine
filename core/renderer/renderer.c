@@ -580,6 +580,21 @@ static void R_apply_material_or_default(renderer_t *r, const shader_t *s, asset_
 
     if (mat)
     {
+        int alpha_test = (mat->flags & MAT_FLAG_ALPHA_CUTOUT) ? 1 : 0;
+        float alpha_cutoff = mat->alpha_cutoff;
+        if (alpha_cutoff < 0.0f)
+            alpha_cutoff = 0.0f;
+        if (alpha_cutoff > 1.0f)
+            alpha_cutoff = 1.0f;
+
+        shader_set_int(s, "u_AlphaTest", alpha_test);
+        shader_set_float(s, "u_AlphaCutoff", alpha_cutoff);
+
+        shader_set_int(s, "u_MaterialFlags", (int)mat->flags);
+        shader_set_int(s, "u_MatDoubleSided", (mat->flags & MAT_FLAG_DOUBLE_SIDED) ? 1 : 0);
+        shader_set_int(s, "u_MatAlphaCutout", (mat->flags & MAT_FLAG_ALPHA_CUTOUT) ? 1 : 0);
+        shader_set_int(s, "u_MatAlphaBlend", (mat->flags & MAT_FLAG_ALPHA_BLEND) ? 1 : 0);
+
         shader_set_vec3(s, "u_Albedo", mat->albedo);
         shader_set_vec3(s, "u_Emissive", mat->emissive);
         shader_set_float(s, "u_Roughness", mat->roughness);
@@ -613,6 +628,14 @@ static void R_apply_material_or_default(renderer_t *r, const shader_t *s, asset_
 
         shader_set_int(s, "u_MaterialTexMask", 0);
 
+        shader_set_int(s, "u_AlphaTest", 0);
+        shader_set_float(s, "u_AlphaCutoff", 0.0f);
+
+        shader_set_int(s, "u_MaterialFlags", 0);
+        shader_set_int(s, "u_MatDoubleSided", 0);
+        shader_set_int(s, "u_MatAlphaCutout", 0);
+        shader_set_int(s, "u_MatAlphaBlend", 0);
+
         shader_set_vec3(s, "u_Albedo", (vec3){1.0f, 1.0f, 1.0f});
         shader_set_vec3(s, "u_Emissive", (vec3){0.0f, 0.0f, 0.0f});
         shader_set_float(s, "u_Roughness", 1.0f);
@@ -632,8 +655,6 @@ static void R_bind_common_uniforms(renderer_t *r, const shader_t *s)
     shader_set_vec3(s, "u_CameraPos", r->camera.position);
 
     shader_set_int(s, "u_HeightInvert", r->cfg.height_invert ? 1 : 0);
-    shader_set_int(s, "u_AlphaTest", r->cfg.alpha_test ? 1 : 0);
-    shader_set_float(s, "u_AlphaCutoff", r->cfg.alpha_cutoff);
     shader_set_int(s, "u_ManualSRGB", r->cfg.manual_srgb ? 1 : 0);
 }
 
@@ -1311,6 +1332,10 @@ static void R_depth_prepass(renderer_t *r)
         if (!mesh)
             continue;
 
+        // asset_material_t *mat = R_resolve_material(r, mesh->material);
+        // if (mat && (mat->flags & (MAT_FLAG_ALPHA_BLEND | MAT_FLAG_ALPHA_CUTOUT)))
+        //     continue;
+
         const mesh_lod_t *lod = R_mesh_get_lod(mesh, b->lod);
         if (!lod || !lod->vao || !lod->index_count)
             continue;
@@ -1554,15 +1579,26 @@ static void R_forward_one_pass(renderer_t *r)
 
         asset_material_t *mat = R_resolve_material(r, mesh->material);
 
-        int is_blended = (mat && mat->opacity < 0.999f) ? 1 : 0;
-        int is_cutout = (r->cfg.alpha_test != 0);
+        int mat_cutout = (mat && (mat->flags & MAT_FLAG_ALPHA_CUTOUT)) ? 1 : 0;
+        int mat_blend = (mat && (mat->flags & MAT_FLAG_ALPHA_BLEND)) ? 1 : 0;
+        int mat_doublesided = (mat && (mat->flags & MAT_FLAG_DOUBLE_SIDED)) ? 1 : 0;
 
-        if (is_cutout)
+        if (mat_doublesided)
+        {
+            glDisable(GL_CULL_FACE);
+        }
+        else
+        {
+            glEnable(GL_CULL_FACE);
+            glCullFace(GL_BACK);
+        }
+
+        if (mat_cutout)
         {
             glDisable(GL_BLEND);
             glDepthMask(GL_TRUE);
         }
-        else if (is_blended)
+        else if (mat_blend)
         {
             glEnable(GL_BLEND);
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -1844,16 +1880,17 @@ void R_begin_frame(renderer_t *r)
     glBindFramebuffer(GL_FRAMEBUFFER, r->light_fbo);
     glViewport(0, 0, r->fb_size.x, r->fb_size.y);
 
+    glClearColor(r->clear_color.x, r->clear_color.y, r->clear_color.z, 0.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
     glEnable(GL_DEPTH_TEST);
     glDepthMask(GL_TRUE);
-    glDisable(GL_BLEND);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
     glEnable(GL_CULL_FACE);
     glCullFace(GL_BACK);
     glFrontFace(GL_CCW);
-
-    glClearColor(r->clear_color.x, r->clear_color.y, r->clear_color.z, r->clear_color.w);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     R_stats_begin_frame(r);
 }
