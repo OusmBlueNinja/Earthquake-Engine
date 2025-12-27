@@ -72,12 +72,16 @@ asset_material_t material_make_default(uint8_t shader_id)
     m.flags = 0;
     m.name = dup_cstr("iDefMat");
 
+    material_set_flag(&m, MAT_FLAG_ALPHA_CUTOUT, false);
+    material_set_flag(&m, MAT_FLAG_DOUBLE_SIDED, false);
 
     m.albedo = (vec3){1.0f, 1.0f, 1.0f};
     m.emissive = (vec3){0.0f, 0.0f, 0.0f};
     m.roughness = 1.0f;
     m.metallic = 0.0f;
     m.opacity = 1.0f;
+
+    m.alpha_cutoff - 0.1f;
 
     m.normal_strength = 1.0f;
     m.height_scale = 0.03f;
@@ -233,4 +237,14 @@ static asset_material_t *material_create_solid(uint8_t shader_id, vec3 albedo)
     mat->arm_tex = ihandle_invalid();
 
     return mat;
+}
+
+void material_set_flag(asset_material_t *m, material_flags_t flag, bool state)
+{
+    if (!m)
+        return;
+    if (state)
+        m->flags = (material_flags_t)(m->flags | flag);
+    else
+        m->flags = (material_flags_t)(m->flags & (material_flags_t)~flag);
 }

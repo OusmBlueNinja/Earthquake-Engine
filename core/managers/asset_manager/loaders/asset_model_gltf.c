@@ -483,6 +483,9 @@ static ihandle_t mdl_gltf_material_to_handle(asset_manager_t *am, const char *gl
 
     if (m)
     {
+        material_set_flag(&cur, MAT_FLAG_DOUBLE_SIDED, m->double_sided ? true : false);
+        material_set_flag(&cur, MAT_FLAG_ALPHA_CUTOUT, m->alpha_mode == cgltf_alpha_mode_mask);
+
         if (m->has_pbr_metallic_roughness)
         {
             const cgltf_pbr_metallic_roughness *p = &m->pbr_metallic_roughness;
@@ -519,6 +522,8 @@ static ihandle_t mdl_gltf_material_to_handle(asset_manager_t *am, const char *gl
         {
             const cgltf_image *img = mdl_gltf_tex_image(m->normal_texture.texture);
             cur.normal_tex = mdl_gltf_request_image(am, gltf_path, data, img);
+            if (m->normal_texture.scale > 0.0f)
+                cur.normal_strength = m->normal_texture.scale;
         }
 
         if (m->occlusion_texture.texture)
