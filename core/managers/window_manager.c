@@ -298,3 +298,10 @@ void wm_end_frame(window_manager *wm)
     wm->fbo = 0;
     wm->fbo_size = (vec2i){0, 0};
 }
+
+GLFWwindow *wm_get_glfw_window(window_manager *wm)
+{
+    if (!wm)
+        return NULL;
+    return wm->window;
+}
