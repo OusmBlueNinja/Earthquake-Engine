@@ -137,7 +137,7 @@ void delete_application(Application *app)
     {
         // shutdown Layers
         layer_t *layer;
-        VECTOR_FOR_EACH(g_application.layers, layer_t, layer)
+        VECTOR_FOR_EACH_INV(g_application.layers, layer_t, layer)
         {
             if (layer->shutdown)
             {
