@@ -95,20 +95,30 @@ static float clamp01(float x)
     return x;
 }
 
+static inline render_stats_t *R_stats_write(renderer_t *r)
+{
+    return &r->stats[r->stats_write ? 0u : 1u];
+}
+
 static void R_stats_begin_frame(renderer_t *r)
 {
-    memset(&r->stats, 0, sizeof(r->stats));
+    r->stats_write = !r->stats_write;
+    memset(R_stats_write(r), 0, sizeof(render_stats_t));
 }
 
 static void R_stats_add_draw_instanced(renderer_t *r, uint32_t index_count, uint32_t instance_count)
 {
-    r->stats.draw_calls += 1;
-    r->stats.instanced_draw_calls += 1;
-    r->stats.instances += (uint64_t)instance_count;
+    render_stats_t *s = R_stats_write(r);
+
+    s->draw_calls += 1;
+    s->instanced_draw_calls += 1;
+    s->instances += (uint64_t)instance_count;
 
     uint64_t tris = (uint64_t)(index_count / 3u);
-    r->stats.triangles += tris * (uint64_t)instance_count;
-    r->stats.instanced_triangles += tris * (uint64_t)instance_count;
+    uint64_t tri_total = tris * (uint64_t)instance_count;
+
+    s->triangles += tri_total;
+    s->instanced_triangles += tri_total;
 }
 
 static void R_make_black_tex(renderer_t *r)
@@ -1729,6 +1739,9 @@ int R_init(renderer_t *r, asset_manager_t *assets)
 
     R_create_targets(r);
 
+    memset(r->stats, 0, sizeof(r->stats));
+    r->stats_write = 0;
+
     shader_t *depth_shader = R_new_shader_from_files("res/shaders/Forward/depth.vert", "res/shaders/Forward/depth.frag");
     if (!depth_shader)
     {
@@ -1958,5 +1971,8 @@ void R_push_hdri(renderer_t *r, ihandle_t tex)
 
 const render_stats_t *R_get_stats(const renderer_t *r)
 {
-    return r ? &r->stats : NULL;
+    return &r->stats[r->stats_write ? 1u : 0u];
 }
+
+
+

@@ -29,16 +29,11 @@ FetchContent_MakeAvailable(glfw)
 FetchContent_Declare(
     meshoptimizer
     GIT_REPOSITORY https://github.com/zeux/meshoptimizer.git
-    GIT_TAG v1.0
+    GIT_TAG "master"
 )
 FetchContent_MakeAvailable(meshoptimizer)
 
-FetchContent_Declare(
-    nuklear
-    GIT_REPOSITORY https://github.com/Immediate-Mode-UI/Nuklear.git
-    GIT_TAG master
-)
-FetchContent_MakeAvailable(nuklear)
+
 
 find_package(OpenGL REQUIRED)
 find_package(GLEW REQUIRED)
@@ -82,21 +77,11 @@ target_include_directories(editor PUBLIC
     "${CMAKE_SOURCE_DIR}"
     "${CMAKE_SOURCE_DIR}/editor"
     "${CMAKE_SOURCE_DIR}/editor/include"
-    "${nuklear_SOURCE_DIR}"
-    "${nuklear_SOURCE_DIR}/demo/glfw_opengl3"
 )
 
-target_compile_definitions(editor PUBLIC
-    NK_INCLUDE_FIXED_TYPES
-    NK_INCLUDE_STANDARD_IO
-    NK_INCLUDE_STANDARD_VARARGS
-    NK_INCLUDE_DEFAULT_ALLOCATOR
-    NK_INCLUDE_FONT_BAKING
-    NK_INCLUDE_DEFAULT_FONT
-    NK_INCLUDE_VERTEX_BUFFER_OUTPUT
+target_link_libraries(editor PUBLIC
+    core
 )
-
-target_link_libraries(editor PUBLIC core)
 
 file(GLOB_RECURSE APP_SRC CONFIGURE_DEPENDS
     "${CMAKE_SOURCE_DIR}/app/*.c"

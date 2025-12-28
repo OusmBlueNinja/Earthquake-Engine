@@ -190,27 +190,32 @@ void loop_application(void)
         layer_t *layer;
         VECTOR_FOR_EACH(g_application.layers, layer_t, layer)
         {
+            if ((layer->flags & LAYER_FLAG_BLOCK_UPDATE) != 0)
+                continue;
+
             if (layer->update)
                 layer->update(layer, (float)dt);
         }
 
         asset_manager_pump(&g_application.asset_manager);
 
-        R_resize(&g_application.renderer, wm_get_framebuffer_size(&g_application.window_manager));
+        // R_resize(&g_application.renderer, wm_get_framebuffer_size(&g_application.window_manager));
 
         R_begin_frame(&g_application.renderer);
+
+        VECTOR_FOR_EACH(g_application.layers, layer_t, layer)
         {
-            VECTOR_FOR_EACH(g_application.layers, layer_t, layer)
-            {
-                if (layer->draw)
-                    layer->draw(layer);
-            }
+            if ((layer->flags & LAYER_FLAG_BLOCK_DRAW) != 0)
+                continue;
+
+            if (layer->draw)
+                layer->draw(layer);
         }
+
         R_end_frame(&g_application.renderer);
 
         wm_begin_frame(&g_application.window_manager);
-        wm_bind_framebuffer(&g_application.window_manager, R_get_final_fbo(&g_application.renderer), g_application.renderer.fb_size);
-
+        // wm_bind_framebuffer(&g_application.window_manager, R_get_final_fbo(&g_application.renderer), g_application.renderer.fb_size);
         wm_end_frame(&g_application.window_manager);
     }
 
@@ -234,6 +239,7 @@ layer_t create_layer(const char *name)
 
     layer.app = get_application();
 
+    layer.flags = LAYER_FLAG_NONE;
     return layer;
 }
 
@@ -252,18 +258,20 @@ void app_dispatch_event(Application *app, event_t *e)
         return;
 
     vector_t *v = &app->layers;
-    if (!v->data)
-        return;
-    if (v->element_size != sizeof(layer_t))
-        return;
-    if (v->size == 0)
+    if (!v || !v->data || v->element_size != sizeof(layer_t) || v->size == 0)
         return;
 
-    layer_t *layers = (layer_t *)v->data;
+    if (e->handled)
+        return;
 
     for (uint32_t i = v->size; i-- > 0;)
     {
-        layer_t *layer = &layers[i];
+        layer_t *layer = vector_at_type(v, i, layer_t);
+        if (!layer)
+            continue;
+
+        if ((layer->flags & LAYER_FLAG_BLOCK_EVENTS) != 0)
+            continue;
 
         if (!layer->on_event)
             continue;
@@ -273,9 +281,6 @@ void app_dispatch_event(Application *app, event_t *e)
             e->handled = true;
             return;
         }
-
-        if (e->handled)
-            return;
     }
 }
 

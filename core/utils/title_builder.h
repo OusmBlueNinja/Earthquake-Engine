@@ -6,7 +6,8 @@
 
 static char *app_build_title(Application *app)
 {
-    if (!app) return NULL;
+    if (!app)
+        return NULL;
 
     vector_t *v = &app->layers;
 
@@ -27,6 +28,9 @@ static char *app_build_title(Application *app)
     {
         for (uint32_t i = 0; i < count; ++i)
         {
+            if ((layers[i].flags & LAYER_FLAG_HIDDEN_IN_TITLE) != 0)
+                continue;
+
             const char *nm = (layers[i].name && layers[i].name[0]) ? layers[i].name : "Unnamed Layer";
             len += strlen(nm);
             len += strlen(" | ");
@@ -37,7 +41,8 @@ static char *app_build_title(Application *app)
     len += strlen(ENGINE_V);
 
     char *title = (char *)malloc(len + 1);
-    if (!title) return NULL;
+    if (!title)
+        return NULL;
 
     char *w = title;
     w += sprintf(w, "%s | ", ENGINE_N);
@@ -46,7 +51,11 @@ static char *app_build_title(Application *app)
     {
         for (uint32_t i = 0; i < count; ++i)
         {
+            if (layer_get_flags(&layers[i], LAYER_FLAG_HIDDEN_IN_TITLE))
+                continue;
+
             const char *nm = (layers[i].name && layers[i].name[0]) ? layers[i].name : "Unnamed Layer";
+
             w += sprintf(w, "%s | ", nm);
         }
     }
