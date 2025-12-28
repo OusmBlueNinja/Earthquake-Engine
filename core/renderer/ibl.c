@@ -1,4 +1,3 @@
-/* renderer/ibl.c */
 #include "renderer/ibl.h"
 #include "renderer/renderer.h"
 #include "shader.h"
@@ -238,6 +237,20 @@ static int ibl_check_capture_fbo(const char *tag)
     return 1;
 }
 
+static void ibl_bind_sampler_names(shader_t *s, const char *a, const char *b, const char *c, const char *d, int unit)
+{
+    if (!s)
+        return;
+    if (a)
+        shader_set_int(s, a, unit);
+    if (b)
+        shader_set_int(s, b, unit);
+    if (c)
+        shader_set_int(s, c, unit);
+    if (d)
+        shader_set_int(s, d, unit);
+}
+
 static void ibl_render_to_cubemap(renderer_t *r, uint32_t cubemap, uint32_t size, uint8_t shader_id, uint32_t input_tex, int input_is_cubemap)
 {
     shader_t *s = R_get_shader(r, shader_id);
@@ -265,19 +278,16 @@ static void ibl_render_to_cubemap(renderer_t *r, uint32_t cubemap, uint32_t size
     shader_set_mat4(s, "u_Proj", ibl_capture_proj);
 
     glActiveTexture(GL_TEXTURE0);
-    if (!input_tex)
-    {
-        glBindTexture(input_is_cubemap ? GL_TEXTURE_CUBE_MAP : GL_TEXTURE_2D, 0);
-    }
-    else if (input_is_cubemap)
+
+    if (input_is_cubemap)
     {
         glBindTexture(GL_TEXTURE_CUBE_MAP, input_tex);
-        shader_set_int(s, "u_EnvMap", 0);
+        ibl_bind_sampler_names(s, "u_EnvMap", "u_EnvironmentMap", "environmentMap", "envMap", 0);
     }
     else
     {
         glBindTexture(GL_TEXTURE_2D, input_tex);
-        shader_set_int(s, "u_Equirect", 0);
+        ibl_bind_sampler_names(s, "u_Equirect", "u_EquirectangularMap", "equirectangularMap", "u_EquirectMap", 0);
     }
 
     for (int face = 0; face < 6; ++face)
@@ -322,7 +332,7 @@ static void ibl_render_prefilter(renderer_t *r, uint32_t cubemap, uint32_t base_
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_CUBE_MAP, env);
-    shader_set_int(s, "u_EnvMap", 0);
+    ibl_bind_sampler_names(s, "u_EnvMap", "u_EnvironmentMap", "environmentMap", "envMap", 0);
 
     int max_mips = 0;
     {
@@ -418,8 +428,10 @@ void ibl_ensure(renderer_t *r)
     uint32_t hdri_gl = R_resolve_image_gl_local(r, r->hdri_tex);
     if (!hdri_gl)
     {
-        r->ibl.ready = 0;
-        r->ibl.src_hdri = ihandle_invalid();
+        if (!r->ibl.ready)
+        {
+            r->ibl.src_hdri = ihandle_invalid();
+        }
         return;
     }
 
@@ -447,6 +459,12 @@ void ibl_ensure(renderer_t *r)
 
     r->ibl.src_hdri = r->hdri_tex;
     r->ibl.ready = 1;
+
+    LOG_INFO("IBL ready: env=%u irr=%u pre=%u brdf=%u",
+             (unsigned)r->ibl.env_cubemap,
+             (unsigned)r->ibl.irradiance_map,
+             (unsigned)r->ibl.prefilter_map,
+             (unsigned)r->ibl.brdf_lut);
 }
 
 uint32_t ibl_get_env(const renderer_t *r) { return r ? r->ibl.env_cubemap : 0; }

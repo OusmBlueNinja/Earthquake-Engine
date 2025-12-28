@@ -1,0 +1,80 @@
+#version 460 core
+layout(local_size_x=256, local_size_y=1, local_size_z=1) in;
+
+struct Node
+{
+    vec4 bmin;
+    vec4 bmax;
+    ivec4 meta;
+};
+
+layout(std430, binding=11) buffer BVH { Node n[]; };
+layout(std430, binding=13) readonly buffer Morton { uint code[]; };
+layout(std430, binding=14) readonly buffer Index  { uint idx[]; };
+
+uniform uint u_TriCount;
+
+int clz32(uint x)
+{
+    return findMSB(x) == -1 ? 32 : (31 - findMSB(x));
+}
+
+int delta(int i, int j)
+{
+    if (j < 0 || j >= int(u_TriCount)) return -1;
+    uint a = code[i];
+    uint b = code[j];
+    if (a == b) return 32 + clz32(uint(i) ^ uint(j));
+    return clz32(a ^ b);
+}
+
+void main()
+{
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= u_TriCount) return;
+
+    uint leafBase = u_TriCount - 1u;
+    uint leaf = leafBase + i;
+
+    n[leaf].meta = ivec4(-1, -1, -1, int(idx[i]));
+    n[leaf].bmin = vec4( 1e30, 1e30, 1e30, 0.0);
+    n[leaf].bmax = vec4(-1e30,-1e30,-1e30, 0.0);
+
+    if (u_TriCount == 1u) return;
+    if (i >= u_TriCount - 1u) return;
+
+    int ii = int(i);
+    int d = (delta(ii, ii + 1) - delta(ii, ii - 1)) >= 0 ? 1 : -1;
+
+    int deltaMin = delta(ii, ii - d);
+    int lmax = 2;
+    while (delta(ii, ii + lmax * d) > deltaMin) lmax *= 2;
+
+    int l = 0;
+    for (int t = lmax / 2; t >= 1; t /= 2)
+    {
+        if (delta(ii, ii + (l + t) * d) > deltaMin) l += t;
+    }
+    int j = ii + l * d;
+
+    int deltaNode = delta(ii, j);
+    int s = 0;
+    int t = l;
+    while (t > 0)
+    {
+        int step = (t + 1) / 2;
+        if (delta(ii, ii + (s + step) * d) > deltaNode) s += step;
+        t -= step;
+    }
+    int split = ii + s * d + min(d, 0);
+
+    uint left = (min(ii, j) == split) ? (leafBase + uint(split)) : uint(split);
+    uint right = (max(ii, j) == split + 1) ? (leafBase + uint(split + 1)) : uint(split + 1);
+
+    n[i].meta = ivec4(int(left), int(right), -1, -1);
+    n[i].bmin = vec4( 1e30, 1e30, 1e30, 0.0);
+    n[i].bmax = vec4(-1e30,-1e30,-1e30, 0.0);
+
+    n[left].meta.z = int(i);
+    n[right].meta.z = int(i);
+}

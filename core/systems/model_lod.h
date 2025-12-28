@@ -5,6 +5,6 @@
 
 #include "asset_manager/asset_types/model.h"
 
-#define MODEL_LOD_MAX 8
+#define MODEL_LOD_MAX 0
 
 bool model_raw_generate_lods(model_raw_t *raw);

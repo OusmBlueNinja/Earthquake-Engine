@@ -127,13 +127,6 @@ void ssr_run(renderer_t *r, uint32_t scene_tex)
     glBindTexture(GL_TEXTURE_2D, r->gbuf_depth);
     shader_set_int(s, "u_GDepth", 1);
 
-    glActiveTexture(GL_TEXTURE2);
-    glBindTexture(GL_TEXTURE_2D, r->gbuf_normal);
-    shader_set_int(s, "u_GNormal", 2);
-
-    glActiveTexture(GL_TEXTURE3);
-    glBindTexture(GL_TEXTURE_2D, r->gbuf_material);
-    shader_set_int(s, "u_GMaterial", 3);
 
     shader_set_mat4(s, "u_View", r->camera.view);
     shader_set_mat4(s, "u_Proj", r->camera.proj);

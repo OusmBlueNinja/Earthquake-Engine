@@ -57,6 +57,13 @@ typedef enum
     CL_R_SSR_MAX_DIST,
     CL_R_FORCE_LOD_LEVEL,
     CL_R_WIREFRAME,
+    CL_R_PT,
+    CL_R_PT_SPP,
+    CL_R_PT_ENV_INTENSITY,
+    CL_R_PT_HALFRES,
+    CL_R_PT_BOUNCES,
+    CL_R_PT_REBUILD_EPS,
+
     SV_CVAR_COUNT
 } sv_cvar_key_t;
 

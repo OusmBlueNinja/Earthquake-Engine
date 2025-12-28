@@ -82,6 +82,15 @@ static cvar_entry_t g_cvars[SV_CVAR_COUNT] = {
     [CL_R_FORCE_LOD_LEVEL] = {.name = "cl_r_force_lod_level", .type = CVAR_INT, .def.i = -1, .flags = CVAR_FLAG_NONE},
 
     [CL_R_WIREFRAME] = {.name = "cl_r_wireframe", .type = CVAR_BOOL, .def.b = false, .flags = CVAR_FLAG_NONE},
+
+    [CL_R_PT] = {.name = "cl_r_pt_enabled", .type = CVAR_BOOL, .def.b = false, .flags = CVAR_FLAG_NONE},
+    [CL_R_PT_SPP] = {.name = "cl_r_pt_spp", .type = CVAR_INT, .def.i = 1, .flags = CVAR_FLAG_NONE},
+    [CL_R_PT_ENV_INTENSITY] = {.name = "cl_r_pt_env_intensity", .type = CVAR_FLOAT, .def.f = 0.0f, .flags = CVAR_FLAG_NONE},
+
+    [CL_R_PT_HALFRES] = {.name = "cl_r_pt_halfres", .type = CVAR_BOOL, .def.b = true, .flags = CVAR_FLAG_NONE},
+    [CL_R_PT_BOUNCES] = {.name = "cl_r_pt_bounces", .type = CVAR_INT, .def.i = 1, .flags = CVAR_FLAG_NONE},
+    [CL_R_PT_REBUILD_EPS] = {.name = "cl_r_pt_rebuild_eps", .type = CVAR_FLOAT, .def.f = 1e-3f, .flags = CVAR_FLAG_NONE},
+
 };
 
 void cvar_set_cheats_permission(bool allowed)

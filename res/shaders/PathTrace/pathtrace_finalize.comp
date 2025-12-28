@@ -1,0 +1,43 @@
+#version 460 core
+layout(local_size_x=8, local_size_y=8, local_size_z=1) in;
+
+layout(rgba16f, binding=0) uniform readonly image2D u_Accum;
+layout(rgba16f, binding=1) uniform writeonly image2D u_Out;
+
+uniform ivec2 u_ScreenSize;
+uniform int u_HalfRes;
+uniform float u_Exposure;
+uniform float u_Gamma;
+uniform uint u_FrameIndex;
+
+vec3 tonemap(vec3 x)
+{
+    return vec3(1.0) - exp(-x);
+}
+
+vec3 load_accum(ivec2 px)
+{
+    if (u_HalfRes == 0)
+        return imageLoad(u_Accum, px).rgb;
+
+    ivec2 hp = px / 2;
+    return imageLoad(u_Accum, hp).rgb;
+}
+
+void main()
+{
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    if (px.x >= u_ScreenSize.x || px.y >= u_ScreenSize.y) return;
+
+    vec3 sum = load_accum(px);
+    float frame = max(1.0, float(u_FrameIndex + 1u));
+    vec3 col = sum / frame;
+
+    col *= max(0.0, u_Exposure);
+    col = tonemap(col);
+
+    float g = max(0.001, u_Gamma);
+    col = pow(max(col, vec3(0.0)), vec3(1.0 / g));
+
+    imageStore(u_Out, px, vec4(col, 1.0));
+}
