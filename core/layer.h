@@ -24,6 +24,7 @@ typedef struct layer_t
     void (*init)(struct layer_t *layer);
     void (*update)(struct layer_t *layer, float dt);
     void (*draw)(struct layer_t *layer);
+    void (*post_update)(struct layer_t *layer, float dt);
     void (*shutdown)(struct layer_t *layer);
 
     bool (*on_event)(struct layer_t *layer, event_t *e);

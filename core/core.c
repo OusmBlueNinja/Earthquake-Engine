@@ -214,6 +214,15 @@ void loop_application(void)
 
         R_end_frame(&g_application.renderer);
 
+        VECTOR_FOR_EACH(g_application.layers, layer_t, layer)
+        {
+            if ((layer->flags & LAYER_FLAG_BLOCK_UPDATE) != 0)
+                continue;
+
+            if (layer->post_update)
+                layer->post_update(layer, (float)dt);
+        }
+
         wm_begin_frame(&g_application.window_manager);
         // wm_bind_framebuffer(&g_application.window_manager, R_get_final_fbo(&g_application.renderer), g_application.renderer.fb_size);
         wm_end_frame(&g_application.window_manager);
