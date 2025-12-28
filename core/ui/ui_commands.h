@@ -17,7 +17,6 @@ typedef struct ui_cmd_clip_t
     ui_vec4_t rect;
 } ui_cmd_clip_t;
 
-
 typedef struct ui_cmd_rect_t
 {
     ui_vec4_t rect;
@@ -25,6 +24,7 @@ typedef struct ui_cmd_rect_t
     float radius;
     float thickness;
 } ui_cmd_rect_t;
+
 typedef struct ui_cmd_text_t
 {
     ui_vec2_t pos;
@@ -32,6 +32,7 @@ typedef struct ui_cmd_text_t
     uint32_t font_id;
     const char *text;
 } ui_cmd_text_t;
+
 typedef struct ui_cmd_icon_t
 {
     ui_vec4_t rect;
@@ -39,6 +40,7 @@ typedef struct ui_cmd_icon_t
     uint32_t font_id;
     uint32_t icon_id;
 } ui_cmd_icon_t;
+
 typedef struct ui_cmd_image_t
 {
     ui_vec4_t rect;

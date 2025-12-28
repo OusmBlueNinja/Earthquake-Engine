@@ -1,6 +1,14 @@
 #include "opengl_backend.h"
 #include <string.h>
+#include <math.h>
 #include "../ui_font.h"
+
+#ifndef UI_Y_DOWN
+#define UI_Y_DOWN 1
+#endif
+
+#define UI_PI 3.14159265358979323846f
+#define UI_TAU (UI_PI * 2.0f)
 
 typedef struct ui_gl_vtx_t
 {
@@ -13,6 +21,29 @@ typedef struct ui_gl_vtx_t
     float b;
     float a;
 } ui_gl_vtx_t;
+
+static float ui_gl_clampf(float v, float a, float b)
+{
+    if (v < a)
+        return a;
+    if (v > b)
+        return b;
+    return v;
+}
+
+static int ui_gl_clampi(int v, int a, int b)
+{
+    if (v < a)
+        return a;
+    if (v > b)
+        return b;
+    return v;
+}
+
+static float ui_gl_minf(float a, float b)
+{
+    return a < b ? a : b;
+}
 
 static GLuint ui_gl_compile(GLenum type, const char *src)
 {
@@ -225,16 +256,26 @@ static ui_gl_font_t *ui_gl_get_font(ui_gl_backend_t *b, uint32_t font_id)
     return (ui_gl_font_t *)ui_array_at(&b->fonts, font_id);
 }
 
+static int ui_gl_reserve_verts(ui_gl_backend_t *b, uint32_t add)
+{
+    uint32_t n = ui_array_count(&b->verts);
+    uint32_t need = n + add;
+    return ui_array_reserve(&b->verts, need) ? 1 : 0;
+}
+
 static void ui_gl_push_tri(ui_gl_backend_t *b, ui_gl_vtx_t a, ui_gl_vtx_t c, ui_gl_vtx_t d)
 {
-    ui_gl_vtx_t *p0 = (ui_gl_vtx_t *)ui_array_push(&b->verts);
-    ui_gl_vtx_t *p1 = (ui_gl_vtx_t *)ui_array_push(&b->verts);
-    ui_gl_vtx_t *p2 = (ui_gl_vtx_t *)ui_array_push(&b->verts);
-    if (!p0 || !p1 || !p2)
+    if (!ui_gl_reserve_verts(b, 3))
         return;
-    *p0 = a;
-    *p1 = c;
-    *p2 = d;
+
+    uint32_t n = ui_array_count(&b->verts);
+    ui_gl_vtx_t *dst = (ui_gl_vtx_t *)((uint8_t *)ui_array_data(&b->verts) + (size_t)n * (size_t)b->verts.stride);
+
+    dst[0] = a;
+    dst[1] = c;
+    dst[2] = d;
+
+    b->verts.count = n + 3;
 }
 
 static void ui_gl_push_quad(ui_gl_backend_t *b, float x, float y, float w, float h, float u0, float v0, float u1, float v1, ui_color_t col)
@@ -248,6 +289,7 @@ static void ui_gl_push_quad(ui_gl_backend_t *b, float x, float y, float w, float
     a.g = col.rgb.y;
     a.b = col.rgb.z;
     a.a = col.a;
+
     c.x = x + w;
     c.y = y;
     c.u = u1;
@@ -256,6 +298,7 @@ static void ui_gl_push_quad(ui_gl_backend_t *b, float x, float y, float w, float
     c.g = col.rgb.y;
     c.b = col.rgb.z;
     c.a = col.a;
+
     d.x = x + w;
     d.y = y + h;
     d.u = u1;
@@ -264,6 +307,7 @@ static void ui_gl_push_quad(ui_gl_backend_t *b, float x, float y, float w, float
     d.g = col.rgb.y;
     d.b = col.rgb.z;
     d.a = col.a;
+
     e.x = x;
     e.y = y + h;
     e.u = u0;
@@ -277,26 +321,260 @@ static void ui_gl_push_quad(ui_gl_backend_t *b, float x, float y, float w, float
     ui_gl_push_tri(b, a, d, e);
 }
 
+static ui_gl_vtx_t ui_gl_make_vtx(float x, float y, float u, float v, ui_color_t col)
+{
+    ui_gl_vtx_t t;
+    t.x = x;
+    t.y = y;
+    t.u = u;
+    t.v = v;
+    t.r = col.rgb.x;
+    t.g = col.rgb.y;
+    t.b = col.rgb.z;
+    t.a = col.a;
+    return t;
+}
+
+static void ui_gl_push_fan(ui_gl_backend_t *b, float cx, float cy, float r, float a0, float a1, int segs, ui_color_t col)
+{
+    if (r <= 0.0f || segs < 1)
+        return;
+
+    if (a1 < a0)
+    {
+        float t = a0;
+        a0 = a1;
+        a1 = t;
+    }
+
+    float da = (a1 - a0) / (float)segs;
+
+    ui_gl_vtx_t vc = ui_gl_make_vtx(cx, cy, 0.0f, 0.0f, col);
+
+    float a = a0;
+    float x0 = cx + cosf(a) * r;
+#if UI_Y_DOWN
+    float y0 = cy - sinf(a) * r;
+#else
+    float y0 = cy + sinf(a) * r;
+#endif
+    ui_gl_vtx_t v0 = ui_gl_make_vtx(x0, y0, 0.0f, 0.0f, col);
+
+    for (int i = 1; i <= segs; ++i)
+    {
+        a = a0 + da * (float)i;
+        float x1 = cx + cosf(a) * r;
+#if UI_Y_DOWN
+        float y1 = cy - sinf(a) * r;
+#else
+        float y1 = cy + sinf(a) * r;
+#endif
+        ui_gl_vtx_t v1 = ui_gl_make_vtx(x1, y1, 0.0f, 0.0f, col);
+        ui_gl_push_tri(b, vc, v0, v1);
+        v0 = v1;
+    }
+}
+
+static void ui_gl_push_ring_sector(ui_gl_backend_t *b, float cx, float cy, float r0, float r1, float a0, float a1, int segs, ui_color_t col)
+{
+    if (r0 <= 0.0f || r1 <= 0.0f || segs < 1)
+        return;
+
+    if (a1 < a0)
+    {
+        float t = a0;
+        a0 = a1;
+        a1 = t;
+    }
+
+    float da = (a1 - a0) / (float)segs;
+
+    float a = a0;
+
+    float ox0 = cx + cosf(a) * r0;
+    float ix0 = cx + cosf(a) * r1;
+#if UI_Y_DOWN
+    float oy0 = cy - sinf(a) * r0;
+    float iy0 = cy - sinf(a) * r1;
+#else
+    float oy0 = cy + sinf(a) * r0;
+    float iy0 = cy + sinf(a) * r1;
+#endif
+
+    ui_gl_vtx_t o0 = ui_gl_make_vtx(ox0, oy0, 0.0f, 0.0f, col);
+    ui_gl_vtx_t i0 = ui_gl_make_vtx(ix0, iy0, 0.0f, 0.0f, col);
+
+    for (int i = 1; i <= segs; ++i)
+    {
+        a = a0 + da * (float)i;
+
+        float ox1 = cx + cosf(a) * r0;
+        float ix1 = cx + cosf(a) * r1;
+#if UI_Y_DOWN
+        float oy1 = cy - sinf(a) * r0;
+        float iy1 = cy - sinf(a) * r1;
+#else
+        float oy1 = cy + sinf(a) * r0;
+        float iy1 = cy + sinf(a) * r1;
+#endif
+
+        ui_gl_vtx_t o1 = ui_gl_make_vtx(ox1, oy1, 0.0f, 0.0f, col);
+        ui_gl_vtx_t i1 = ui_gl_make_vtx(ix1, iy1, 0.0f, 0.0f, col);
+
+        ui_gl_push_tri(b, o0, i0, i1);
+        ui_gl_push_tri(b, o0, i1, o1);
+
+        o0 = o1;
+        i0 = i1;
+    }
+}
+
+static int ui_gl_round_segs(float r)
+{
+    int s = (int)(r * 0.5f + 6.0f);
+    return ui_gl_clampi(s, 6, 32);
+}
+
+static void ui_gl_draw_rect_filled_rounded(ui_gl_backend_t *b, ui_vec4_t rr, float radius, ui_color_t col)
+{
+    float x = rr.x;
+    float y = rr.y;
+    float w = rr.z;
+    float h = rr.w;
+
+    if (w <= 0.0f || h <= 0.0f)
+        return;
+
+    float r = radius;
+    float mr = ui_gl_minf(w, h) * 0.5f;
+    r = ui_gl_clampf(r, 0.0f, mr);
+
+    if (r <= 0.001f)
+    {
+        ui_gl_push_quad(b, x, y, w, h, 0.0f, 0.0f, 1.0f, 1.0f, col);
+        return;
+    }
+
+    float cw = w - 2.0f * r;
+    float ch = h - 2.0f * r;
+
+    if (cw > 0.0f && ch > 0.0f)
+        ui_gl_push_quad(b, x + r, y + r, cw, ch, 0.0f, 0.0f, 1.0f, 1.0f, col);
+
+    if (cw > 0.0f)
+    {
+        ui_gl_push_quad(b, x + r, y, cw, r, 0.0f, 0.0f, 1.0f, 1.0f, col);
+        ui_gl_push_quad(b, x + r, y + h - r, cw, r, 0.0f, 0.0f, 1.0f, 1.0f, col);
+    }
+
+    if (ch > 0.0f)
+    {
+        ui_gl_push_quad(b, x, y + r, r, ch, 0.0f, 0.0f, 1.0f, 1.0f, col);
+        ui_gl_push_quad(b, x + w - r, y + r, r, ch, 0.0f, 0.0f, 1.0f, 1.0f, col);
+    }
+
+    int segs = ui_gl_round_segs(r);
+
+    float ctrx = x + w - r;
+    float ctry = y + r;
+    ui_gl_push_fan(b, ctrx, ctry, r, 0.0f, UI_PI * 0.5f, segs, col);
+
+    float ctlx = x + r;
+    float ctly = y + r;
+    ui_gl_push_fan(b, ctlx, ctly, r, UI_PI * 0.5f, UI_PI, segs, col);
+
+    float cblx = x + r;
+    float cbly = y + h - r;
+    ui_gl_push_fan(b, cblx, cbly, r, UI_PI, UI_PI * 1.5f, segs, col);
+
+    float cbrx = x + w - r;
+    float cbry = y + h - r;
+    ui_gl_push_fan(b, cbrx, cbry, r, UI_PI * 1.5f, UI_TAU, segs, col);
+}
+
+static void ui_gl_draw_rect_stroke_rounded(ui_gl_backend_t *b, ui_vec4_t rr, float radius, float thickness, ui_color_t col)
+{
+    float x = rr.x;
+    float y = rr.y;
+    float w = rr.z;
+    float h = rr.w;
+
+    if (w <= 0.0f || h <= 0.0f)
+        return;
+
+    float t = thickness;
+    if (t <= 0.0f)
+        return;
+
+    float mr = ui_gl_minf(w, h) * 0.5f;
+    float r = ui_gl_clampf(radius, 0.0f, mr);
+
+    if (r <= 0.001f)
+    {
+        ui_gl_push_quad(b, x, y, w, t, 0.0f, 0.0f, 1.0f, 1.0f, col);
+        ui_gl_push_quad(b, x, y + h - t, w, t, 0.0f, 0.0f, 1.0f, 1.0f, col);
+        if (h - 2.0f * t > 0.0f)
+        {
+            ui_gl_push_quad(b, x, y + t, t, h - 2.0f * t, 0.0f, 0.0f, 1.0f, 1.0f, col);
+            ui_gl_push_quad(b, x + w - t, y + t, t, h - 2.0f * t, 0.0f, 0.0f, 1.0f, 1.0f, col);
+        }
+        return;
+    }
+
+    float max_t = mr;
+    t = ui_gl_clampf(t, 0.0f, max_t);
+
+    float inner_r = r - t;
+    if (inner_r < 0.0f)
+        inner_r = 0.0f;
+
+    float top_w = w - 2.0f * r;
+    float side_h = h - 2.0f * r;
+
+    if (top_w > 0.0f)
+    {
+        ui_gl_push_quad(b, x + r, y, top_w, t, 0.0f, 0.0f, 1.0f, 1.0f, col);
+        ui_gl_push_quad(b, x + r, y + h - t, top_w, t, 0.0f, 0.0f, 1.0f, 1.0f, col);
+    }
+
+    if (side_h > 0.0f)
+    {
+        ui_gl_push_quad(b, x, y + r, t, side_h, 0.0f, 0.0f, 1.0f, 1.0f, col);
+        ui_gl_push_quad(b, x + w - t, y + r, t, side_h, 0.0f, 0.0f, 1.0f, 1.0f, col);
+    }
+
+    int segs = ui_gl_round_segs(r);
+
+    float ctrx = x + w - r;
+    float ctry = y + r;
+    ui_gl_push_ring_sector(b, ctrx, ctry, r, inner_r, 0.0f, UI_PI * 0.5f, segs, col);
+
+    float ctlx = x + r;
+    float ctly = y + r;
+    ui_gl_push_ring_sector(b, ctlx, ctly, r, inner_r, UI_PI * 0.5f, UI_PI, segs, col);
+
+    float cblx = x + r;
+    float cbly = y + h - r;
+    ui_gl_push_ring_sector(b, cblx, cbly, r, inner_r, UI_PI, UI_PI * 1.5f, segs, col);
+
+    float cbrx = x + w - r;
+    float cbry = y + h - r;
+    ui_gl_push_ring_sector(b, cbrx, cbry, r, inner_r, UI_PI * 1.5f, UI_TAU, segs, col);
+}
+
 static void ui_gl_draw_rect(ui_gl_backend_t *b, const ui_cmd_rect_t *r)
 {
     ui_gl_set_tex(b, b->white_tex);
 
+    ui_vec4_t rr = r->rect;
+
     if (r->thickness <= 0.0f)
     {
-        ui_gl_push_quad(b, r->rect.x, r->rect.y, r->rect.z, r->rect.w, 0.0f, 0.0f, 1.0f, 1.0f, r->color);
+        ui_gl_draw_rect_filled_rounded(b, rr, r->radius, r->color);
         return;
     }
 
-    float t = r->thickness;
-    float x = r->rect.x;
-    float y = r->rect.y;
-    float w = r->rect.z;
-    float h = r->rect.w;
-
-    ui_gl_push_quad(b, x, y, w, t, 0.0f, 0.0f, 1.0f, 1.0f, r->color);
-    ui_gl_push_quad(b, x, y + h - t, w, t, 0.0f, 0.0f, 1.0f, 1.0f, r->color);
-    ui_gl_push_quad(b, x, y + t, t, h - 2.0f * t, 0.0f, 0.0f, 1.0f, 1.0f, r->color);
-    ui_gl_push_quad(b, x + w - t, y + t, t, h - 2.0f * t, 0.0f, 0.0f, 1.0f, 1.0f, r->color);
+    ui_gl_draw_rect_stroke_rounded(b, rr, r->radius, r->thickness, r->color);
 }
 
 static void ui_gl_draw_image(ui_gl_backend_t *b, const ui_cmd_image_t *im)
@@ -442,6 +720,19 @@ static void ui_gl_base_begin(ui_base_backend_t *base, int fb_w, int fb_h)
     glBlendEquation(GL_FUNC_ADD);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
+    GLint sample_buffers = 0;
+    GLint samples = 0;
+    glGetIntegerv(GL_SAMPLE_BUFFERS, &sample_buffers);
+    glGetIntegerv(GL_SAMPLES, &samples);
+
+    if (sample_buffers > 0 && samples > 0)
+        glEnable(GL_MULTISAMPLE);
+    else
+        glDisable(GL_MULTISAMPLE);
+
+    glDisable(GL_SAMPLE_ALPHA_TO_COVERAGE);
+    glDisable(GL_SAMPLE_COVERAGE);
+
     ui_gl_set_scissor(b, ui_gl_full_clip(b));
 }
 
@@ -482,12 +773,21 @@ static void ui_gl_base_render(ui_base_backend_t *base, const ui_cmd_t *cmds, uin
 static void ui_gl_base_end(ui_base_backend_t *base)
 {
     ui_gl_backend_t *b = (ui_gl_backend_t *)base->user;
+
     ui_gl_flush(b);
+
     if (b->scissor_enabled)
     {
         glDisable(GL_SCISSOR_TEST);
         b->scissor_enabled = 0;
     }
+
+    glDisable(GL_BLEND);
+    glDisable(GL_MULTISAMPLE);
+    glDisable(GL_SAMPLE_ALPHA_TO_COVERAGE);
+    glDisable(GL_SAMPLE_COVERAGE);
+    glEnable(GL_DEPTH_TEST);
+    glEnable(GL_CULL_FACE);
 }
 
 ui_base_backend_t *ui_gl_backend_base(ui_gl_backend_t *b)
@@ -732,6 +1032,7 @@ static int ui_gl_backend_set_font(ui_gl_backend_t *b, uint32_t font_id, ui_gl_fo
     *dst = font;
     return 1;
 }
+
 int ui_gl_backend_add_font_from_ttf_file(ui_gl_backend_t *b, uint32_t font_id, const char *path, float px_height)
 {
     if (!b || !path)

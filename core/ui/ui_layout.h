@@ -4,8 +4,10 @@
 typedef struct ui_layout_t
 {
     ui_vec4_t body;
+
     float cursor_x;
     float cursor_y;
+
     float row_h;
     int cols;
     int col_i;
@@ -13,9 +15,14 @@ typedef struct ui_layout_t
 
     float max_y;
     float scroll_y;
+
+    float row_spacing;
+    ui_vec4_t last;
+    float start_y;
 } ui_layout_t;
 
 void ui_layout_begin(ui_layout_t *l, ui_vec4_t body, float pad);
 void ui_layout_row(ui_layout_t *l, float height, int cols, const float *widths, float spacing);
 ui_vec4_t ui_layout_next(ui_layout_t *l, float spacing);
+ui_vec4_t ui_layout_peek_last(const ui_layout_t *l);
 float ui_layout_content_h(const ui_layout_t *l);

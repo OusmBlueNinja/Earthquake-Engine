@@ -18,10 +18,33 @@ typedef struct ui_style_t
 
     ui_color_t outline;
 
+    ui_color_t header_bg;
+    ui_color_t header_bg_active;
+    ui_color_t header_text;
+
+    ui_color_t window_bg;
+    ui_color_t window_shadow;
+
+    ui_color_t accent;
+    ui_color_t accent_dim;
+
+    ui_color_t scroll_track;
+    ui_color_t scroll_thumb;
+    ui_color_t scroll_thumb_hover;
+
+    ui_color_t separator;
+
     float padding;
     float spacing;
     float line_h;
     float corner;
+
+    float window_corner;
+    float header_corner;
+    float shadow_size;
+    float outline_thickness;
+    float scroll_w;
+    float scroll_pad;
 } ui_style_t;
 
 typedef struct ui_ctx_t
