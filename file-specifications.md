@@ -1,4 +1,4 @@
-- `.emat` Material file
-- `.eprt` A matrial, but for particles
-- `.emap` Stores the map and map metdata.
-- `.erad` Stores the Lighting information associated with a baked map
+- `.imat` Material file
+- `.iprt` A matrial, but for particles
+- `.imap` Stores the map and map metdata.
+- `.irad` Stores the Lighting information associated with a baked map

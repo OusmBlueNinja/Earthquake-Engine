@@ -85,6 +85,7 @@ typedef struct renderer_t
     asset_manager_t *assets;
 
     vec2i fb_size;
+    vec2i fb_size_last;
     vec4 clear_color;
 
     renderer_cfg_t cfg;
@@ -136,7 +137,11 @@ typedef struct renderer_t
     ibl_t ibl;
     bloom_t bloom;
     ssr_t ssr;
-    render_stats_t stats;
+
+
+    render_stats_t stats[2]; // Dubble Buff
+    bool stats_write;
+
 } renderer_t;
 
 int R_init(renderer_t *r, asset_manager_t *assets);
@@ -152,6 +157,7 @@ void R_push_light(renderer_t *r, light_t light);
 void R_push_model(renderer_t *r, const ihandle_t model, mat4 model_matrix);
 
 void R_push_hdri(renderer_t *r, ihandle_t tex);
+
 
 const render_stats_t *R_get_stats(const renderer_t *r);
 

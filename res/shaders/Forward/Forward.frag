@@ -227,6 +227,17 @@ float dither_noise(vec2 p)
 
 void main()
 {
+
+    //if (!gl_FrontFacing)
+    //{
+    //    o_Color = vec4(1,0,1,1);
+    //    return;
+    //}
+    //o_Color = vec4(0,1,0,1);
+    //return;
+    
+    
+    
     vec3 Nw = normalize(v.worldN);
     vec3 Vw = normalize(u_CameraPos - v.worldPos);
 
@@ -248,7 +259,7 @@ void main()
     if (u_HasMaterial != 0)
         alpha = clamp(alpha_tex * u_Opacity, 0.0, 1.0);
 
-    if ( u_AlphaTest && u_MatAlphaCutout )
+    if ((u_AlphaTest != 0) && (u_MatAlphaCutout != 0))
     {
         float w = max(fwidth(alpha), 1e-4);
         float a = smoothstep(u_AlphaCutoff - w, u_AlphaCutoff + w, alpha);
@@ -333,6 +344,20 @@ void main()
         o_Color = vec4(1.0, 1.0, 1.0, alpha);
         return;
     }
+
+        if (mode == 5)
+    {
+        vec3 a = vec3(1.0);
+        if ((u_MaterialTexMask & (1 << 0)) != 0)
+        {
+            a = texture(u_AlbedoTex, uv).rgb;
+            if (u_ManualSRGB != 0)
+                a = srgb_to_linear(a);
+        }
+        o_Color = vec4(a, 1.0);
+        return;
+    }
+
 
     vec3 albedo = (u_HasMaterial != 0) ? u_Albedo : vec3(1.0);
     float roughness = (u_HasMaterial != 0) ? u_Roughness : 1.0;
