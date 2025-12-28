@@ -95,7 +95,8 @@ static void editor_draw_kv_row(ui_ctx_t *ui, const char *key, const char *val, f
 {
     float lh = ui->text_height(ui->text_user, 0);
     float row_h = ui->style.line_h;
-    if (row_h < lh) row_h = lh;
+    if (row_h < lh)
+        row_h = lh;
 
     float widths[2];
     widths[0] = key_w;
@@ -151,7 +152,7 @@ void layer_init(layer_t *layer)
 
     d->queued_count = 0;
 
-    ui_gl_backend_add_font_from_ttf_file(&d->glui, 0, "res/fonts/CascadiaMono-Regular.ttf", 16.0f, 32, 96);
+    ui_gl_backend_add_font_from_ttf_file(&d->glui, 0, "res/fonts/CascadiaMono-Regular.ttf", 16.0f);
 }
 
 void layer_update(layer_t *layer, float dt)
@@ -265,7 +266,7 @@ void layer_draw(layer_t *layer)
         ui_window_set_next_size(&d->ui, ui_v2(900.0f, 600.0f));
     }
 
-    if (ui_window_begin(&d->ui, "Scene Rendere", UI_WIN_NONE))
+    if (ui_window_begin(&d->ui, "Scene Renderer", UI_WIN_NONE))
     {
         ui_vec4_t body = ui_window_content_rect(&d->ui);
 

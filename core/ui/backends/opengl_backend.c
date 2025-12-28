@@ -45,6 +45,94 @@ static GLuint ui_gl_link(GLuint vs, GLuint fs)
     return p;
 }
 
+static uint32_t ui_utf8_next_n(const char **p, const char *end)
+{
+    const uint8_t *s = (const uint8_t *)(*p);
+    if (!s || *p >= end)
+        return 0;
+
+    uint8_t b0 = s[0];
+
+    if (b0 < 0x80)
+    {
+        *p += 1;
+        return (uint32_t)b0;
+    }
+
+    if ((b0 & 0xE0) == 0xC0)
+    {
+        if (*p + 2 > end)
+        {
+            *p = end;
+            return 0;
+        }
+        uint8_t b1 = s[1];
+        if ((b1 & 0xC0) != 0x80)
+        {
+            *p += 1;
+            return 0xFFFD;
+        }
+        uint32_t cp = ((uint32_t)(b0 & 0x1F) << 6) | (uint32_t)(b1 & 0x3F);
+        *p += 2;
+        if (cp < 0x80)
+            return 0xFFFD;
+        return cp;
+    }
+
+    if ((b0 & 0xF0) == 0xE0)
+    {
+        if (*p + 3 > end)
+        {
+            *p = end;
+            return 0;
+        }
+        uint8_t b1 = s[1], b2 = s[2];
+        if ((b1 & 0xC0) != 0x80 || (b2 & 0xC0) != 0x80)
+        {
+            *p += 1;
+            return 0xFFFD;
+        }
+        uint32_t cp = ((uint32_t)(b0 & 0x0F) << 12) | ((uint32_t)(b1 & 0x3F) << 6) | (uint32_t)(b2 & 0x3F);
+        *p += 3;
+        if (cp < 0x800)
+            return 0xFFFD;
+        if (cp >= 0xD800 && cp <= 0xDFFF)
+            return 0xFFFD;
+        return cp;
+    }
+
+    if ((b0 & 0xF8) == 0xF0)
+    {
+        if (*p + 4 > end)
+        {
+            *p = end;
+            return 0;
+        }
+        uint8_t b1 = s[1], b2 = s[2], b3 = s[3];
+        if ((b1 & 0xC0) != 0x80 || (b2 & 0xC0) != 0x80 || (b3 & 0xC0) != 0x80)
+        {
+            *p += 1;
+            return 0xFFFD;
+        }
+        uint32_t cp = ((uint32_t)(b0 & 0x07) << 18) | ((uint32_t)(b1 & 0x3F) << 12) | ((uint32_t)(b2 & 0x3F) << 6) | (uint32_t)(b3 & 0x3F);
+        *p += 4;
+        if (cp < 0x10000 || cp > 0x10FFFF)
+            return 0xFFFD;
+        return cp;
+    }
+
+    *p += 1;
+    return 0xFFFD;
+}
+
+static uint32_t ui_utf8_next(const char **p)
+{
+    const char *end = *p;
+    while (*end)
+        end++;
+    return ui_utf8_next_n(p, end);
+}
+
 static ui_vec4_t ui_gl_full_clip(const ui_gl_backend_t *b)
 {
     return ui_v4(0.0f, 0.0f, (float)b->fb_w, (float)b->fb_h);
@@ -62,7 +150,14 @@ static void ui_gl_set_scissor(ui_gl_backend_t *b, ui_vec4_t clip)
     int w = (int)(clip.z + 0.5f);
     int h = (int)(clip.w + 0.5f);
 
+    if (w < 0)
+        w = 0;
+    if (h < 0)
+        h = 0;
+
     int sy = b->fb_h - (y + h);
+    if (sy < 0)
+        sy = 0;
 
     if (!b->scissor_enabled)
     {
@@ -79,6 +174,15 @@ static void ui_gl_flush(ui_gl_backend_t *b)
     uint32_t n = ui_array_count(&b->verts);
     if (!n)
         return;
+
+    if (!b->prog || !b->vao || !b->vbo)
+    {
+        ui_array_clear(&b->verts);
+        return;
+    }
+
+    if (b->cur_tex == 0)
+        b->cur_tex = b->white_tex;
 
     glUseProgram(b->prog);
     glUniform2f(b->u_screen, (float)b->fb_w, (float)b->fb_h);
@@ -97,8 +201,12 @@ static void ui_gl_flush(ui_gl_backend_t *b)
 
 static void ui_gl_set_tex(ui_gl_backend_t *b, uint32_t tex)
 {
+    if (tex == 0)
+        tex = b->white_tex;
+
     if (b->cur_tex == tex)
         return;
+
     ui_gl_flush(b);
     b->cur_tex = tex;
 }
@@ -197,82 +305,124 @@ static void ui_gl_draw_image(ui_gl_backend_t *b, const ui_cmd_image_t *im)
     ui_gl_push_quad(b, im->rect.x, im->rect.y, im->rect.z, im->rect.w, im->uv.x, im->uv.y, im->uv.z, im->uv.w, im->tint);
 }
 
-static void ui_gl_draw_glyph_grid(ui_gl_backend_t *b, const ui_gl_font_t *f, float x, float y, uint32_t codepoint, ui_color_t col, float w, float h)
+static void ui_gl_font_sync_texture(ui_gl_backend_t *b, ui_gl_font_t *f)
 {
-    if (!f || !f->tex)
-        return;
-    if (codepoint < f->first_char)
-        return;
-    uint32_t idx = codepoint - f->first_char;
-    if (idx >= f->char_count)
+    if (!f || !f->used || !f->tex || !f->font.rgba)
         return;
 
-    int col_i = (int)(idx % (uint32_t)f->cols);
-    int row_i = (int)(idx / (uint32_t)f->cols);
+    if (!f->font.dirty)
+        return;
 
-    float u0 = (float)col_i / (float)f->cols;
-    float v0 = (float)row_i / (float)f->rows;
-    float u1 = (float)(col_i + 1) / (float)f->cols;
-    float v1 = (float)(row_i + 1) / (float)f->rows;
+    ui_gl_flush(b);
+
+    glBindTexture(GL_TEXTURE_2D, (GLuint)f->tex);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+
+    if (f->tex_w != f->font.atlas_w || f->tex_h != f->font.atlas_h)
+    {
+        f->tex_w = f->font.atlas_w;
+        f->tex_h = f->font.atlas_h;
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, f->tex_w, f->tex_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, f->font.rgba);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
+    else
+    {
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, f->tex_w, f->tex_h, GL_RGBA, GL_UNSIGNED_BYTE, f->font.rgba);
+    }
+
+    f->font.dirty = 0;
+}
+
+static void ui_gl_draw_glyph(ui_gl_backend_t *b, ui_gl_font_t *f, float x, float baseline_y, uint32_t cp, ui_color_t col)
+{
+    const ui_glyph_t *g = ui_font_get_glyph(&f->font, cp);
+    if (!g)
+        return;
+
+    ui_gl_font_sync_texture(b, f);
+
+    float w = (float)(g->w ? g->w : 1);
+    float h = (float)(g->h ? g->h : 1);
+
+    float px = x + (float)g->xoff;
+    float py = baseline_y + (float)g->yoff;
 
     ui_gl_set_tex(b, f->tex);
-    ui_gl_push_quad(b, x, y, w, h, u0, v0, u1, v1, col);
+    ui_gl_push_quad(b, px, py, w, h, g->u0, g->v0, g->u1, g->v1, col);
 }
 
 static void ui_gl_draw_text(ui_gl_backend_t *b, const ui_cmd_text_t *t)
 {
     ui_gl_font_t *f = ui_gl_get_font(b, t->font_id);
-    if (!f || !f->tex || !t->text)
+    if (!f || !f->used || !f->tex || !t->text)
         return;
-
-    float advx = f->advance_x > 0.0f ? f->advance_x : (float)f->cell_w;
-    float advy = f->advance_y > 0.0f ? f->advance_y : (float)f->cell_h;
 
     float x = t->pos.x;
     float y = t->pos.y;
 
-    const unsigned char *s = (const unsigned char *)t->text;
-    while (*s)
+    float baseline = y + f->ascent_px;
+
+    const char *p = t->text;
+    for (;;)
     {
-        unsigned char ch = *s++;
-        if (ch == '\n')
+        uint32_t cp = ui_utf8_next(&p);
+        if (!cp)
+            break;
+
+        if (cp == '\n')
         {
             x = t->pos.x;
-            y += advy;
+            y += f->line_h;
+            baseline = y + f->ascent_px;
             continue;
         }
-        if (ch == '\r')
+        if (cp == '\r')
             continue;
-        if (ch == '\t')
+        if (cp == '\t')
         {
-            x += advx * 4.0f;
+            x += f->line_h;
             continue;
         }
-        ui_gl_draw_glyph_grid(b, f, x, y, (uint32_t)ch, t->color, (float)f->cell_w, (float)f->cell_h);
-        x += advx;
+
+        const ui_glyph_t *g = ui_font_get_glyph(&f->font, cp);
+        if (g)
+        {
+            ui_gl_draw_glyph(b, f, x, baseline, cp, t->color);
+            x += g->xadvance;
+        }
     }
 }
 
 static void ui_gl_draw_icon(ui_gl_backend_t *b, const ui_cmd_icon_t *ic)
 {
     ui_gl_font_t *f = ui_gl_get_font(b, ic->font_id);
-    if (!f || !f->tex)
+    if (!f || !f->used || !f->tex)
         return;
 
-    float sx = (float)f->cell_w;
-    float sy = (float)f->cell_h;
+    ui_gl_font_sync_texture(b, f);
 
-    float scale_x = ic->rect.z / (sx > 0.0f ? sx : 1.0f);
-    float scale_y = ic->rect.w / (sy > 0.0f ? sy : 1.0f);
+    const ui_glyph_t *g = ui_font_get_glyph(&f->font, ic->icon_id);
+    if (!g)
+        return;
+
+    float gw = (float)(g->w ? g->w : 1);
+    float gh = (float)(g->h ? g->h : 1);
+
+    float scale_x = ic->rect.z / (gw > 0.0f ? gw : 1.0f);
+    float scale_y = ic->rect.w / (gh > 0.0f ? gh : 1.0f);
     float scale = scale_x < scale_y ? scale_x : scale_y;
 
-    float w = sx * scale;
-    float h = sy * scale;
+    float w = gw * scale;
+    float h = gh * scale;
 
     float px = ic->rect.x + (ic->rect.z - w) * 0.5f;
     float py = ic->rect.y + (ic->rect.w - h) * 0.5f;
 
-    ui_gl_draw_glyph_grid(b, f, px, py, ic->icon_id, ic->color, w, h);
+    ui_gl_set_tex(b, f->tex);
+    ui_gl_push_quad(b, px, py, w, h, g->u0, g->v0, g->u1, g->v1, ic->color);
 }
 
 static void ui_gl_base_begin(ui_base_backend_t *base, int fb_w, int fb_h)
@@ -348,55 +498,64 @@ ui_base_backend_t *ui_gl_backend_base(ui_gl_backend_t *b)
 int ui_gl_backend_text_width(void *user, uint32_t font_id, const char *text, int len)
 {
     ui_gl_backend_t *b = (ui_gl_backend_t *)user;
-    const ui_gl_font_t *f = ui_gl_backend_get_font(b, font_id);
-    if (!f || !text)
+    ui_gl_font_t *f = ui_gl_get_font(b, font_id);
+    if (!f || !f->used || !text)
         return 0;
-
-    float adv = f->advance_x > 0.0f ? f->advance_x : (float)f->cell_w;
-
-    if (len < 0)
-    {
-        int n = 0;
-        while (text[n])
-            n++;
-        len = n;
-    }
 
     float x = 0.0f;
     float best = 0.0f;
 
-    for (int i = 0; i < len; ++i)
+    if (len < 0)
     {
-        unsigned char ch = (unsigned char)text[i];
-        if (ch == '\n')
+        float w = 0.0f, h = 0.0f;
+        ui_font_measure_utf8(&f->font, text, &w, &h);
+        ui_gl_font_sync_texture(b, f);
+        return (int)(w + 0.5f);
+    }
+
+    const char *p = text;
+    const char *end = text + len;
+
+    for (;;)
+    {
+        uint32_t cp = ui_utf8_next_n(&p, end);
+        if (!cp)
+            break;
+
+        if (cp == '\n')
         {
             if (x > best)
                 best = x;
             x = 0.0f;
             continue;
         }
-        if (ch == '\r')
+        if (cp == '\r')
             continue;
-        if (ch == '\t')
+        if (cp == '\t')
         {
-            x += adv * 4.0f;
+            x += f->line_h;
             continue;
         }
-        x += adv;
+
+        const ui_glyph_t *g = ui_font_get_glyph(&f->font, cp);
+        if (g)
+            x += g->xadvance;
     }
 
     if (x > best)
         best = x;
+    ui_gl_font_sync_texture(b, f);
     return (int)(best + 0.5f);
 }
 
 float ui_gl_backend_text_height(void *user, uint32_t font_id)
 {
     ui_gl_backend_t *b = (ui_gl_backend_t *)user;
-    const ui_gl_font_t *f = ui_gl_backend_get_font(b, font_id);
-    if (!f)
+    ui_gl_font_t *f = ui_gl_get_font(b, font_id);
+    if (!f || !f->used)
         return 0.0f;
-    return f->advance_y > 0.0f ? f->advance_y : (float)f->cell_h;
+    ui_gl_font_sync_texture(b, f);
+    return f->line_h;
 }
 
 int ui_gl_backend_init(ui_gl_backend_t *b, ui_realloc_fn rfn, void *ruser)
@@ -493,6 +652,21 @@ void ui_gl_backend_shutdown(ui_gl_backend_t *b)
 {
     ui_gl_flush(b);
 
+    uint32_t n = ui_array_count(&b->fonts);
+    for (uint32_t i = 0; i < n; ++i)
+    {
+        ui_gl_font_t *f = (ui_gl_font_t *)ui_array_at(&b->fonts, i);
+        if (f && f->used)
+        {
+            if (f->tex)
+            {
+                GLuint t = (GLuint)f->tex;
+                glDeleteTextures(1, &t);
+            }
+            ui_font_free(&f->font);
+        }
+    }
+
     if (b->white_tex)
         glDeleteTextures(1, &b->white_tex);
     if (b->vbo)
@@ -508,36 +682,10 @@ void ui_gl_backend_shutdown(ui_gl_backend_t *b)
     memset(b, 0, sizeof(*b));
 }
 
-int ui_gl_backend_set_font(ui_gl_backend_t *b, uint32_t font_id, ui_gl_font_t font)
+static uint32_t ui_gl_backend_upload_rgba_texture(int w, int h, const uint8_t *rgba)
 {
-    uint32_t need = font_id + 1;
-    if (!ui_array_reserve(&b->fonts, need))
+    if (w <= 0 || h <= 0 || !rgba)
         return 0;
-
-    while (ui_array_count(&b->fonts) < need)
-    {
-        ui_gl_font_t *f = (ui_gl_font_t *)ui_array_push(&b->fonts);
-        if (!f)
-            return 0;
-        memset(f, 0, sizeof(*f));
-    }
-
-    ui_gl_font_t *dst = (ui_gl_font_t *)ui_array_at(&b->fonts, font_id);
-    *dst = font;
-    if (dst->advance_x <= 0.0f)
-        dst->advance_x = (float)dst->cell_w;
-    if (dst->advance_y <= 0.0f)
-        dst->advance_y = (float)dst->cell_h;
-
-    return 1;
-}
-
-
-
-uint32_t ui_gl_backend_upload_rgba_texture(ui_gl_backend_t *b, int w, int h, const uint8_t *rgba)
-{
-    (void)b;
-    if (w <= 0 || h <= 0 || !rgba) return 0;
 
     GLuint tex = 0;
     glGenTextures(1, &tex);
@@ -554,52 +702,104 @@ uint32_t ui_gl_backend_upload_rgba_texture(ui_gl_backend_t *b, int w, int h, con
     return (uint32_t)tex;
 }
 
-static int ui_gl_backend_add_font_from_ui_font(ui_gl_backend_t *b, uint32_t font_id, const ui_font_t *f)
+static int ui_gl_backend_set_font(ui_gl_backend_t *b, uint32_t font_id, ui_gl_font_t font)
 {
-    if (!b || !f || !f->rgba) return 0;
+    uint32_t need = font_id + 1;
+    if (!ui_array_reserve(&b->fonts, need))
+        return 0;
 
-    uint32_t tex = ui_gl_backend_upload_rgba_texture(b, f->atlas_w, f->atlas_h, f->rgba);
-    if (!tex) return 0;
+    while (ui_array_count(&b->fonts) < need)
+    {
+        ui_gl_font_t *f = (ui_gl_font_t *)ui_array_push(&b->fonts);
+        if (!f)
+            return 0;
+        memset(f, 0, sizeof(*f));
+    }
+
+    ui_gl_font_t *dst = (ui_gl_font_t *)ui_array_at(&b->fonts, font_id);
+
+    if (dst->used)
+    {
+        if (dst->tex)
+        {
+            GLuint t = (GLuint)dst->tex;
+            glDeleteTextures(1, &t);
+        }
+        ui_font_free(&dst->font);
+        memset(dst, 0, sizeof(*dst));
+    }
+
+    *dst = font;
+    return 1;
+}
+int ui_gl_backend_add_font_from_ttf_file(ui_gl_backend_t *b, uint32_t font_id, const char *path, float px_height)
+{
+    if (!b || !path)
+        return 0;
+
+    ui_font_t f;
+    if (!ui_font_load_ttf_file(&f, b->rfn, b->ruser, path, px_height))
+        return 0;
+
+    ui_font_preload_common(&f);
+
+    uint32_t tex = ui_gl_backend_upload_rgba_texture(f.atlas_w, f.atlas_h, f.rgba);
+    if (!tex)
+    {
+        ui_font_free(&f);
+        return 0;
+    }
 
     ui_gl_font_t gf;
     memset(&gf, 0, sizeof(gf));
+    gf.used = 1;
     gf.tex = tex;
-    gf.cell_w = f->cell_w;
-    gf.cell_h = f->cell_h;
-    gf.cols = f->cols;
-    gf.rows = f->rows;
-    gf.first_char = f->first_char;
-    gf.char_count = f->char_count;
-    gf.advance_x = f->advance_x;
-    gf.advance_y = f->advance_y;
+    gf.tex_w = f.atlas_w;
+    gf.tex_h = f.atlas_h;
+    gf.font = f;
+
+    gf.ascent_px = (float)gf.font.ascent * gf.font.scale;
+    gf.line_h = (float)(gf.font.ascent - gf.font.descent + gf.font.linegap) * gf.font.scale;
+    if (gf.line_h < gf.font.px_height)
+        gf.line_h = gf.font.px_height;
+
+    b->cur_tex = b->white_tex;
 
     return ui_gl_backend_set_font(b, font_id, gf);
 }
 
-int ui_gl_backend_add_font_from_ttf_file(ui_gl_backend_t *b, uint32_t font_id, const char *path, float px_height, uint32_t first_char, uint32_t char_count)
+int ui_gl_backend_add_font_from_ttf_memory(ui_gl_backend_t *b, uint32_t font_id, const void *data, uint32_t size, float px_height)
 {
-    if (!b || !path) return 0;
-
-    ui_font_t f;
-    if (!ui_font_load_ttf_file(&f, b->rfn, b->ruser, path, px_height, first_char, char_count))
+    if (!b || !data || size == 0)
         return 0;
 
-    int ok = ui_gl_backend_add_font_from_ui_font(b, font_id, &f);
-
-    ui_font_free(&f);
-    return ok;
-}
-
-int ui_gl_backend_add_font_from_ttf_memory(ui_gl_backend_t *b, uint32_t font_id, const void *data, uint32_t size, float px_height, uint32_t first_char, uint32_t char_count)
-{
-    if (!b || !data || size == 0) return 0;
-
     ui_font_t f;
-    if (!ui_font_load_ttf_memory(&f, b->rfn, b->ruser, data, size, px_height, first_char, char_count))
+    if (!ui_font_load_ttf_memory(&f, b->rfn, b->ruser, data, size, px_height))
         return 0;
 
-    int ok = ui_gl_backend_add_font_from_ui_font(b, font_id, &f);
+    ui_font_preload_common(&f);
 
-    ui_font_free(&f);
-    return ok;
+    uint32_t tex = ui_gl_backend_upload_rgba_texture(f.atlas_w, f.atlas_h, f.rgba);
+    if (!tex)
+    {
+        ui_font_free(&f);
+        return 0;
+    }
+
+    ui_gl_font_t gf;
+    memset(&gf, 0, sizeof(gf));
+    gf.used = 1;
+    gf.tex = tex;
+    gf.tex_w = f.atlas_w;
+    gf.tex_h = f.atlas_h;
+    gf.font = f;
+
+    gf.ascent_px = (float)gf.font.ascent * gf.font.scale;
+    gf.line_h = (float)(gf.font.ascent - gf.font.descent + gf.font.linegap) * gf.font.scale;
+    if (gf.line_h < gf.font.px_height)
+        gf.line_h = gf.font.px_height;
+
+    b->cur_tex = b->white_tex;
+
+    return ui_gl_backend_set_font(b, font_id, gf);
 }

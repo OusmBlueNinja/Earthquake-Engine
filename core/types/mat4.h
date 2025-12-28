@@ -2,6 +2,7 @@
 #pragma once
 
 #include "vec3.h"
+#include "vec4.h"
 
 typedef struct
 {
@@ -20,3 +21,5 @@ mat4 mat4_lookat(vec3 eye, vec3 at, vec3 up);
 
 mat4 mat4_mul(mat4 a, mat4 b);
 mat4 mat4_inverse(mat4 m);
+
+vec4 mat4_mul_vec4(mat4 m, vec4 v);
