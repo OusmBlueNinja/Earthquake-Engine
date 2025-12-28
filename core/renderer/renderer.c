@@ -1865,10 +1865,25 @@ void R_resize(renderer_t *r, vec2i size)
         size.x = 1;
     if (size.y < 1)
         size.y = 1;
-    if (r->fb_size.x == size.x && r->fb_size.y == size.y)
-        return;
 
     r->fb_size = size;
+}
+
+void R_update_resize(renderer_t *r)
+{
+    if (!r)
+        return;
+
+    if (r->fb_size.x < 1)
+        r->fb_size.x = 1;
+    if (r->fb_size.y < 1)
+        r->fb_size.y = 1;
+
+    if (r->fb_size_last.x == r->fb_size.x && r->fb_size_last.y == r->fb_size.y)
+        return;
+
+    r->fb_size_last = r->fb_size;
+
     R_create_targets(r);
     bloom_ensure(r);
     ssr_ensure(r);
@@ -1885,6 +1900,8 @@ void R_begin_frame(renderer_t *r)
 {
     if (!r)
         return;
+
+    R_update_resize(r);
 
     vector_clear(&r->lights);
     vector_clear(&r->models);
@@ -1973,6 +1990,3 @@ const render_stats_t *R_get_stats(const renderer_t *r)
 {
     return &r->stats[r->stats_write ? 1u : 0u];
 }
-
-
-

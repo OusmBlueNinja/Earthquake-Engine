@@ -85,6 +85,7 @@ typedef struct renderer_t
     asset_manager_t *assets;
 
     vec2i fb_size;
+    vec2i fb_size_last;
     vec4 clear_color;
 
     renderer_cfg_t cfg;
