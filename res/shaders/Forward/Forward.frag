@@ -345,6 +345,20 @@ void main()
         return;
     }
 
+        if (mode == 5)
+    {
+        vec3 a = vec3(1.0);
+        if ((u_MaterialTexMask & (1 << 0)) != 0)
+        {
+            a = texture(u_AlbedoTex, uv).rgb;
+            if (u_ManualSRGB != 0)
+                a = srgb_to_linear(a);
+        }
+        o_Color = vec4(a, 1.0);
+        return;
+    }
+
+
     vec3 albedo = (u_HasMaterial != 0) ? u_Albedo : vec3(1.0);
     float roughness = (u_HasMaterial != 0) ? u_Roughness : 1.0;
     float metallic = (u_HasMaterial != 0) ? u_Metallic : 0.0;
