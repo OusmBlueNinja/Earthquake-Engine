@@ -284,6 +284,8 @@ void main()
         alpha = 1.0;
     }
 
+    int mode = dbg_mode();
+
     if (u_LodXFadeEnabled != 0)
     {
         float f = clamp(v.lodFade01, 0.0, 1.0);
@@ -292,20 +294,27 @@ void main()
         {
             float w = (u_LodXFadeMode == 0) ? (1.0 - f) : f;
             alpha = clamp(alpha * w, 0.0, 1.0);
+            if (mode == 6)
+            {
+                o_Color = vec4(vec3(w), 1.0);
+                return;
+            }
         }
         else
         {
-            float n = dither_noise(gl_FragCoord.xy);
-            if (u_LodXFadeMode == 0)
+            float w = (u_LodXFadeMode == 0) ? (1.0 - f) : f;
+            alpha = clamp(w, 0.0, 1.0);
+
+            bool would_discard = (alpha <= 0.0);
+            if (mode == 6)
             {
-                if (n < f)
-                    discard;
+                vec3 col = would_discard ? vec3(1.0, 0.0, f) : vec3(0.0, 1.0, f);
+                o_Color = vec4(col, 1.0);
+                return;
             }
-            else
-            {
-                if (n >= f)
-                    discard;
-            }
+
+            if (would_discard)
+                discard;
         }
     }
 
@@ -316,7 +325,7 @@ void main()
         N = normalize(TBN * Nts);
     }
 
-    int mode = dbg_mode();
+
 
     ivec2 tileXY = ivec2(int(gl_FragCoord.x) / max(u_TileSize, 1), int(gl_FragCoord.y) / max(u_TileSize, 1));
     tileXY.x = clamp(tileXY.x, 0, max(u_TileCountX - 1, 0));
@@ -357,11 +366,14 @@ void main()
 
     if (mode == 4)
     {
-        o_Color = vec4(1.0, 1.0, 1.0, alpha);
+        if (u_MatAlphaBlend != 0)
+            o_Color = vec4(vec3(alpha), alpha);
+        else
+            o_Color = vec4(1.0, 1.0, 1.0, alpha);
         return;
     }
 
-        if (mode == 5)
+    if (mode == 5)
     {
         vec3 a = vec3(1.0);
         if ((u_MaterialTexMask & (1 << 0)) != 0)
@@ -370,7 +382,10 @@ void main()
             if (u_ManualSRGB != 0)
                 a = srgb_to_linear(a);
         }
-        o_Color = vec4(a, 1.0);
+        if (u_MatAlphaBlend != 0)
+            o_Color = vec4(a * alpha, alpha);
+        else
+            o_Color = vec4(a, 1.0);
         return;
     }
 
@@ -385,6 +400,8 @@ void main()
         vec3 a = texture(u_AlbedoTex, uv).rgb;
         if (u_ManualSRGB != 0)
             a = srgb_to_linear(a);
+        if (u_MatAlphaBlend != 0)
+            a *= alpha_tex;
         albedo *= a;
     }
 
@@ -512,5 +529,8 @@ void main()
     if (mode == 2)
         mapped = mix(mapped, overlay2, overlay2_w);
 
-    o_Color = vec4(mapped, alpha);
+    if (u_MatAlphaBlend != 0)
+        o_Color = vec4(mapped * alpha, alpha);
+    else
+        o_Color = vec4(mapped, alpha);
 }

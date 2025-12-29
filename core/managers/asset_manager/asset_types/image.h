@@ -10,4 +10,5 @@ typedef struct asset_image_t
     uint32_t gl_handle;
     uint32_t is_float;
     uint32_t has_alpha;
+    uint32_t has_smooth_alpha;
 } asset_image_t;

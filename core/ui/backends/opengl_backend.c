@@ -703,9 +703,128 @@ static void ui_gl_draw_icon(ui_gl_backend_t *b, const ui_cmd_icon_t *ic)
     ui_gl_push_quad(b, px, py, w, h, g->u0, g->v0, g->u1, g->v1, ic->color);
 }
 
+static void ui_gl_save_state(ui_gl_backend_t *b)
+{
+    if (!b)
+        return;
+
+    b->saved.valid = 0;
+
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &b->saved.draw_fbo);
+    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &b->saved.read_fbo);
+
+    glGetIntegerv(GL_CURRENT_PROGRAM, &b->saved.program);
+    glGetIntegerv(GL_ACTIVE_TEXTURE, &b->saved.active_texture);
+
+    glActiveTexture(GL_TEXTURE0);
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &b->saved.texture_2d);
+
+    glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &b->saved.array_buffer);
+    glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &b->saved.element_array_buffer);
+    glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &b->saved.vertex_array);
+
+    glGetIntegerv(GL_VIEWPORT, b->saved.viewport);
+    glGetIntegerv(GL_SCISSOR_BOX, b->saved.scissor_box);
+
+    glGetIntegerv(GL_BLEND_SRC_RGB, &b->saved.blend_src_rgb);
+    glGetIntegerv(GL_BLEND_DST_RGB, &b->saved.blend_dst_rgb);
+    glGetIntegerv(GL_BLEND_SRC_ALPHA, &b->saved.blend_src_alpha);
+    glGetIntegerv(GL_BLEND_DST_ALPHA, &b->saved.blend_dst_alpha);
+    glGetIntegerv(GL_BLEND_EQUATION_RGB, &b->saved.blend_equation_rgb);
+    glGetIntegerv(GL_BLEND_EQUATION_ALPHA, &b->saved.blend_equation_alpha);
+
+    glGetIntegerv(GL_CULL_FACE_MODE, &b->saved.cull_face_mode);
+    glGetIntegerv(GL_FRONT_FACE, &b->saved.front_face);
+    glGetIntegerv(GL_POLYGON_MODE, b->saved.polygon_mode);
+
+    glGetBooleanv(GL_COLOR_WRITEMASK, b->saved.color_mask);
+    glGetBooleanv(GL_DEPTH_WRITEMASK, &b->saved.depth_mask);
+
+    b->saved.blend = glIsEnabled(GL_BLEND);
+    b->saved.depth_test = glIsEnabled(GL_DEPTH_TEST);
+    b->saved.cull_face = glIsEnabled(GL_CULL_FACE);
+    b->saved.scissor_test = glIsEnabled(GL_SCISSOR_TEST);
+    b->saved.multisample = glIsEnabled(GL_MULTISAMPLE);
+    b->saved.sample_alpha_to_coverage = glIsEnabled(GL_SAMPLE_ALPHA_TO_COVERAGE);
+    b->saved.sample_coverage = glIsEnabled(GL_SAMPLE_COVERAGE);
+
+    glActiveTexture((GLenum)b->saved.active_texture);
+
+    b->saved.valid = 1;
+}
+
+static void ui_gl_restore_state(ui_gl_backend_t *b)
+{
+    if (!b || !b->saved.valid)
+        return;
+
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)b->saved.draw_fbo);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, (GLuint)b->saved.read_fbo);
+
+    if (b->saved.blend)
+        glEnable(GL_BLEND);
+    else
+        glDisable(GL_BLEND);
+
+    if (b->saved.depth_test)
+        glEnable(GL_DEPTH_TEST);
+    else
+        glDisable(GL_DEPTH_TEST);
+
+    if (b->saved.cull_face)
+        glEnable(GL_CULL_FACE);
+    else
+        glDisable(GL_CULL_FACE);
+
+    if (b->saved.scissor_test)
+        glEnable(GL_SCISSOR_TEST);
+    else
+        glDisable(GL_SCISSOR_TEST);
+
+    if (b->saved.multisample)
+        glEnable(GL_MULTISAMPLE);
+    else
+        glDisable(GL_MULTISAMPLE);
+
+    if (b->saved.sample_alpha_to_coverage)
+        glEnable(GL_SAMPLE_ALPHA_TO_COVERAGE);
+    else
+        glDisable(GL_SAMPLE_ALPHA_TO_COVERAGE);
+
+    if (b->saved.sample_coverage)
+        glEnable(GL_SAMPLE_COVERAGE);
+    else
+        glDisable(GL_SAMPLE_COVERAGE);
+
+    glBlendEquationSeparate(b->saved.blend_equation_rgb, b->saved.blend_equation_alpha);
+    glBlendFuncSeparate(b->saved.blend_src_rgb, b->saved.blend_dst_rgb, b->saved.blend_src_alpha, b->saved.blend_dst_alpha);
+
+    glColorMask(b->saved.color_mask[0], b->saved.color_mask[1], b->saved.color_mask[2], b->saved.color_mask[3]);
+    glDepthMask(b->saved.depth_mask);
+
+    glCullFace(b->saved.cull_face_mode);
+    glFrontFace(b->saved.front_face);
+    glPolygonMode(GL_FRONT, b->saved.polygon_mode[0]);
+    glPolygonMode(GL_BACK, b->saved.polygon_mode[1]);
+
+    glViewport(b->saved.viewport[0], b->saved.viewport[1], b->saved.viewport[2], b->saved.viewport[3]);
+    glScissor(b->saved.scissor_box[0], b->saved.scissor_box[1], b->saved.scissor_box[2], b->saved.scissor_box[3]);
+
+    glUseProgram((GLuint)b->saved.program);
+    glBindVertexArray((GLuint)b->saved.vertex_array);
+    glBindBuffer(GL_ARRAY_BUFFER, (GLuint)b->saved.array_buffer);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, (GLuint)b->saved.element_array_buffer);
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, (GLuint)b->saved.texture_2d);
+    glActiveTexture((GLenum)b->saved.active_texture);
+}
+
 static void ui_gl_base_begin(ui_base_backend_t *base, int fb_w, int fb_h)
 {
     ui_gl_backend_t *b = (ui_gl_backend_t *)base->user;
+
+    ui_gl_save_state(b);
 
     b->fb_w = fb_w;
     b->fb_h = fb_h;
@@ -776,18 +895,8 @@ static void ui_gl_base_end(ui_base_backend_t *base)
 
     ui_gl_flush(b);
 
-    if (b->scissor_enabled)
-    {
-        glDisable(GL_SCISSOR_TEST);
-        b->scissor_enabled = 0;
-    }
-
-    glDisable(GL_BLEND);
-    glDisable(GL_MULTISAMPLE);
-    glDisable(GL_SAMPLE_ALPHA_TO_COVERAGE);
-    glDisable(GL_SAMPLE_COVERAGE);
-    glEnable(GL_DEPTH_TEST);
-    glEnable(GL_CULL_FACE);
+    b->scissor_enabled = 0;
+    ui_gl_restore_state(b);
 }
 
 ui_base_backend_t *ui_gl_backend_base(ui_gl_backend_t *b)

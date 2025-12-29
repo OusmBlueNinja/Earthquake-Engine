@@ -6,6 +6,7 @@ layout(location = 4) in vec4 a_I0;
 layout(location = 5) in vec4 a_I1;
 layout(location = 6) in vec4 a_I2;
 layout(location = 7) in vec4 a_I3;
+layout(location = 8) in float a_Fade01;
 
 uniform mat4 u_View;
 uniform mat4 u_Proj;
@@ -13,6 +14,7 @@ uniform mat4 u_Model;
 uniform int u_UseInstancing;
 
 out vec2 vUV;
+out float vFade01;
 
 
 mat4 getModel()
@@ -26,5 +28,6 @@ void main()
 {
     mat4 M = getModel();
     vUV = a_UV;
+    vFade01 = (u_UseInstancing != 0) ? a_Fade01 : 0.0;
     gl_Position = u_Proj * u_View * (M * vec4(a_Position, 1.0));
 };
