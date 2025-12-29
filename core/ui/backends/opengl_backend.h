@@ -41,6 +41,39 @@ typedef struct ui_gl_backend_t
     ui_vec4_t cur_clip;
     int scissor_enabled;
 
+    struct
+    {
+        GLint program;
+        GLint active_texture;
+        GLint texture_2d;
+        GLint array_buffer;
+        GLint element_array_buffer;
+        GLint vertex_array;
+        GLint viewport[4];
+        GLint scissor_box[4];
+        GLint blend_src_rgb;
+        GLint blend_dst_rgb;
+        GLint blend_src_alpha;
+        GLint blend_dst_alpha;
+        GLint blend_equation_rgb;
+        GLint blend_equation_alpha;
+        GLint cull_face_mode;
+        GLint front_face;
+        GLint polygon_mode[2];
+        GLint draw_fbo;
+        GLint read_fbo;
+        GLboolean color_mask[4];
+        GLboolean depth_mask;
+        GLboolean blend;
+        GLboolean depth_test;
+        GLboolean cull_face;
+        GLboolean scissor_test;
+        GLboolean multisample;
+        GLboolean sample_alpha_to_coverage;
+        GLboolean sample_coverage;
+        int valid;
+    } saved;
+
     ui_base_backend_t base;
 } ui_gl_backend_t;
 

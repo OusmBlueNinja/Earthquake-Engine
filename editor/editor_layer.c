@@ -12,6 +12,7 @@
 #include "ui/ui_widgets.h"
 #include "ui/ui_events.h"
 #include "ui/ui_window.h"
+#include "ui/ui_demo.h"
 #include "ui/backends/opengl_backend.h"
 
 #include "asset_manager/asset_manager.h"
@@ -51,6 +52,8 @@ typedef struct editor_layer_data_t
     int am_show_queues;
 
     int asset_slot_pick;
+
+    int show_ui_demo;
 } editor_layer_data_t;
 
 static editor_layer_data_t *layer_data(layer_t *layer)
@@ -426,6 +429,7 @@ void layer_init(layer_t *layer)
     d->am_show_queues = 1;
 
     d->asset_slot_pick = 0;
+    d->show_ui_demo = 1;
 
     ui_gl_backend_add_font_from_ttf_file(&d->glui, 0, "res/fonts/0xProtoNerdFontPropo-Regular.ttf", 16.0f);
 
@@ -480,8 +484,6 @@ void layer_update(layer_t *layer, float dt)
 
 void layer_post_update(layer_t *layer, float dt)
 {
-    (void)dt;
-
     editor_layer_data_t *d = layer_data(layer);
     if (!d || !d->inited)
         return;
@@ -503,6 +505,7 @@ void layer_post_update(layer_t *layer, float dt)
 
     editor_ui_flush_events(d);
 
+    ui_set_delta_time(&d->ui, dt);
     ui_begin(&d->ui, ui_v2i(fb.x, fb.y));
 
     ui_vec4_t dock = ui_v4(0.0f, 0.0f, (float)fb.x, (float)fb.y);
@@ -572,6 +575,13 @@ void layer_post_update(layer_t *layer, float dt)
         }
 
         ui_layout_row(&d->ui.layout, d->ui.style.line_h, 1, 0, d->ui.style.spacing);
+        {
+            int demo = d->show_ui_demo;
+            if (ui_checkbox(&d->ui, "Show UI Demo", 0, &demo))
+                d->show_ui_demo = demo;
+        }
+
+        ui_layout_row(&d->ui.layout, d->ui.style.line_h, 1, 0, d->ui.style.spacing);
         ui_separator(&d->ui);
 
         ui_layout_row(&d->ui.layout, d->ui.style.line_h * 0.9f, 1, 0, d->ui.style.spacing);
@@ -579,10 +589,6 @@ void layer_post_update(layer_t *layer, float dt)
 
         {
             int dbg = cvar_get_int_name("cl_render_debug");
-            if (dbg < 0)
-                dbg = 0;
-            if (dbg > 5)
-                dbg = 5;
 
             ui_layout_row(&d->ui.layout, d->ui.style.line_h, 1, 0, d->ui.style.spacing);
             if (ui_radio(&d->ui, "0 None", 0, &dbg, 0))
@@ -606,6 +612,10 @@ void layer_post_update(layer_t *layer, float dt)
 
             ui_layout_row(&d->ui.layout, d->ui.style.line_h, 1, 0, d->ui.style.spacing);
             if (ui_radio(&d->ui, "5 Albedo", 0, &dbg, 5))
+                cvar_set_int_name("cl_render_debug", dbg);
+
+            ui_layout_row(&d->ui.layout, d->ui.style.line_h, 1, 0, d->ui.style.spacing);
+            if (ui_radio(&d->ui, "6 LOD Dither", 0, &dbg, 6))
                 cvar_set_int_name("cl_render_debug", dbg);
         }
 
@@ -728,6 +738,9 @@ void layer_post_update(layer_t *layer, float dt)
         ui_window_set_next_pos(&d->ui, ui_v2(20.0f, 20.0f));
         ui_window_set_next_size(&d->ui, ui_v2(900.0f, 600.0f));
     }
+
+    if (d->show_ui_demo)
+        ui_render_demo_window(&d->ui);
 
     ui_vec2_t scene_target = ui_v2((float)fb.x, (float)fb.y);
 
@@ -888,6 +901,19 @@ bool layer_on_event(layer_t *layer, event_t *e)
 
     if (ue.type != UI_EV_NONE)
         editor_ui_queue_event(d, &ue);
+
+    const ui_io_t *io = ui_io(&d->ui);
+    if (!io)
+        return false;
+
+    int wants_mouse = io->want_capture_mouse || io->want_text_input;
+    int wants_keyboard = io->want_capture_keyboard || io->want_text_input;
+
+    if (e->type == EV_MOUSE_MOVE || e->type == EV_MOUSE_BUTTON_DOWN || e->type == EV_MOUSE_BUTTON_UP || e->type == EV_MOUSE_SCROLL)
+        return wants_mouse ? true : false;
+
+    if (e->type == EV_KEY_DOWN || e->type == EV_KEY_UP || e->type == EV_CHAR)
+        return wants_keyboard ? true : false;
 
     return false;
 }

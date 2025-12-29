@@ -730,6 +730,9 @@ static void mdl_vao_setup_model_vertex(void)
 
     glEnableVertexAttribArray(2);
     glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, (GLsizei)sizeof(model_vertex_t), (void *)offsetof(model_vertex_t, u));
+
+    glEnableVertexAttribArray(3);
+    glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, (GLsizei)sizeof(model_vertex_t), (void *)offsetof(model_vertex_t, tx));
 }
 
 typedef struct mdl_mtl_entry_t
@@ -1038,6 +1041,7 @@ static bool asset_model_init(asset_manager_t *am, asset_any_t *asset)
         memset(&gm, 0, sizeof(gm));
         gm.material = sm->material;
         gm.lods = vector_impl_create_vector(sizeof(mesh_lod_t));
+        mesh_set_local_aabb_from_cpu(&gm, sm);
 
         mesh_lod_t lod0;
         memset(&lod0, 0, sizeof(lod0));

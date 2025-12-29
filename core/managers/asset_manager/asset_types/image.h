@@ -9,4 +9,6 @@ typedef struct asset_image_t
     uint8_t *pixels;
     uint32_t gl_handle;
     uint32_t is_float;
+    uint32_t has_alpha;
+    uint32_t has_smooth_alpha;
 } asset_image_t;

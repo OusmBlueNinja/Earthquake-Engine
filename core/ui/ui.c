@@ -99,6 +99,13 @@ void ui_init(ui_ctx_t *ui, ui_realloc_fn rfn, void *ruser)
     ui->id_seed = 0xC001D00Du;
     ui->backend = 0;
 
+    ui->delta_time = 1.0f / 60.0f;
+    ui->prev_mouse = ui_v2(0.0f, 0.0f);
+    ui->scroll_delta = ui_v2(0.0f, 0.0f);
+    ui->scroll_used = 0;
+    ui->text_input_active = 0;
+    ui->window_accept_input = 1;
+
     ui->clip_top = 0;
     ui->id_top = 0;
 
@@ -117,6 +124,8 @@ void ui_init(ui_ctx_t *ui, ui_realloc_fn rfn, void *ruser)
     ui->win_drag_start_rect = ui_v4(0, 0, 0, 0);
 
     ui->char_count = 0;
+
+    ui->next_item_spacing = -1.0f;
 }
 
 void ui_shutdown(ui_ctx_t *ui)
@@ -137,6 +146,15 @@ void ui_input_mouse_btn(ui_ctx_t *ui, int button, int down)
     ui->mouse_down[button] = down ? 1 : 0;
 }
 
+void ui_set_delta_time(ui_ctx_t *ui, float dt)
+{
+    if (!ui)
+        return;
+    if (dt < 0.0f)
+        dt = 0.0f;
+    ui->delta_time = dt;
+}
+
 void ui_input_key(ui_ctx_t *ui, uint32_t key, int down, uint8_t repeat, uint8_t mods)
 {
     (void)repeat;
@@ -146,6 +164,8 @@ void ui_input_key(ui_ctx_t *ui, uint32_t key, int down, uint8_t repeat, uint8_t 
     if (key >= 512)
         return;
     ui->key_down[key] = down ? 1 : 0;
+    if (repeat && down)
+        ui->key_pressed_accum[key] = 1;
 }
 
 void ui_input_char(ui_ctx_t *ui, uint32_t codepoint)
@@ -168,6 +188,11 @@ void ui_on_event(ui_ctx_t *ui, const ui_event_t *e)
         ui_input_mouse_btn(ui, (int)e->button, 1);
     else if (e->type == UI_EV_MOUSE_BUTTON_UP)
         ui_input_mouse_btn(ui, (int)e->button, 0);
+    else if (e->type == UI_EV_MOUSE_SCROLL)
+    {
+        ui->scroll_delta.x += e->scroll.x;
+        ui->scroll_delta.y += e->scroll.y;
+    }
     else if (e->type == UI_EV_KEY_DOWN)
         ui_input_key(ui, e->key, 1, e->repeat, e->mods);
     else if (e->type == UI_EV_KEY_UP)
@@ -179,6 +204,12 @@ void ui_on_event(ui_ctx_t *ui, const ui_event_t *e)
 void ui_begin(ui_ctx_t *ui, ui_vec2i_t fb_size)
 {
     ui->fb_size = fb_size;
+    ui->scroll_used = 0;
+    ui->text_input_active = 0;
+    ui->window_accept_input = 1;
+
+    if (ui->prev_mouse.x == 0.0f && ui->prev_mouse.y == 0.0f)
+        ui->prev_mouse = ui->mouse;
 
     for (int i = 0; i < 8; ++i)
     {
@@ -187,14 +218,41 @@ void ui_begin(ui_ctx_t *ui, ui_vec2i_t fb_size)
         ui->mouse_prev[i] = ui->mouse_down[i];
     }
 
+    float dt = ui->delta_time;
+    ui->io.mouse_pos = ui->mouse;
+    ui->io.mouse_delta = ui_v2(ui->mouse.x - ui->prev_mouse.x, ui->mouse.y - ui->prev_mouse.y);
+    ui->prev_mouse = ui->mouse;
+
+    for (int i = 0; i < 8; ++i)
+    {
+        ui->io.mouse_down[i] = ui->mouse_down[i];
+        if (ui->mouse_down[i])
+            ui->io.mouse_down_duration[i] += dt;
+        else
+            ui->io.mouse_down_duration[i] = 0.0f;
+    }
+
     for (uint32_t k = 0; k < 512; ++k)
     {
         ui->key_pressed[k] = (ui->key_down[k] && !ui->key_prev[k]) ? 1 : 0;
         ui->key_released[k] = (!ui->key_down[k] && ui->key_prev[k]) ? 1 : 0;
         ui->key_prev[k] = ui->key_down[k];
+
+        if (ui->key_pressed_accum[k])
+        {
+            ui->key_pressed[k] = 1;
+            ui->key_pressed_accum[k] = 0;
+        }
+
+        ui->io.key_down[k] = ui->key_down[k];
+        if (ui->key_down[k])
+            ui->io.key_down_duration[k] += dt;
+        else
+            ui->io.key_down_duration[k] = 0.0f;
     }
 
-    ui->char_count = 0;
+    ui->io.mouse_scroll = ui->scroll_delta;
+    ui->scroll_delta = ui_v2(0.0f, 0.0f);
 
     ui->hot_id = 0;
     ui->id_top = 0;
@@ -210,14 +268,22 @@ void ui_begin(ui_ctx_t *ui, ui_vec2i_t fb_size)
 
     ui_layout_begin(&ui->layout, full, 0.0f);
     ui_layout_row(&ui->layout, ui->style.line_h, 1, 0, ui->style.spacing);
+
+    ui->next_item_w = 0.0f;
+    ui->next_item_h = 0.0f;
+    ui->next_item_spacing = -1.0f;
+    ui->next_same_line = 0;
 }
 
 void ui_end(ui_ctx_t *ui)
 {
     ui_window_end_frame(ui);
 
-    if (ui->active_id && ui->mouse_released[0])
-        ui->active_id = 0;
+    ui->io.want_capture_mouse = (ui->active_id != 0) || (ui_window_hovered_id(ui) != 0);
+    ui->io.want_capture_keyboard = (ui->active_id != 0);
+    ui->io.want_text_input = ui->text_input_active ? 1u : 0u;
+
+    ui->char_count = 0;
 }
 
 const ui_cmd_t *ui_commands(const ui_ctx_t *ui, uint32_t *out_count)
@@ -225,6 +291,11 @@ const ui_cmd_t *ui_commands(const ui_ctx_t *ui, uint32_t *out_count)
     if (out_count)
         *out_count = ui_cmd_count(&ui->stream);
     return ui_cmd_data(&ui->stream);
+}
+
+const ui_io_t *ui_io(const ui_ctx_t *ui)
+{
+    return ui ? &ui->io : 0;
 }
 
 void ui_push_clip(ui_ctx_t *ui, ui_vec4_t rect)
@@ -275,6 +346,48 @@ void ui_pop_id(ui_ctx_t *ui)
 uint32_t ui_id_str(ui_ctx_t *ui, const char *s) { return ui_make_id(ui, ui_hash_str(s)); }
 uint32_t ui_id_ptr(ui_ctx_t *ui, const void *p) { return ui_make_id(ui, ui_hash_ptr(p)); }
 uint32_t ui_id_u32(ui_ctx_t *ui, uint32_t v) { return ui_make_id(ui, v); }
+
+void ui_set_next_item_width(ui_ctx_t *ui, float width)
+{
+    if (!ui)
+        return;
+    ui->next_item_w = width;
+}
+
+void ui_set_next_item_height(ui_ctx_t *ui, float height)
+{
+    if (!ui)
+        return;
+    ui->next_item_h = height;
+}
+
+void ui_set_next_item_spacing(ui_ctx_t *ui, float spacing)
+{
+    if (!ui)
+        return;
+    ui->next_item_spacing = spacing;
+}
+
+void ui_same_line(ui_ctx_t *ui, float spacing)
+{
+    if (!ui)
+        return;
+    ui->next_same_line = 1;
+    if (spacing >= 0.0f)
+        ui->next_item_spacing = spacing;
+}
+
+void ui_new_line(ui_ctx_t *ui)
+{
+    if (!ui)
+        return;
+    float spacing = (ui->next_item_spacing >= 0.0f) ? ui->next_item_spacing : ui->style.spacing;
+    ui_layout_new_line(&ui->layout, spacing);
+    ui->next_item_w = 0.0f;
+    ui->next_item_h = 0.0f;
+    ui->next_item_spacing = -1.0f;
+    ui->next_same_line = 0;
+}
 
 void ui_row(ui_ctx_t *ui, float height, int cols, const float *widths)
 {

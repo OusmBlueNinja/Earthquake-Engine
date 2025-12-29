@@ -16,11 +16,10 @@ mat4 mat4_identity(void)
     mat4 r;
 
 #if MAT4_USE_SSE2
-    // column-major: each column is 4 floats contiguous
-    const __m128 c0 = _mm_set_ps(0.0f, 0.0f, 0.0f, 1.0f); // (1,0,0,0)
-    const __m128 c1 = _mm_set_ps(0.0f, 0.0f, 1.0f, 0.0f); // (0,1,0,0)
-    const __m128 c2 = _mm_set_ps(0.0f, 1.0f, 0.0f, 0.0f); // (0,0,1,0)
-    const __m128 c3 = _mm_set_ps(1.0f, 0.0f, 0.0f, 0.0f); // (0,0,0,1)
+    const __m128 c0 = _mm_set_ps(0.0f, 0.0f, 0.0f, 1.0f);
+    const __m128 c1 = _mm_set_ps(0.0f, 0.0f, 1.0f, 0.0f);
+    const __m128 c2 = _mm_set_ps(0.0f, 1.0f, 0.0f, 0.0f);
+    const __m128 c3 = _mm_set_ps(1.0f, 0.0f, 0.0f, 0.0f);
 
     _mm_storeu_ps(&r.m[0], c0);
     _mm_storeu_ps(&r.m[4], c1);
