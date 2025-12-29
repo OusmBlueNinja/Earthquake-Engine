@@ -522,6 +522,24 @@ static uint32_t R_resolve_image_gl(const renderer_t *r, ihandle_t h)
     return a->as.image.gl_handle;
 }
 
+static int R_resolve_image_has_alpha(const renderer_t *r, ihandle_t h)
+{
+    if (!r || !r->assets)
+        return 0;
+    if (!ihandle_is_valid(h))
+        return 0;
+
+    const asset_any_t *a = asset_manager_get_any(r->assets, h);
+    if (!a)
+        return 0;
+    if (a->type != ASSET_IMAGE)
+        return 0;
+    if (a->state != ASSET_STATE_READY)
+        return 0;
+
+    return a->as.image.has_alpha ? 1 : 0;
+}
+
 static asset_material_t *R_resolve_material(const renderer_t *r, ihandle_t h)
 {
     if (!r || !r->assets)
@@ -1058,6 +1076,15 @@ static void R_material_state(renderer_t *r,
         }
 
         albedo_tex = R_resolve_image_gl(r, mat->albedo_tex);
+
+        // Some assets mark alphaMode=BLEND even when the material is effectively opaque.
+        // Treat those as opaque to keep them in the depth-writing path and avoid "far over near" artifacts.
+        if (blend)
+        {
+            int tex_has_alpha = R_resolve_image_has_alpha(r, mat->albedo_tex);
+            int opacity_blend = (mat->opacity < 0.999f) ? 1 : 0;
+            blend = (opacity_blend || tex_has_alpha) ? 1 : 0;
+        }
     }
 
     if (out_cutout)
@@ -1715,6 +1742,8 @@ static void R_forward_draw_filtered(renderer_t *r, shader_t *fwd, int draw_blend
 
         R_mesh_bind_instance_attribs(r, lod->vao);
         R_apply_material_or_default(r, fwd, mat);
+        shader_set_int(fwd, "u_MatAlphaBlend", mat_blend ? 1 : 0);
+        shader_set_int(fwd, "u_MatAlphaCutout", mat_cutout ? 1 : 0);
         shader_set_float(fwd, "u_AlphaCutoff", mat_cutout ? alpha_cutoff : 0.0f);
 
         glBindVertexArray(lod->vao);
@@ -1782,6 +1811,8 @@ static void R_forward_draw_filtered(renderer_t *r, shader_t *fwd, int draw_blend
 
             R_mesh_bind_instance_attribs(r, lod->vao);
             R_apply_material_or_default(r, fwd, mat);
+            shader_set_int(fwd, "u_MatAlphaBlend", mat_blend ? 1 : 0);
+            shader_set_int(fwd, "u_MatAlphaCutout", mat_cutout ? 1 : 0);
             shader_set_float(fwd, "u_AlphaCutoff", mat_cutout ? alpha_cutoff : 0.0f);
 
             glBindVertexArray(lod->vao);

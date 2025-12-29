@@ -193,6 +193,7 @@ static bool asset_image_load_from_memory(const asset_image_mem_desc_t *src, asse
     out_asset->as.image.pixels = (uint8_t *)pixels;
     out_asset->as.image.gl_handle = 0;
     out_asset->as.image.is_float = is_float;
+    out_asset->as.image.has_alpha = 0;
 
     return true;
 }
@@ -271,6 +272,7 @@ static bool asset_image_load_from_file(const char *path, asset_any_t *out_asset)
     out_asset->as.image.pixels = (uint8_t *)pixels;
     out_asset->as.image.gl_handle = 0;
     out_asset->as.image.is_float = is_float;
+    out_asset->as.image.has_alpha = 0;
 
     return true;
 }
@@ -337,12 +339,14 @@ static bool asset_image_init(asset_manager_t *am, asset_any_t *asset)
         GLint internal = (img->channels == 4) ? GL_RGBA16F : (img->channels == 3 ? GL_RGB16F : GL_R16F);
 
         glTexImage2D(GL_TEXTURE_2D, 0, internal, (GLsizei)img->width, (GLsizei)img->height, 0, fmt, GL_FLOAT, (const void *)img->pixels);
+        img->has_alpha = 0;
     }
     else
     {
         int has_alpha = 0;
         if (img->channels == 4)
             has_alpha = rgba_has_any_alpha((const uint8_t *)img->pixels, img->width, img->height);
+        img->has_alpha = (uint32_t)(has_alpha ? 1 : 0);
 
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -390,6 +394,7 @@ static void asset_image_cleanup(asset_manager_t *am, asset_any_t *asset)
     img->height = 0;
     img->channels = 0;
     img->is_float = 0;
+    img->has_alpha = 0;
 }
 
 asset_module_desc_t asset_module_image(void)
