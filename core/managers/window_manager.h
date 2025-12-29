@@ -41,3 +41,5 @@ vec2i wm_get_framebuffer_size(window_manager *wm);
 void wm_bind_framebuffer(window_manager *wm, unsigned int framebuffer, vec2i fb_size);
 void wm_begin_frame(window_manager *wm);
 void wm_end_frame(window_manager *wm);
+
+GLFWwindow *wm_get_glfw_window(window_manager *wm);

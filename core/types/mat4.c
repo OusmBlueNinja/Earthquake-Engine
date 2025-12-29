@@ -1,5 +1,4 @@
 #include "mat4.h"
-
 #include <math.h>
 #include <string.h> // memcpy
 
@@ -379,5 +378,35 @@ mat4 mat4_inverse(mat4 m)
     return mat4_inverse_sse2(m);
 #else
     return mat4_inverse_scalar(m);
+#endif
+}
+vec4 mat4_mul_vec4(mat4 m, vec4 v)
+{
+#if MAT4_USE_SSE2
+    __m128 c0 = _mm_loadu_ps(&m.m[0]);
+    __m128 c1 = _mm_loadu_ps(&m.m[4]);
+    __m128 c2 = _mm_loadu_ps(&m.m[8]);
+    __m128 c3 = _mm_loadu_ps(&m.m[12]);
+
+    __m128 vx = _mm_set1_ps(v.x);
+    __m128 vy = _mm_set1_ps(v.y);
+    __m128 vz = _mm_set1_ps(v.z);
+    __m128 vw = _mm_set1_ps(v.w);
+
+    __m128 r = _mm_mul_ps(c0, vx);
+    r = _mm_add_ps(r, _mm_mul_ps(c1, vy));
+    r = _mm_add_ps(r, _mm_mul_ps(c2, vz));
+    r = _mm_add_ps(r, _mm_mul_ps(c3, vw));
+
+    vec4 out;
+    _mm_storeu_ps((float *)&out, r);
+    return out;
+#else
+    vec4 r;
+    r.x = m.m[0] * v.x + m.m[4] * v.y + m.m[8] * v.z + m.m[12] * v.w;
+    r.y = m.m[1] * v.x + m.m[5] * v.y + m.m[9] * v.z + m.m[13] * v.w;
+    r.z = m.m[2] * v.x + m.m[6] * v.y + m.m[10] * v.z + m.m[14] * v.w;
+    r.w = m.m[3] * v.x + m.m[7] * v.y + m.m[11] * v.z + m.m[15] * v.w;
+    return r;
 #endif
 }

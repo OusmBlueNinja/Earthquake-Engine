@@ -401,22 +401,6 @@ static void demo_layer_update(layer_t *layer, float dt)
 
     s->stats_accum += dt;
     s->stats_frame_id++;
-
-    if (s->stats_accum >= 0.5f)
-    {
-        const render_stats_t *st = R_get_stats(r);
-        if (st)
-        {
-            LOG_INFO("[RenderStats] draws=%llu tris=%llu inst_draws=%llu inst=%llu inst_tris=%llu",
-                     (unsigned long long)st->draw_calls,
-                     (unsigned long long)st->triangles,
-                     (unsigned long long)st->instanced_draw_calls,
-                     (unsigned long long)st->instances,
-                     (unsigned long long)st->instanced_triangles);
-        }
-
-        s->stats_accum = fmodf(s->stats_accum, 0.5f);
-    }
 }
 
 static void demo_layer_draw(layer_t *layer)
@@ -460,11 +444,12 @@ static void demo_layer_draw(layer_t *layer)
 
 layer_t create_demo_layer(void)
 {
-    layer_t layer = create_layer("Bistro");
+    layer_t layer = create_layer("Bistro Scene");
     layer.init = demo_layer_init;
     layer.shutdown = demo_layer_shutdown;
     layer.update = demo_layer_update;
     layer.draw = demo_layer_draw;
     layer.on_event = demo_layer_on_event;
+    // layer.flags |= LAYER_FLAG_HIDDEN_IN_TITLE;
     return layer;
 }

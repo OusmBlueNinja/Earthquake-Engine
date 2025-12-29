@@ -1,5 +1,6 @@
 #include "../core/core.h"
 #include "demo_layer.h"
+#include "editor_layer.h"
 
 int main(int argc, char **argv)
 {
@@ -10,6 +11,7 @@ int main(int argc, char **argv)
     specification.vsync = WM_VSYNC_OFF;
 
     Application *app = create_application(&specification);
+    push_layer(create_editor_layer());
 
     push_layer(create_demo_layer());
 

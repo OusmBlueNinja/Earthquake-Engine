@@ -57,3 +57,9 @@ void vector_impl_remove_at(vector_t *v, uint32_t index);
          ((it) = (type *)((uint8_t *)(v).data +    \
                           _i * (v).element_size)); \
          ++_i)
+
+#define VECTOR_FOR_EACH_INV(v, type, it)        \
+    for (uint32_t _i = (v).size;                \
+         _i-- > 0 &&                            \
+         ((it) = (type *)((uint8_t *)(v).data + \
+                          _i * (v).element_size));)
