@@ -24,6 +24,8 @@ void ui_layout_begin(ui_layout_t *l, ui_vec4_t body, float pad)
     l->max_y = l->cursor_y;
 
     l->last = ui_v4(l->body.x, l->body.y, 0.0f, 0.0f);
+    l->flow_line_max_h = 0.0f;
+    l->flow_line_started = 0;
 }
 
 void ui_layout_row(ui_layout_t *l, float height, int cols, const float *widths, float spacing)
@@ -68,6 +70,8 @@ void ui_layout_row(ui_layout_t *l, float height, int cols, const float *widths, 
             l->col_w[i] = auto_w;
 
     l->cursor_x = l->body.x;
+    l->flow_line_max_h = 0.0f;
+    l->flow_line_started = 0;
 }
 
 ui_vec4_t ui_layout_next(ui_layout_t *l, float spacing)
@@ -98,6 +102,71 @@ ui_vec4_t ui_layout_next(ui_layout_t *l, float spacing)
 
     l->max_y = ui_max2(l->max_y, r.y + r.w);
     return r;
+}
+
+ui_vec4_t ui_layout_next_flow(ui_layout_t *l, ui_vec2_t size, int same_line, float spacing)
+{
+    float use_spacing = spacing;
+    if (use_spacing < 0.0f)
+        use_spacing = l->row_spacing;
+    if (use_spacing < 0.0f)
+        use_spacing = 0.0f;
+
+    if (!same_line && l->flow_line_started)
+    {
+        l->cursor_x = l->body.x;
+        l->cursor_y += l->flow_line_max_h + use_spacing;
+        l->flow_line_max_h = 0.0f;
+        l->flow_line_started = 0;
+    }
+
+    float w = size.x;
+    if (w <= 0.0f)
+        w = l->body.z - (l->cursor_x - l->body.x);
+
+    float h = size.y;
+    if (h <= 0.0f)
+        h = l->row_h;
+
+    if (h < 0.0f)
+        h = 0.0f;
+
+    float max_w = l->body.x + l->body.z - l->cursor_x;
+    if (max_w < 0.0f)
+        max_w = 0.0f;
+    if (w > max_w)
+        w = max_w;
+
+    ui_vec4_t r = ui_v4(l->cursor_x, l->cursor_y, w, h);
+    l->last = r;
+
+    l->cursor_x += w + use_spacing;
+    if (h > l->flow_line_max_h)
+        l->flow_line_max_h = h;
+
+    float bottom = r.y + r.w;
+    if (bottom > l->max_y)
+        l->max_y = bottom;
+
+    l->flow_line_started = 1;
+    return r;
+}
+
+void ui_layout_new_line(ui_layout_t *l, float spacing)
+{
+    float use_spacing = spacing;
+    if (use_spacing < 0.0f)
+        use_spacing = l->row_spacing;
+    if (use_spacing < 0.0f)
+        use_spacing = 0.0f;
+
+    l->cursor_x = l->body.x;
+    l->cursor_y += l->flow_line_max_h + use_spacing;
+    l->flow_line_max_h = 0.0f;
+    l->flow_line_started = 0;
+    l->last = ui_v4(l->cursor_x, l->cursor_y, 0.0f, 0.0f);
+    if (l->cursor_y > l->max_y)
+        l->max_y = l->cursor_y;
 }
 
 ui_vec4_t ui_layout_peek_last(const ui_layout_t *l)

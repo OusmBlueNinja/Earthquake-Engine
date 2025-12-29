@@ -117,6 +117,8 @@ void ui_init(ui_ctx_t *ui, ui_realloc_fn rfn, void *ruser)
     ui->win_drag_start_rect = ui_v4(0, 0, 0, 0);
 
     ui->char_count = 0;
+
+    ui->next_item_spacing = -1.0f;
 }
 
 void ui_shutdown(ui_ctx_t *ui)
@@ -210,6 +212,11 @@ void ui_begin(ui_ctx_t *ui, ui_vec2i_t fb_size)
 
     ui_layout_begin(&ui->layout, full, 0.0f);
     ui_layout_row(&ui->layout, ui->style.line_h, 1, 0, ui->style.spacing);
+
+    ui->next_item_w = 0.0f;
+    ui->next_item_h = 0.0f;
+    ui->next_item_spacing = -1.0f;
+    ui->next_same_line = 0;
 }
 
 void ui_end(ui_ctx_t *ui)
@@ -275,6 +282,48 @@ void ui_pop_id(ui_ctx_t *ui)
 uint32_t ui_id_str(ui_ctx_t *ui, const char *s) { return ui_make_id(ui, ui_hash_str(s)); }
 uint32_t ui_id_ptr(ui_ctx_t *ui, const void *p) { return ui_make_id(ui, ui_hash_ptr(p)); }
 uint32_t ui_id_u32(ui_ctx_t *ui, uint32_t v) { return ui_make_id(ui, v); }
+
+void ui_set_next_item_width(ui_ctx_t *ui, float width)
+{
+    if (!ui)
+        return;
+    ui->next_item_w = width;
+}
+
+void ui_set_next_item_height(ui_ctx_t *ui, float height)
+{
+    if (!ui)
+        return;
+    ui->next_item_h = height;
+}
+
+void ui_set_next_item_spacing(ui_ctx_t *ui, float spacing)
+{
+    if (!ui)
+        return;
+    ui->next_item_spacing = spacing;
+}
+
+void ui_same_line(ui_ctx_t *ui, float spacing)
+{
+    if (!ui)
+        return;
+    ui->next_same_line = 1;
+    if (spacing >= 0.0f)
+        ui->next_item_spacing = spacing;
+}
+
+void ui_new_line(ui_ctx_t *ui)
+{
+    if (!ui)
+        return;
+    float spacing = (ui->next_item_spacing >= 0.0f) ? ui->next_item_spacing : ui->style.spacing;
+    ui_layout_new_line(&ui->layout, spacing);
+    ui->next_item_w = 0.0f;
+    ui->next_item_h = 0.0f;
+    ui->next_item_spacing = -1.0f;
+    ui->next_same_line = 0;
+}
 
 void ui_row(ui_ctx_t *ui, float height, int cols, const float *widths)
 {

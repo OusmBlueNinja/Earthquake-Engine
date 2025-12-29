@@ -103,6 +103,12 @@ typedef struct ui_ctx_t
     int win_drag_mode;
     ui_vec2_t win_drag_start_mouse;
     ui_vec4_t win_drag_start_rect;
+
+    /* imgui-style helpers */
+    float next_item_w;
+    float next_item_h;
+    float next_item_spacing;
+    uint8_t next_same_line;
 } ui_ctx_t;
 
 void ui_init(ui_ctx_t *ui, ui_realloc_fn rfn, void *ruser);
@@ -130,6 +136,12 @@ void ui_pop_id(ui_ctx_t *ui);
 uint32_t ui_id_str(ui_ctx_t *ui, const char *s);
 uint32_t ui_id_ptr(ui_ctx_t *ui, const void *p);
 uint32_t ui_id_u32(ui_ctx_t *ui, uint32_t v);
+
+void ui_set_next_item_width(ui_ctx_t *ui, float width);
+void ui_set_next_item_height(ui_ctx_t *ui, float height);
+void ui_set_next_item_spacing(ui_ctx_t *ui, float spacing);
+void ui_same_line(ui_ctx_t *ui, float spacing);
+void ui_new_line(ui_ctx_t *ui);
 
 void ui_begin_panel(ui_ctx_t *ui, ui_vec4_t rect);
 void ui_end_panel(ui_ctx_t *ui);

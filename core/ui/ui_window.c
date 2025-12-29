@@ -710,6 +710,16 @@ void ui_window_set_next_size(ui_ctx_t *ui, ui_vec2_t size)
     c->next_size = size;
 }
 
+void ui_set_next_window_pos(ui_ctx_t *ui, ui_vec2_t pos)
+{
+    ui_window_set_next_pos(ui, pos);
+}
+
+void ui_set_next_window_size(ui_ctx_t *ui, ui_vec2_t size)
+{
+    ui_window_set_next_size(ui, size);
+}
+
 int ui_window_begin(ui_ctx_t *ui, const char *title, ui_window_flags_t flags)
 {
     ui_win_ctx_t *c = uiw_ctx(ui);
@@ -987,6 +997,16 @@ void ui_window_end(ui_ctx_t *ui)
     c->cur_id = 0;
     c->cur_rect = ui_v4(0, 0, 0, 0);
     c->cur_flags = UI_WIN_NONE;
+}
+
+int ui_begin_window(ui_ctx_t *ui, const char *title, ui_window_flags_t flags)
+{
+    return ui_window_begin(ui, title, flags);
+}
+
+void ui_end_window(ui_ctx_t *ui)
+{
+    ui_window_end(ui);
 }
 
 ui_vec4_t ui_window_rect(ui_ctx_t *ui)

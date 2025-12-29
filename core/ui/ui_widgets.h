@@ -15,6 +15,7 @@ ui_widget_result_t ui_button_ex(ui_ctx_t *ui, uint32_t id, ui_vec4_t rect);
 
 int ui_button(ui_ctx_t *ui, const char *label, uint32_t font_id);
 void ui_label(ui_ctx_t *ui, const char *text, uint32_t font_id);
+void ui_text(ui_ctx_t *ui, const char *text, uint32_t font_id);
 
 int ui_checkbox(ui_ctx_t *ui, const char *label, uint32_t font_id, int *value);
 

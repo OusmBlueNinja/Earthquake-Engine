@@ -133,9 +133,51 @@ static ui_vec4_t uiw_last_item(ui_ctx_t *ui)
     return g_last_item_rects[s];
 }
 
+static void uiw_set_default_size(ui_ctx_t *ui, float w, float h)
+{
+    if (w > 0.0f && ui->next_item_w <= 0.0f)
+        ui->next_item_w = w;
+    if (h > 0.0f && ui->next_item_h <= 0.0f)
+        ui->next_item_h = h;
+}
+
+static float uiw_next_spacing(ui_ctx_t *ui)
+{
+    if (ui->next_item_spacing >= 0.0f)
+        return ui->next_item_spacing;
+    if (ui->layout.row_spacing > 0.0f)
+        return ui->layout.row_spacing;
+    return ui->style.spacing;
+}
+
 ui_vec4_t ui_next_rect(ui_ctx_t *ui)
 {
-    ui_vec4_t r = ui_layout_next(&ui->layout, ui->style.spacing);
+    float spacing = uiw_next_spacing(ui);
+    float w = ui->next_item_w;
+    float h = ui->next_item_h;
+    int same_line = ui->next_same_line ? 1 : 0;
+
+    ui->next_item_w = 0.0f;
+    ui->next_item_h = 0.0f;
+    ui->next_item_spacing = -1.0f;
+    ui->next_same_line = 0;
+
+    int use_grid = (ui->layout.cols > 1) || !same_line;
+
+    ui_vec4_t r;
+    if (use_grid)
+    {
+        r = ui_layout_next(&ui->layout, spacing);
+        if (w > 0.0f)
+            r.z = w;
+        if (h > 0.0f)
+            r.w = h;
+    }
+    else
+    {
+        r = ui_layout_next_flow(&ui->layout, ui_v2(w, h), same_line, spacing);
+    }
+
     uiw_set_last_item(ui, r);
     return r;
 }
@@ -337,6 +379,12 @@ ui_widget_result_t ui_button_ex(ui_ctx_t *ui, uint32_t id, ui_vec4_t rect)
 
 int ui_button(ui_ctx_t *ui, const char *label, uint32_t font_id)
 {
+    float th = ui_text_h(ui, font_id);
+    float tw = label ? (float)ui_text_w(ui, font_id, label) : 0.0f;
+    float pref_h = ui_maxf(ui->style.line_h, th + ui->style.padding);
+    float pref_w = label ? (tw + ui->style.padding * 2.0f) : (ui->style.line_h * 1.75f);
+    uiw_set_default_size(ui, pref_w, pref_h);
+
     ui_vec4_t r = ui_next_rect(ui);
     uint32_t id = ui_id_str(ui, label ? label : "##btn");
     ui_widget_result_t st = ui_button_ex(ui, id, r);
@@ -352,8 +400,6 @@ int ui_button(ui_ctx_t *ui, const char *label, uint32_t font_id)
 
     if (label)
     {
-        float th = ui_text_h(ui, font_id);
-        float tw = (float)ui_text_w(ui, font_id, label);
         float tx = r.x + (r.z - tw) * 0.5f;
         float ty = r.y + (r.w - th) * 0.5f;
         ui_draw_text(ui, ui_v2(tx, ty), ui->style.text, font_id, label);
@@ -364,14 +410,31 @@ int ui_button(ui_ctx_t *ui, const char *label, uint32_t font_id)
 
 void ui_label(ui_ctx_t *ui, const char *text, uint32_t font_id)
 {
-    ui_vec4_t r = ui_next_rect(ui);
+    const char *t = text ? text : "";
     float th = ui_text_h(ui, font_id);
+    float tw = (float)ui_text_w(ui, font_id, t);
+    uiw_set_default_size(ui, tw + ui->style.padding * 2.0f, ui_maxf(ui->style.line_h, th + ui->style.padding * 0.5f));
+
+    ui_vec4_t r = ui_next_rect(ui);
     float ty = r.y + (r.w - th) * 0.5f;
-    ui_draw_text(ui, ui_v2(r.x + ui->style.padding, ty), ui->style.text, font_id, text ? text : "");
+    ui_draw_text(ui, ui_v2(r.x + ui->style.padding, ty), ui->style.text, font_id, t);
+}
+
+void ui_text(ui_ctx_t *ui, const char *text, uint32_t font_id)
+{
+    ui_label(ui, text, font_id);
 }
 
 int ui_checkbox(ui_ctx_t *ui, const char *label, uint32_t font_id, int *value)
 {
+    float th = ui_text_h(ui, font_id);
+    float box_h = ui_maxf(ui->style.line_h * 0.6f, th);
+    float pref_h = ui_maxf(ui->style.line_h, box_h + ui->style.padding);
+    float pref_w = box_h + ui->style.padding * 2.0f;
+    if (label)
+        pref_w += (float)ui_text_w(ui, font_id, label) + ui->style.padding;
+    uiw_set_default_size(ui, pref_w, pref_h);
+
     ui_vec4_t r = ui_next_rect(ui);
     uint32_t id = ui_id_str(ui, label ? label : "##chk");
     ui_widget_result_t st = ui_button_ex(ui, id, r);
@@ -544,6 +607,14 @@ int ui_toggle(ui_ctx_t *ui, const char *label, uint32_t font_id, int *value)
 
 int ui_radio(ui_ctx_t *ui, const char *label, uint32_t font_id, int *value, int my_value)
 {
+    float th = ui_text_h(ui, font_id);
+    float dot_sz = ui_maxf(ui->style.line_h * 0.5f, th);
+    float pref_h = ui_maxf(ui->style.line_h, dot_sz + ui->style.padding);
+    float pref_w = dot_sz + ui->style.padding * 2.0f;
+    if (label)
+        pref_w += (float)ui_text_w(ui, font_id, label) + ui->style.padding;
+    uiw_set_default_size(ui, pref_w, pref_h);
+
     ui_vec4_t r = ui_next_rect(ui);
     uint32_t id = ui_id_str(ui, label ? label : "##radio");
     ui_widget_result_t st = ui_button_ex(ui, id, r);
@@ -590,6 +661,7 @@ int ui_radio(ui_ctx_t *ui, const char *label, uint32_t font_id, int *value, int 
 
 void ui_progress_bar(ui_ctx_t *ui, float t01, const char *label, uint32_t font_id)
 {
+    uiw_set_default_size(ui, 0.0f, ui->style.line_h);
     ui_vec4_t r = ui_next_rect(ui);
     t01 = ui_clampf(t01, 0.0f, 1.0f);
 
@@ -611,6 +683,7 @@ void ui_progress_bar(ui_ctx_t *ui, float t01, const char *label, uint32_t font_i
 
 void ui_separator(ui_ctx_t *ui)
 {
+    uiw_set_default_size(ui, 0.0f, ui->style.line_h * 0.35f);
     ui_vec4_t r = ui_next_rect(ui);
     float t = uiw_outline_th(ui);
     float y = r.y + r.w * 0.5f - t * 0.5f;
@@ -619,6 +692,7 @@ void ui_separator(ui_ctx_t *ui)
 
 void ui_separator_text(ui_ctx_t *ui, const char *text, uint32_t font_id)
 {
+    uiw_set_default_size(ui, 0.0f, ui->style.line_h);
     ui_vec4_t r = ui_next_rect(ui);
 
     float th = ui_text_h(ui, font_id);
@@ -649,6 +723,7 @@ void ui_separator_text(ui_ctx_t *ui, const char *text, uint32_t font_id)
 
 int ui_input_text(ui_ctx_t *ui, const char *label, uint32_t font_id, char *buf, int buf_cap)
 {
+    uiw_set_default_size(ui, 0.0f, ui->style.line_h);
     ui_vec4_t r = ui_next_rect(ui);
     uint32_t id = ui_id_str(ui, label ? label : "##input");
     uiw_input_state_t *st = uiw_input_get(id);
