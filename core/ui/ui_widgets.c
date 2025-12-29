@@ -3,22 +3,22 @@
 #include <stdio.h>
 
 #ifndef UI_KEY_BACKSPACE
-#define UI_KEY_BACKSPACE 8
+#define UI_KEY_BACKSPACE 259 /* GLFW_KEY_BACKSPACE */
 #endif
 #ifndef UI_KEY_DELETE
-#define UI_KEY_DELETE 127
+#define UI_KEY_DELETE 261 /* GLFW_KEY_DELETE */
 #endif
 #ifndef UI_KEY_LEFT
-#define UI_KEY_LEFT 256
+#define UI_KEY_LEFT 263 /* GLFW_KEY_LEFT */
 #endif
 #ifndef UI_KEY_RIGHT
-#define UI_KEY_RIGHT 257
+#define UI_KEY_RIGHT 262 /* GLFW_KEY_RIGHT */
 #endif
 #ifndef UI_KEY_ENTER
-#define UI_KEY_ENTER 13
+#define UI_KEY_ENTER 257 /* GLFW_KEY_ENTER */
 #endif
 #ifndef UI_KEY_ESCAPE
-#define UI_KEY_ESCAPE 27
+#define UI_KEY_ESCAPE 256 /* GLFW_KEY_ESCAPE */
 #endif
 
 typedef struct uiw_kv_i_t
@@ -36,42 +36,55 @@ typedef struct uiw_input_state_t
     int sel1_byte;
 } uiw_input_state_t;
 
-typedef struct uiw_popup_state_t
-{
-    ui_ctx_t *ui;
-    uint32_t open_id;
-    uint32_t active_id;
-    uint8_t open;
-    ui_vec4_t rect;
-} uiw_popup_state_t;
-
 typedef struct uiw_child_state_t
 {
     uint32_t id;
-    float scroll_y;
-    float content_h_last;
-    uint8_t has_scroll;
-
-    uint8_t scroll_drag;
-    float scroll_drag_y0;
-    float scroll_drag_scroll0;
-
     ui_vec4_t rect;
     ui_vec4_t content_rect;
-
-    ui_layout_t saved_layout;
+    float content_h_last;
+    float scroll_y;
+    float scroll_drag_y0;
+    float scroll_drag_scroll0;
     float saved_layout_scroll_y;
+    uint8_t has_scroll;
+    uint8_t scroll_drag;
+    ui_layout_t saved_layout;
 } uiw_child_state_t;
 
-static uiw_kv_i_t g_open_headers[256];
-static uiw_input_state_t g_inputs[64];
-static uiw_popup_state_t g_popups[8];
+typedef struct uiw_ctx_state_t
+{
+    ui_ctx_t *ui;
+    ui_vec4_t last_item_rect;
+    uiw_kv_i_t open_headers[256];
+    uiw_input_state_t inputs[64];
+    uiw_child_state_t child_stack[32];
+    int child_top;
+} uiw_ctx_state_t;
 
-static uiw_child_state_t g_child_stack[32];
-static int g_child_top = 0;
+static uiw_ctx_state_t g_widget_states[8];
 
-static ui_vec4_t g_last_item_rects[8];
-static ui_ctx_t *g_last_item_uis[8];
+static uiw_ctx_state_t *uiw_state(ui_ctx_t *ui)
+{
+    for (int i = 0; i < 8; ++i)
+        if (g_widget_states[i].ui == ui)
+            return &g_widget_states[i];
+
+    for (int i = 0; i < 8; ++i)
+        if (!g_widget_states[i].ui)
+        {
+            memset(&g_widget_states[i], 0, sizeof(g_widget_states[i]));
+            g_widget_states[i].ui = ui;
+            return &g_widget_states[i];
+        }
+
+    uiw_ctx_state_t *fallback = &g_widget_states[0];
+    if (fallback->ui != ui)
+    {
+        memset(fallback, 0, sizeof(*fallback));
+        fallback->ui = ui;
+    }
+    return fallback;
+}
 
 static int ui_text_w(ui_ctx_t *ui, uint32_t font_id, const char *text)
 {
@@ -106,36 +119,63 @@ static void uiw_draw_outline(ui_ctx_t *ui, ui_vec4_t r, float radius)
     ui_draw_rect(ui, r, ui->style.outline, radius, t);
 }
 
-static int uiw_ctx_slot(ui_ctx_t *ui)
-{
-    for (int i = 0; i < 8; ++i)
-        if (g_last_item_uis[i] == ui)
-            return i;
-    for (int i = 0; i < 8; ++i)
-        if (!g_last_item_uis[i])
-        {
-            g_last_item_uis[i] = ui;
-            g_last_item_rects[i] = ui_v4(0, 0, 0, 0);
-            return i;
-        }
-    return 0;
-}
-
 static void uiw_set_last_item(ui_ctx_t *ui, ui_vec4_t r)
 {
-    int s = uiw_ctx_slot(ui);
-    g_last_item_rects[s] = r;
+    uiw_ctx_state_t *ws = uiw_state(ui);
+    ws->last_item_rect = r;
 }
 
 static ui_vec4_t uiw_last_item(ui_ctx_t *ui)
 {
-    int s = uiw_ctx_slot(ui);
-    return g_last_item_rects[s];
+    uiw_ctx_state_t *ws = uiw_state(ui);
+    return ws->last_item_rect;
+}
+
+static void uiw_set_default_size(ui_ctx_t *ui, float w, float h)
+{
+    if (w > 0.0f && ui->next_item_w <= 0.0f)
+        ui->next_item_w = w;
+    if (h > 0.0f && ui->next_item_h <= 0.0f)
+        ui->next_item_h = h;
+}
+
+static float uiw_next_spacing(ui_ctx_t *ui)
+{
+    if (ui->next_item_spacing >= 0.0f)
+        return ui->next_item_spacing;
+    if (ui->layout.row_spacing > 0.0f)
+        return ui->layout.row_spacing;
+    return ui->style.spacing;
 }
 
 ui_vec4_t ui_next_rect(ui_ctx_t *ui)
 {
-    ui_vec4_t r = ui_layout_next(&ui->layout, ui->style.spacing);
+    float spacing = uiw_next_spacing(ui);
+    float w = ui->next_item_w;
+    float h = ui->next_item_h;
+    int same_line = ui->next_same_line ? 1 : 0;
+
+    ui->next_item_w = 0.0f;
+    ui->next_item_h = 0.0f;
+    ui->next_item_spacing = -1.0f;
+    ui->next_same_line = 0;
+
+    int use_grid = (ui->layout.cols > 1) || !same_line;
+
+    ui_vec4_t r;
+    if (use_grid)
+    {
+        r = ui_layout_next(&ui->layout, spacing);
+        if (w > 0.0f)
+            r.z = w;
+        if (h > 0.0f)
+            r.w = h;
+    }
+    else
+    {
+        r = ui_layout_next_flow(&ui->layout, ui_v2(w, h), same_line, spacing);
+    }
+
     uiw_set_last_item(ui, r);
     return r;
 }
@@ -187,23 +227,25 @@ static void uiw_kv_set_i(uiw_kv_i_t *tab, int cap, uint32_t k, int v)
     tab[0].v = v;
 }
 
-static uiw_input_state_t *uiw_input_get(uint32_t id)
+static uiw_input_state_t *uiw_input_get(ui_ctx_t *ui, uint32_t id)
 {
-    for (int i = 0; i < 64; ++i)
-        if (g_inputs[i].id == id)
-            return &g_inputs[i];
+    uiw_ctx_state_t *ws = uiw_state(ui);
 
     for (int i = 0; i < 64; ++i)
-        if (g_inputs[i].id == 0)
+        if (ws->inputs[i].id == id)
+            return &ws->inputs[i];
+
+    for (int i = 0; i < 64; ++i)
+        if (ws->inputs[i].id == 0)
         {
-            g_inputs[i].id = id;
-            g_inputs[i].cursor_byte = 0;
-            g_inputs[i].sel0_byte = 0;
-            g_inputs[i].sel1_byte = 0;
-            return &g_inputs[i];
+            ws->inputs[i].id = id;
+            ws->inputs[i].cursor_byte = 0;
+            ws->inputs[i].sel0_byte = 0;
+            ws->inputs[i].sel1_byte = 0;
+            return &ws->inputs[i];
         }
 
-    return &g_inputs[0];
+    return &ws->inputs[0];
 }
 
 static int uiw_strlen(const char *s)
@@ -304,7 +346,7 @@ ui_widget_result_t ui_button_ex(ui_ctx_t *ui, uint32_t id, ui_vec4_t rect)
     ui_widget_result_t r;
     memset(&r, 0, sizeof(r));
 
-    int hovered = ui_pt_in_rect(ui->mouse, rect) ? 1 : 0;
+    int hovered = (ui->window_accept_input && ui_pt_in_rect(ui->mouse, rect)) ? 1 : 0;
     r.hovered = (uint8_t)hovered;
 
     if (hovered)
@@ -337,6 +379,12 @@ ui_widget_result_t ui_button_ex(ui_ctx_t *ui, uint32_t id, ui_vec4_t rect)
 
 int ui_button(ui_ctx_t *ui, const char *label, uint32_t font_id)
 {
+    float th = ui_text_h(ui, font_id);
+    float tw = label ? (float)ui_text_w(ui, font_id, label) : 0.0f;
+    float pref_h = ui_maxf(ui->style.line_h, th + ui->style.padding);
+    float pref_w = label ? (tw + ui->style.padding * 2.0f) : (ui->style.line_h * 1.75f);
+    uiw_set_default_size(ui, pref_w, pref_h);
+
     ui_vec4_t r = ui_next_rect(ui);
     uint32_t id = ui_id_str(ui, label ? label : "##btn");
     ui_widget_result_t st = ui_button_ex(ui, id, r);
@@ -352,8 +400,6 @@ int ui_button(ui_ctx_t *ui, const char *label, uint32_t font_id)
 
     if (label)
     {
-        float th = ui_text_h(ui, font_id);
-        float tw = (float)ui_text_w(ui, font_id, label);
         float tx = r.x + (r.z - tw) * 0.5f;
         float ty = r.y + (r.w - th) * 0.5f;
         ui_draw_text(ui, ui_v2(tx, ty), ui->style.text, font_id, label);
@@ -364,14 +410,31 @@ int ui_button(ui_ctx_t *ui, const char *label, uint32_t font_id)
 
 void ui_label(ui_ctx_t *ui, const char *text, uint32_t font_id)
 {
-    ui_vec4_t r = ui_next_rect(ui);
+    const char *t = text ? text : "";
     float th = ui_text_h(ui, font_id);
+    float tw = (float)ui_text_w(ui, font_id, t);
+    uiw_set_default_size(ui, tw + ui->style.padding * 2.0f, ui_maxf(ui->style.line_h, th + ui->style.padding * 0.5f));
+
+    ui_vec4_t r = ui_next_rect(ui);
     float ty = r.y + (r.w - th) * 0.5f;
-    ui_draw_text(ui, ui_v2(r.x + ui->style.padding, ty), ui->style.text, font_id, text ? text : "");
+    ui_draw_text(ui, ui_v2(r.x + ui->style.padding, ty), ui->style.text, font_id, t);
+}
+
+void ui_text(ui_ctx_t *ui, const char *text, uint32_t font_id)
+{
+    ui_label(ui, text, font_id);
 }
 
 int ui_checkbox(ui_ctx_t *ui, const char *label, uint32_t font_id, int *value)
 {
+    float th = ui_text_h(ui, font_id);
+    float box_h = ui_maxf(ui->style.line_h * 0.6f, th);
+    float pref_h = ui_maxf(ui->style.line_h, box_h + ui->style.padding);
+    float pref_w = box_h + ui->style.padding * 2.0f;
+    if (label)
+        pref_w += (float)ui_text_w(ui, font_id, label) + ui->style.padding;
+    uiw_set_default_size(ui, pref_w, pref_h);
+
     ui_vec4_t r = ui_next_rect(ui);
     uint32_t id = ui_id_str(ui, label ? label : "##chk");
     ui_widget_result_t st = ui_button_ex(ui, id, r);
@@ -420,7 +483,7 @@ int ui_checkbox(ui_ctx_t *ui, const char *label, uint32_t font_id, int *value)
 
 static float uiw_slider_do(ui_ctx_t *ui, uint32_t id, ui_vec4_t r, float t01)
 {
-    int hovered = ui_pt_in_rect(ui->mouse, r) ? 1 : 0;
+    int hovered = (ui->window_accept_input && ui_pt_in_rect(ui->mouse, r)) ? 1 : 0;
     if (hovered)
         ui->hot_id = id;
 
@@ -468,6 +531,120 @@ static float uiw_slider_do(ui_ctx_t *ui, uint32_t id, ui_vec4_t r, float t01)
 
     uiw_set_last_item(ui, r);
     return t01;
+}
+
+static void uiw_draw_drag_bar(ui_ctx_t *ui, ui_vec4_t r, float t01)
+{
+    ui_color_t bg = ui->style.btn;
+    ui_draw_rect(ui, r, bg, ui->style.corner, 0.0f);
+    uiw_draw_outline(ui, r, ui->style.corner);
+
+    float fillw = r.z * t01;
+    if (fillw < 0.0f)
+        fillw = 0.0f;
+    if (fillw > r.z)
+        fillw = r.z;
+
+    ui_vec4_t fill = ui_v4(r.x, r.y, fillw, r.w);
+    ui_draw_rect(ui, fill, ui->style.accent_dim.a > 0.001f ? ui->style.accent_dim : ui_color(ui->style.accent.rgb, 0.22f), ui->style.corner, 0.0f);
+}
+
+int ui_drag_float(ui_ctx_t *ui, const char *label, uint32_t font_id, float *value, float speed, float minv, float maxv)
+{
+    uiw_set_default_size(ui, 0.0f, ui->style.line_h);
+    ui_vec4_t r = ui_next_rect(ui);
+    uint32_t id = ui_id_str(ui, label ? label : "##dragf");
+
+    float v = value ? *value : 0.0f;
+    ui_widget_result_t st = ui_button_ex(ui, id, r);
+    (void)st;
+
+    int changed = 0;
+    if (ui->active_id == id && ui->mouse_down[0])
+    {
+        float delta = ui->io.mouse_delta.x * speed;
+        if (delta != 0.0f)
+        {
+            v += delta;
+            if (maxv > minv)
+            {
+                if (v < minv) v = minv;
+                if (v > maxv) v = maxv;
+            }
+            changed = 1;
+        }
+    }
+
+    if (value && changed)
+        *value = v;
+
+    float t01 = 0.0f;
+    if (maxv > minv)
+        t01 = (v - minv) / (maxv - minv);
+    t01 = ui_clampf(t01, 0.0f, 1.0f);
+
+    uiw_draw_drag_bar(ui, r, t01);
+
+    if (label)
+    {
+        char buf[96];
+        snprintf(buf, sizeof(buf), "%s: %.3f", label, (double)v);
+        float th = ui_text_h(ui, font_id);
+        float ty = r.y + (r.w - th) * 0.5f;
+        ui_draw_text(ui, ui_v2(r.x + ui->style.padding, ty), ui->style.text, font_id, buf);
+    }
+
+    uiw_set_last_item(ui, r);
+    return changed;
+}
+
+int ui_drag_int(ui_ctx_t *ui, const char *label, uint32_t font_id, int *value, int speed, int minv, int maxv)
+{
+    uiw_set_default_size(ui, 0.0f, ui->style.line_h);
+    ui_vec4_t r = ui_next_rect(ui);
+    uint32_t id = ui_id_str(ui, label ? label : "##dragi");
+
+    int v = value ? *value : 0;
+    ui_widget_result_t st = ui_button_ex(ui, id, r);
+    (void)st;
+
+    int changed = 0;
+    if (ui->active_id == id && ui->mouse_down[0])
+    {
+        float delta = ui->io.mouse_delta.x * (float)speed;
+        if (delta != 0.0f)
+        {
+            v += (int)(delta + (delta > 0.0f ? 0.5f : -0.5f));
+            if (maxv > minv)
+            {
+                if (v < minv) v = minv;
+                if (v > maxv) v = maxv;
+            }
+            changed = 1;
+        }
+    }
+
+    if (value && changed)
+        *value = v;
+
+    float t01 = 0.0f;
+    if (maxv > minv)
+        t01 = ((float)(v - minv)) / ((float)(maxv - minv));
+    t01 = ui_clampf(t01, 0.0f, 1.0f);
+
+    uiw_draw_drag_bar(ui, r, t01);
+
+    if (label)
+    {
+        char buf[96];
+        snprintf(buf, sizeof(buf), "%s: %d", label, v);
+        float th = ui_text_h(ui, font_id);
+        float ty = r.y + (r.w - th) * 0.5f;
+        ui_draw_text(ui, ui_v2(r.x + ui->style.padding, ty), ui->style.text, font_id, buf);
+    }
+
+    uiw_set_last_item(ui, r);
+    return changed;
 }
 
 int ui_slider_float(ui_ctx_t *ui, const char *label, uint32_t font_id, float *value, float minv, float maxv)
@@ -544,6 +721,14 @@ int ui_toggle(ui_ctx_t *ui, const char *label, uint32_t font_id, int *value)
 
 int ui_radio(ui_ctx_t *ui, const char *label, uint32_t font_id, int *value, int my_value)
 {
+    float th = ui_text_h(ui, font_id);
+    float dot_sz = ui_maxf(ui->style.line_h * 0.5f, th);
+    float pref_h = ui_maxf(ui->style.line_h, dot_sz + ui->style.padding);
+    float pref_w = dot_sz + ui->style.padding * 2.0f;
+    if (label)
+        pref_w += (float)ui_text_w(ui, font_id, label) + ui->style.padding;
+    uiw_set_default_size(ui, pref_w, pref_h);
+
     ui_vec4_t r = ui_next_rect(ui);
     uint32_t id = ui_id_str(ui, label ? label : "##radio");
     ui_widget_result_t st = ui_button_ex(ui, id, r);
@@ -590,6 +775,7 @@ int ui_radio(ui_ctx_t *ui, const char *label, uint32_t font_id, int *value, int 
 
 void ui_progress_bar(ui_ctx_t *ui, float t01, const char *label, uint32_t font_id)
 {
+    uiw_set_default_size(ui, 0.0f, ui->style.line_h);
     ui_vec4_t r = ui_next_rect(ui);
     t01 = ui_clampf(t01, 0.0f, 1.0f);
 
@@ -611,6 +797,7 @@ void ui_progress_bar(ui_ctx_t *ui, float t01, const char *label, uint32_t font_i
 
 void ui_separator(ui_ctx_t *ui)
 {
+    uiw_set_default_size(ui, 0.0f, ui->style.line_h * 0.35f);
     ui_vec4_t r = ui_next_rect(ui);
     float t = uiw_outline_th(ui);
     float y = r.y + r.w * 0.5f - t * 0.5f;
@@ -619,6 +806,7 @@ void ui_separator(ui_ctx_t *ui)
 
 void ui_separator_text(ui_ctx_t *ui, const char *text, uint32_t font_id)
 {
+    uiw_set_default_size(ui, 0.0f, ui->style.line_h);
     ui_vec4_t r = ui_next_rect(ui);
 
     float th = ui_text_h(ui, font_id);
@@ -649,11 +837,12 @@ void ui_separator_text(ui_ctx_t *ui, const char *text, uint32_t font_id)
 
 int ui_input_text(ui_ctx_t *ui, const char *label, uint32_t font_id, char *buf, int buf_cap)
 {
+    uiw_set_default_size(ui, 0.0f, ui->style.line_h);
     ui_vec4_t r = ui_next_rect(ui);
     uint32_t id = ui_id_str(ui, label ? label : "##input");
-    uiw_input_state_t *st = uiw_input_get(id);
+    uiw_input_state_t *st = uiw_input_get(ui, id);
 
-    int inside = ui_pt_in_rect(ui->mouse, r);
+    int inside = (ui->window_accept_input && ui_pt_in_rect(ui->mouse, r)) ? 1 : 0;
     if (inside)
         ui->hot_id = id;
 
@@ -671,6 +860,9 @@ int ui_input_text(ui_ctx_t *ui, const char *label, uint32_t font_id, char *buf, 
         bg = ui->style.btn_active;
     else if (ui->hot_id == id && inside)
         bg = ui->style.btn_hover;
+
+    if (ui->active_id == id)
+        ui->text_input_active = 1;
 
     ui_draw_rect(ui, r, bg, ui->style.corner, 0.0f);
     uiw_draw_outline(ui, r, ui->style.corner);
@@ -910,95 +1102,7 @@ int ui_selectable(ui_ctx_t *ui, const char *label, uint32_t font_id, int *select
     return st.pressed ? 1 : 0;
 }
 
-static uiw_popup_state_t *uiw_popup(ui_ctx_t *ui)
-{
-    for (int i = 0; i < 8; ++i)
-        if (g_popups[i].ui == ui)
-            return &g_popups[i];
-
-    for (int i = 0; i < 8; ++i)
-        if (!g_popups[i].ui)
-        {
-            memset(&g_popups[i], 0, sizeof(g_popups[i]));
-            g_popups[i].ui = ui;
-            return &g_popups[i];
-        }
-
-    return &g_popups[0];
-}
-
-static void uiw_close_popup(ui_ctx_t *ui)
-{
-    uiw_popup_state_t *p = uiw_popup(ui);
-    p->open = 0;
-    p->active_id = 0;
-}
-
-void ui_open_popup(ui_ctx_t *ui, const char *id)
-{
-    uiw_popup_state_t *p = uiw_popup(ui);
-    p->open_id = ui_id_str(ui, id ? id : "##popup");
-    p->active_id = p->open_id;
-    p->open = 1;
-}
-
-int ui_begin_popup(ui_ctx_t *ui, const char *id)
-{
-    uiw_popup_state_t *p = uiw_popup(ui);
-    uint32_t pid = ui_id_str(ui, id ? id : "##popup");
-    if (!p->open || p->active_id != pid)
-        return 0;
-
-    ui_vec4_t anchor = uiw_last_item(ui);
-
-    float w = ui_maxf(160.0f, anchor.z);
-    float h = ui->style.line_h * 8.0f + ui->style.padding * 2.0f;
-
-    ui_vec4_t r = ui_v4(anchor.x, anchor.y + anchor.w + 2.0f, w, h);
-
-    float sw = (float)ui->fb_size.x;
-    float sh = (float)ui->fb_size.y;
-
-    if (r.x + r.z > sw)
-        r.x = sw - r.z;
-    if (r.x < 0.0f)
-        r.x = 0.0f;
-
-    if (r.y + r.w > sh)
-        r.y = anchor.y - r.w - 2.0f;
-    if (r.y < 0.0f)
-        r.y = 0.0f;
-
-    p->rect = r;
-
-    if (ui->mouse_pressed[0] && !ui_pt_in_rect(ui->mouse, r))
-    {
-        uiw_close_popup(ui);
-        return 0;
-    }
-
-    if (ui->key_pressed[UI_KEY_ESCAPE])
-    {
-        uiw_close_popup(ui);
-        return 0;
-    }
-
-    ui_draw_rect(ui, r, ui->style.window_bg.a > 0.001f ? ui->style.window_bg : ui->style.panel_bg, ui->style.window_corner, 0.0f);
-    uiw_draw_outline(ui, r, ui->style.window_corner);
-
-    ui_vec4_t cr = ui_v4(r.x + ui->style.padding, r.y + ui->style.padding, r.z - ui->style.padding * 2.0f, r.w - ui->style.padding * 2.0f);
-
-    ui_push_clip(ui, cr);
-    ui_layout_begin(&ui->layout, cr, 0.0f);
-    ui_layout_row(&ui->layout, ui->style.line_h, 1, 0, ui->style.spacing);
-
-    return 1;
-}
-
-void ui_end_popup(ui_ctx_t *ui)
-{
-    ui_pop_clip(ui);
-}
+#include "ui_popup.h"
 
 int ui_combo(ui_ctx_t *ui, const char *label, uint32_t font_id, const char **items, int items_count, int *current)
 {
@@ -1040,7 +1144,7 @@ int ui_combo(ui_ctx_t *ui, const char *label, uint32_t font_id, const char **ite
                     *current = i;
                     changed = 1;
                 }
-                uiw_close_popup(ui);
+                ui_close_popup(ui);
                 break;
             }
         }
@@ -1058,18 +1162,19 @@ int ui_combo(ui_ctx_t *ui, const char *label, uint32_t font_id, const char **ite
 
 int ui_collapsing_header(ui_ctx_t *ui, const char *label, uint32_t font_id, int default_open)
 {
+    uiw_ctx_state_t *ws = uiw_state(ui);
     ui_vec4_t r = ui_next_rect(ui);
     if (r.w < ui->style.line_h)
         r.w = ui->style.line_h;
 
     uint32_t id = ui_id_str(ui, label ? label : "##hdr");
-    int open = uiw_kv_get_i(g_open_headers, 256, id, default_open ? 1 : 0);
+    int open = uiw_kv_get_i(ws->open_headers, 256, id, default_open ? 1 : 0);
 
     ui_widget_result_t st = ui_button_ex(ui, id, r);
     if (st.pressed)
     {
         open = !open;
-        uiw_kv_set_i(g_open_headers, 256, id, open);
+        uiw_kv_set_i(ws->open_headers, 256, id, open);
     }
 
     ui_color_t bg = ui->style.header_bg.a > 0.001f ? ui->style.header_bg : ui->style.btn;
@@ -1097,27 +1202,31 @@ int ui_collapsing_header(ui_ctx_t *ui, const char *label, uint32_t font_id, int 
     return open;
 }
 
-static uiw_child_state_t *uiw_child_push(uint32_t id)
+static uiw_child_state_t *uiw_child_push(uiw_ctx_state_t *ws, uint32_t id)
 {
-    if (g_child_top >= 32)
-        return &g_child_stack[31];
-    uiw_child_state_t *cs = &g_child_stack[g_child_top++];
+    if (!ws)
+        return 0;
+    if (ws->child_top >= 32)
+        return &ws->child_stack[31];
+    uiw_child_state_t *cs = &ws->child_stack[ws->child_top++];
     memset(cs, 0, sizeof(*cs));
     cs->id = id;
     return cs;
 }
 
-static uiw_child_state_t *uiw_child_top_state(void)
+static uiw_child_state_t *uiw_child_top_state(uiw_ctx_state_t *ws)
 {
-    if (g_child_top <= 0)
+    if (!ws || ws->child_top <= 0)
         return 0;
-    return &g_child_stack[g_child_top - 1];
+    return &ws->child_stack[ws->child_top - 1];
 }
 
-static void uiw_child_pop(void)
+static void uiw_child_pop(uiw_ctx_state_t *ws)
 {
-    if (g_child_top > 0)
-        g_child_top--;
+    if (!ws)
+        return;
+    if (ws->child_top > 0)
+        ws->child_top--;
 }
 
 static void uiw_scrollbar_metrics(float view_h, float content_h, float scroll_y, float track_h, float *out_thumb_h, float *out_thumb_y)
@@ -1154,6 +1263,7 @@ static void uiw_child_scrollbar(ui_ctx_t *ui, uiw_child_state_t *cs, ui_vec4_t c
 {
     float view_h = cr.w;
     float content_h = cs->content_h_last;
+    float slack = ui->style.padding * 0.5f;
 
     if (content_h <= view_h + 0.5f)
     {
@@ -1165,7 +1275,7 @@ static void uiw_child_scrollbar(ui_ctx_t *ui, uiw_child_state_t *cs, ui_vec4_t c
 
     cs->has_scroll = 1;
 
-    float max_scroll = content_h - view_h;
+    float max_scroll = content_h - view_h + slack;
     if (max_scroll < 0.0f)
         max_scroll = 0.0f;
     if (cs->scroll_y < 0.0f)
@@ -1178,7 +1288,7 @@ static void uiw_child_scrollbar(ui_ctx_t *ui, uiw_child_state_t *cs, ui_vec4_t c
 
     float th = 0.0f;
     float ty = 0.0f;
-    uiw_scrollbar_metrics(view_h, content_h, cs->scroll_y, sb.w, &th, &ty);
+    uiw_scrollbar_metrics(view_h, content_h + slack, cs->scroll_y, sb.w, &th, &ty);
 
     float pad = ui->style.scroll_pad;
     ui_vec4_t thumb = ui_v4(sb.x + pad, sb.y + ty, sb.z - pad * 2.0f, th);
@@ -1186,8 +1296,9 @@ static void uiw_child_scrollbar(ui_ctx_t *ui, uiw_child_state_t *cs, ui_vec4_t c
     ui_vec2_t m = ui->mouse;
 
     int over_thumb = ui_pt_in_rect(m, thumb);
-    int pressed = ui->mouse_pressed[0] ? 1 : 0;
-    int down = ui->mouse_down[0] ? 1 : 0;
+    int allow_input = (ui->window_accept_input || over_thumb || cs->scroll_drag) ? 1 : 0;
+    int pressed = (allow_input && ui->mouse_pressed[0]) ? 1 : 0;
+    int down = ((allow_input || cs->scroll_drag) && ui->mouse_down[0]) ? 1 : 0;
 
     if (pressed && over_thumb)
     {
@@ -1222,18 +1333,21 @@ int ui_begin_child(ui_ctx_t *ui, const char *id, ui_vec2_t size)
 {
     ui_vec4_t r = ui_next_rect(ui);
     uint32_t cid = ui_id_str(ui, id ? id : "##child");
+    uiw_ctx_state_t *ws = uiw_state(ui);
 
     if (size.x > 1.0f)
         r.z = size.x;
     if (size.y > 1.0f)
         r.w = size.y;
+    else if (size.y <= 0.0f)
+        r.w = ui->style.line_h * 8.0f + ui->style.padding * 2.0f;
 
     if (r.z < 1.0f)
         r.z = 1.0f;
     if (r.w < 1.0f)
         r.w = 1.0f;
 
-    uiw_child_state_t *cs = uiw_child_push(cid);
+    uiw_child_state_t *cs = uiw_child_push(ws, cid);
     cs->id = cid;
     cs->rect = r;
 
@@ -1256,7 +1370,8 @@ int ui_begin_child(ui_ctx_t *ui, const char *id, ui_vec2_t size)
 
     cs->content_rect = cr;
 
-    float max_scroll = cs->content_h_last - cr.w;
+    /* clamp using last frame's content height; wheel/drag adjustments happen after measuring this frame */
+    float max_scroll = cs->content_h_last - cr.w + ui->style.padding * 0.5f;
     if (max_scroll < 0.0f)
         max_scroll = 0.0f;
     if (cs->scroll_y < 0.0f)
@@ -1280,7 +1395,8 @@ int ui_begin_child(ui_ctx_t *ui, const char *id, ui_vec2_t size)
 
 void ui_end_child(ui_ctx_t *ui)
 {
-    uiw_child_state_t *cs = uiw_child_top_state();
+    uiw_ctx_state_t *ws = uiw_state(ui);
+    uiw_child_state_t *cs = uiw_child_top_state(ws);
     if (!cs)
         return;
 
@@ -1293,7 +1409,15 @@ void ui_end_child(ui_ctx_t *ui)
         ch = 0.0f;
     cs->content_h_last = ch;
 
-    float max_scroll = cs->content_h_last - cs->content_rect.w;
+    int hover_child = ui_pt_in_rect(ui->mouse, cs->content_rect);
+    if (hover_child && ui->io.mouse_scroll.y != 0.0f && cs->content_h_last > cs->content_rect.w + 0.5f)
+    {
+        float step = ui->style.line_h * 2.0f;
+        cs->scroll_y -= ui->io.mouse_scroll.y * step;
+        ui->scroll_used = 1;
+    }
+
+    float max_scroll = cs->content_h_last - cs->content_rect.w + ui->style.padding * 0.5f;
     if (max_scroll < 0.0f)
         max_scroll = 0.0f;
     if (cs->scroll_y < 0.0f)
@@ -1308,13 +1432,20 @@ void ui_end_child(ui_ctx_t *ui)
     ui->layout = cs->saved_layout;
     ui->layout.scroll_y = cs->saved_layout_scroll_y;
 
-    uiw_child_pop();
+    ui->layout.cursor_y += cs->rect.w;
+    ui->layout.max_y = ui_maxf(ui->layout.max_y, ui->layout.cursor_y);
+
+    ui_vec4_t final_rect = ui_v4(cs->rect.x, cs->rect.y, cs->rect.z, cs->rect.w);
+    ui->layout.last = final_rect;
+    uiw_set_last_item(ui, final_rect);
+
+    uiw_child_pop(ws);
 }
 
 int ui_begin_context_menu(ui_ctx_t *ui, const char *id)
 {
     ui_vec4_t a = uiw_last_item(ui);
-    if (ui->mouse_pressed[1] && ui_pt_in_rect(ui->mouse, a))
+    if (ui->window_accept_input && ui->mouse_pressed[1] && ui_pt_in_rect(ui->mouse, a))
         ui_open_popup(ui, id ? id : "##ctx");
     return ui_begin_popup(ui, id ? id : "##ctx");
 }

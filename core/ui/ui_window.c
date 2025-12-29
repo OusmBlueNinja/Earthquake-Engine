@@ -129,6 +129,7 @@ typedef struct ui_win_ctx_t
     ui_vec4_t dock_widget_leaf_rect;
 
     uint8_t content_clip_pushed;
+    uint32_t hovered_id;
 } ui_win_ctx_t;
 
 static ui_win_ctx_t g_ctxs[8];
@@ -575,6 +576,7 @@ static void uiw_scrollbar_draw_and_handle(ui_win_ctx_t *c, ui_win_t *w, ui_vec4_
 {
     float view_h = cr.w;
     float content_h = w->content_h_last;
+    float slack = c->ui->style.padding * 0.5f;
 
     if (content_h <= view_h + 0.5f)
     {
@@ -586,7 +588,7 @@ static void uiw_scrollbar_draw_and_handle(ui_win_ctx_t *c, ui_win_t *w, ui_vec4_
 
     w->has_scroll = 1;
 
-    float max_scroll = content_h - view_h;
+    float max_scroll = content_h - view_h + slack;
     if (max_scroll < 0.0f) max_scroll = 0.0f;
     if (w->scroll_y < 0.0f) w->scroll_y = 0.0f;
     if (w->scroll_y > max_scroll) w->scroll_y = max_scroll;
@@ -595,16 +597,17 @@ static void uiw_scrollbar_draw_and_handle(ui_win_ctx_t *c, ui_win_t *w, ui_vec4_
 
     float th = 0.0f;
     float ty = 0.0f;
-    uiw_scrollbar_metrics(view_h, content_h, w->scroll_y, sb.w, &th, &ty);
+    uiw_scrollbar_metrics(view_h, content_h + slack, w->scroll_y, sb.w, &th, &ty);
 
     ui_vec4_t thumb = ui_v4(sb.x + 1.0f, sb.y + ty, sb.z - 2.0f, th);
 
     ui_ctx_t *ui = c->ui;
     ui_vec2_t m = ui->mouse;
 
+    int allow_input = ui->window_accept_input ? 1 : 0;
     int over_thumb = uiw_pt_in(m, thumb);
-    int pressed = ui->mouse_pressed[0] ? 1 : 0;
-    int down = ui->mouse_down[0] ? 1 : 0;
+    int pressed = (allow_input && ui->mouse_pressed[0]) ? 1 : 0;
+    int down = ((allow_input || w->scroll_drag) && ui->mouse_down[0]) ? 1 : 0;
 
     if (pressed && over_thumb)
     {
@@ -641,6 +644,7 @@ void ui_window_begin_frame(ui_ctx_t *ui)
     c->pick_id = 0;
     c->picked_this_frame = 0;
     c->content_clip_pushed = 0;
+    c->hovered_id = uiw_pick_top(c, ui->mouse);
 
     for (uint32_t i = 0; i < c->dockspace_count; ++i)
         if (c->dockspaces[i].used)
@@ -708,6 +712,16 @@ void ui_window_set_next_size(ui_ctx_t *ui, ui_vec2_t size)
     ui_win_ctx_t *c = uiw_ctx(ui);
     c->next_has_size = 1;
     c->next_size = size;
+}
+
+void ui_set_next_window_pos(ui_ctx_t *ui, ui_vec2_t pos)
+{
+    ui_window_set_next_pos(ui, pos);
+}
+
+void ui_set_next_window_size(ui_ctx_t *ui, ui_vec2_t size)
+{
+    ui_window_set_next_size(ui, size);
 }
 
 int ui_window_begin(ui_ctx_t *ui, const char *title, ui_window_flags_t flags)
@@ -889,6 +903,9 @@ int ui_window_begin(ui_ctx_t *ui, const char *title, ui_window_flags_t flags)
     c->cur_id = id;
     c->cur_rect = w->rect;
     c->cur_flags = flags;
+    if (c->pick_id == id)
+        w->z = uiw_z_max(c) + 1;
+    ui->window_accept_input = (c->hovered_id == 0) || (c->hovered_id == id) || (ui->active_id != 0);
 
     w->cmd_start = ui->stream.count;
 
@@ -954,10 +971,23 @@ void ui_window_end(ui_ctx_t *ui)
     {
         w->content_h_last = ch;
 
-        float max_scroll = w->content_h_last - cr.w;
+        float slack = ui->style.padding * 0.5f;
+        float max_scroll = w->content_h_last - cr.w + slack;
         if (max_scroll < 0.0f) max_scroll = 0.0f;
         if (w->scroll_y < 0.0f) w->scroll_y = 0.0f;
         if (w->scroll_y > max_scroll) w->scroll_y = max_scroll;
+
+        int mouse_over = uiw_pt_in(ui->mouse, w->rect);
+        int allow_scroll = mouse_over && (ui_window_hovered_id(ui) == w->id || ui_window_hovered_id(ui) == 0);
+        if (!ui->scroll_used && allow_scroll && ui->io.mouse_scroll.y != 0.0f && w->content_h_last > cr.w + 0.5f)
+        {
+            float step = ui->style.line_h * 2.0f;
+            w->scroll_y -= ui->io.mouse_scroll.y * step;
+            float max_s = ui_maxf(0.0f, w->content_h_last - cr.w + slack);
+            if (w->scroll_y < 0.0f) w->scroll_y = 0.0f;
+            if (w->scroll_y > max_s) w->scroll_y = max_s;
+            ui->scroll_used = 1;
+        }
 
         uiw_scrollbar_draw_and_handle(c, w, cr);
     }
@@ -989,6 +1019,16 @@ void ui_window_end(ui_ctx_t *ui)
     c->cur_flags = UI_WIN_NONE;
 }
 
+int ui_begin_window(ui_ctx_t *ui, const char *title, ui_window_flags_t flags)
+{
+    return ui_window_begin(ui, title, flags);
+}
+
+void ui_end_window(ui_ctx_t *ui)
+{
+    ui_window_end(ui);
+}
+
 ui_vec4_t ui_window_rect(ui_ctx_t *ui)
 {
     ui_win_ctx_t *c = uiw_ctx(ui);
@@ -1009,4 +1049,10 @@ ui_vec4_t ui_window_content_rect(ui_ctx_t *ui)
 
     ui_vec4_t r = c->cur_rect;
     return ui_v4(r.x + pad, r.y + top + pad, r.z - pad * 2.0f, r.w - top - pad * 2.0f);
+}
+
+uint32_t ui_window_hovered_id(ui_ctx_t *ui)
+{
+    ui_win_ctx_t *c = uiw_ctx(ui);
+    return c->hovered_id;
 }

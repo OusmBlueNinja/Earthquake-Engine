@@ -28,9 +28,18 @@ void ui_dockspace(struct ui_ctx_t *ui, const char *id, ui_vec4_t rect);
 
 void ui_window_set_next_pos(struct ui_ctx_t *ui, ui_vec2_t pos);
 void ui_window_set_next_size(struct ui_ctx_t *ui, ui_vec2_t size);
+/* ImGui-friendly aliases */
+void ui_set_next_window_pos(struct ui_ctx_t *ui, ui_vec2_t pos);
+void ui_set_next_window_size(struct ui_ctx_t *ui, ui_vec2_t size);
 
 int ui_window_begin(struct ui_ctx_t *ui, const char *title, ui_window_flags_t flags);
 void ui_window_end(struct ui_ctx_t *ui);
+int ui_begin_window(struct ui_ctx_t *ui, const char *title, ui_window_flags_t flags);
+void ui_end_window(struct ui_ctx_t *ui);
+
+int ui_begin_child(struct ui_ctx_t *ui, const char *id, ui_vec2_t size);
+void ui_end_child(struct ui_ctx_t *ui);
 
 ui_vec4_t ui_window_rect(struct ui_ctx_t *ui);
 ui_vec4_t ui_window_content_rect(struct ui_ctx_t *ui);
+uint32_t ui_window_hovered_id(struct ui_ctx_t *ui);
