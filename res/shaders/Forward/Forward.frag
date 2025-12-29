@@ -287,17 +287,25 @@ void main()
     if (u_LodXFadeEnabled != 0)
     {
         float f = clamp(v.lodFade01, 0.0, 1.0);
-        float n = dither_noise(gl_FragCoord.xy);
 
-        if (u_LodXFadeMode == 0)
+        if (u_MatAlphaBlend != 0)
         {
-            if (n < f)
-                discard;
+            float w = (u_LodXFadeMode == 0) ? (1.0 - f) : f;
+            alpha = clamp(alpha * w, 0.0, 1.0);
         }
         else
         {
-            if (n >= f)
-                discard;
+            float n = dither_noise(gl_FragCoord.xy);
+            if (u_LodXFadeMode == 0)
+            {
+                if (n < f)
+                    discard;
+            }
+            else
+            {
+                if (n >= f)
+                    discard;
+            }
         }
     }
 
