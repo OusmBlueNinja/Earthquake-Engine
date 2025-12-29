@@ -37,5 +37,9 @@ void ui_window_end(struct ui_ctx_t *ui);
 int ui_begin_window(struct ui_ctx_t *ui, const char *title, ui_window_flags_t flags);
 void ui_end_window(struct ui_ctx_t *ui);
 
+int ui_begin_child(struct ui_ctx_t *ui, const char *id, ui_vec2_t size);
+void ui_end_child(struct ui_ctx_t *ui);
+
 ui_vec4_t ui_window_rect(struct ui_ctx_t *ui);
 ui_vec4_t ui_window_content_rect(struct ui_ctx_t *ui);
+uint32_t ui_window_hovered_id(struct ui_ctx_t *ui);

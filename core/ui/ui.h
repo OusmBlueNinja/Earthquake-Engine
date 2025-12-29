@@ -47,6 +47,22 @@ typedef struct ui_style_t
     float scroll_pad;
 } ui_style_t;
 
+typedef struct ui_io_t
+{
+    ui_vec2_t mouse_pos;
+    ui_vec2_t mouse_delta;
+    ui_vec2_t mouse_scroll;
+    uint8_t mouse_down[8];
+    float mouse_down_duration[8];
+
+    uint8_t key_down[512];
+    float key_down_duration[512];
+
+    uint8_t want_capture_mouse;
+    uint8_t want_capture_keyboard;
+    uint8_t want_text_input;
+} ui_io_t;
+
 typedef struct ui_ctx_t
 {
     ui_realloc_fn rfn;
@@ -68,6 +84,7 @@ typedef struct ui_ctx_t
     uint8_t key_prev[512];
     uint8_t key_pressed[512];
     uint8_t key_released[512];
+    uint8_t key_pressed_accum[512];
 
     uint32_t char_buf[32];
     uint32_t char_count;
@@ -89,6 +106,14 @@ typedef struct ui_ctx_t
     ui_base_backend_t *backend;
 
     ui_array_t windows;
+
+    ui_io_t io;
+    float delta_time;
+    ui_vec2_t prev_mouse;
+    ui_vec2_t scroll_delta;
+    uint8_t scroll_used;
+    uint8_t text_input_active;
+    uint8_t window_accept_input;
 
     uint32_t cur_window_id;
     ui_vec4_t cur_window_rect;
@@ -116,6 +141,7 @@ void ui_shutdown(ui_ctx_t *ui);
 
 void ui_input_mouse_pos(ui_ctx_t *ui, ui_vec2_t pos);
 void ui_input_mouse_btn(ui_ctx_t *ui, int button, int down);
+void ui_set_delta_time(ui_ctx_t *ui, float dt);
 
 void ui_input_key(ui_ctx_t *ui, uint32_t key, int down, uint8_t repeat, uint8_t mods);
 void ui_input_char(ui_ctx_t *ui, uint32_t codepoint);
@@ -124,6 +150,7 @@ void ui_begin(ui_ctx_t *ui, ui_vec2i_t fb_size);
 void ui_end(ui_ctx_t *ui);
 
 const ui_cmd_t *ui_commands(const ui_ctx_t *ui, uint32_t *out_count);
+const ui_io_t *ui_io(const ui_ctx_t *ui);
 
 void ui_push_clip(ui_ctx_t *ui, ui_vec4_t rect);
 void ui_pop_clip(ui_ctx_t *ui);

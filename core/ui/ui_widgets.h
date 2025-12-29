@@ -21,6 +21,8 @@ int ui_checkbox(ui_ctx_t *ui, const char *label, uint32_t font_id, int *value);
 
 int ui_slider_float(ui_ctx_t *ui, const char *label, uint32_t font_id, float *value, float minv, float maxv);
 int ui_slider_int(ui_ctx_t *ui, const char *label, uint32_t font_id, int *value, int minv, int maxv);
+int ui_drag_float(ui_ctx_t *ui, const char *label, uint32_t font_id, float *value, float speed, float minv, float maxv);
+int ui_drag_int(ui_ctx_t *ui, const char *label, uint32_t font_id, int *value, int speed, int minv, int maxv);
 
 int ui_toggle(ui_ctx_t *ui, const char *label, uint32_t font_id, int *value);
 int ui_radio(ui_ctx_t *ui, const char *label, uint32_t font_id, int *value, int my_value);
@@ -37,12 +39,5 @@ int ui_selectable(ui_ctx_t *ui, const char *label, uint32_t font_id, int *select
 int ui_combo(ui_ctx_t *ui, const char *label, uint32_t font_id, const char **items, int items_count, int *current);
 
 int ui_collapsing_header(ui_ctx_t *ui, const char *label, uint32_t font_id, int default_open);
-
-int ui_begin_child(ui_ctx_t *ui, const char *id, ui_vec2_t size);
-void ui_end_child(ui_ctx_t *ui);
-
-void ui_open_popup(ui_ctx_t *ui, const char *id);
-int ui_begin_popup(ui_ctx_t *ui, const char *id);
-void ui_end_popup(ui_ctx_t *ui);
 
 int ui_begin_context_menu(ui_ctx_t *ui, const char *id);

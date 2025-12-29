@@ -26,6 +26,7 @@ void ui_layout_begin(ui_layout_t *l, ui_vec4_t body, float pad)
     l->last = ui_v4(l->body.x, l->body.y, 0.0f, 0.0f);
     l->flow_line_max_h = 0.0f;
     l->flow_line_started = 0;
+    l->grid_row_max_h = 0.0f;
 }
 
 void ui_layout_row(ui_layout_t *l, float height, int cols, const float *widths, float spacing)
@@ -42,6 +43,7 @@ void ui_layout_row(ui_layout_t *l, float height, int cols, const float *widths, 
     l->cols = cols;
     l->col_i = 0;
     l->row_spacing = spacing;
+    l->grid_row_max_h = height;
 
     float fixed = 0.0f;
     int auto_count = 0;
@@ -85,15 +87,19 @@ ui_vec4_t ui_layout_next(ui_layout_t *l, float spacing)
     if (w <= 0.0f)
         w = l->body.z;
 
-    ui_vec4_t r = ui_v4(l->cursor_x, l->cursor_y, w, l->row_h);
+    float h = l->row_h;
+    ui_vec4_t r = ui_v4(l->cursor_x, l->cursor_y, w, h);
     l->last = r;
+    if (r.w > l->grid_row_max_h)
+        l->grid_row_max_h = r.w;
 
     l->col_i++;
     if (l->col_i >= l->cols)
     {
         l->col_i = 0;
         l->cursor_x = l->body.x;
-        l->cursor_y += l->row_h + use_spacing;
+        l->cursor_y += l->grid_row_max_h + use_spacing;
+        l->grid_row_max_h = l->row_h;
     }
     else
     {

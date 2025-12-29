@@ -20,9 +20,10 @@ typedef struct ui_layout_t
     ui_vec4_t last;
     float start_y;
 
-    /* flow-style layout helpers (imgui-like) */
     float flow_line_max_h;
     uint8_t flow_line_started;
+
+    float grid_row_max_h;
 } ui_layout_t;
 
 void ui_layout_begin(ui_layout_t *l, ui_vec4_t body, float pad);
