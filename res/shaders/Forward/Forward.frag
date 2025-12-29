@@ -43,6 +43,7 @@ uniform int u_ManualSRGB;
 
 uniform int u_MatAlphaCutout;
 uniform int u_MatAlphaBlend;
+uniform int u_MatDoubleSided;
 
 uniform int u_HasIBL;
 uniform float u_IBLIntensity;
@@ -241,7 +242,14 @@ void main()
     vec3 Nw = normalize(v.worldN);
     vec3 Vw = normalize(u_CameraPos - v.worldPos);
 
-    mat3 TBN = build_tbn(Nw, v.tangent);
+    vec4 tangent = v.tangent;
+    if (u_MatDoubleSided != 0 && !gl_FrontFacing)
+    {
+        Nw = -Nw;
+        tangent.xyz = -tangent.xyz;
+    }
+
+    mat3 TBN = build_tbn(Nw, tangent);
 
     vec2 uv = v.uv;
 
@@ -402,7 +410,8 @@ void main()
     metallic = clamp(metallic, 0.0, 1.0);
     albedo = max(albedo, vec3(0.0));
 
-    float NoV = saturate(dot(N, Vw));
+    float NoV_raw = dot(N, Vw);
+    float NoV = (u_MatDoubleSided != 0) ? saturate(abs(NoV_raw)) : saturate(NoV_raw);
     vec3 F0 = mix(vec3(0.04), albedo, metallic);
 
     vec3 Lo = vec3(0.0);
@@ -439,7 +448,8 @@ void main()
             }
         }
 
-        float NoL = saturate(dot(N, L));
+        float NoL_raw = dot(N, L);
+        float NoL = (u_MatDoubleSided != 0) ? saturate(abs(NoL_raw)) : saturate(NoL_raw);
         if (NoL <= 1e-5)
             continue;
 
