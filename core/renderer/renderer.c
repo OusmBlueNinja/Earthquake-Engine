@@ -1875,16 +1875,6 @@ static void R_forward_draw_filtered(renderer_t *r, shader_t *fwd, int draw_blend
             if (!mat_blend)
                 continue;
 
-            if (mat_doublesided)
-            {
-                glDisable(GL_CULL_FACE);
-            }
-            else
-            {
-                glEnable(GL_CULL_FACE);
-                glCullFace(GL_BACK);
-            }
-
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D, albedo_tex ? albedo_tex : r->black_tex);
 
@@ -1911,8 +1901,30 @@ static void R_forward_draw_filtered(renderer_t *r, shader_t *fwd, int draw_blend
             shader_set_float(fwd, "u_AlphaCutoff", mat_cutout ? alpha_cutoff : 0.0f);
 
             glBindVertexArray(lod->vao);
-            R_stats_add_draw_instanced(r, lod->index_count, b->count);
-            glDrawElementsInstanced(GL_TRIANGLES, (GLsizei)lod->index_count, GL_UNSIGNED_INT, 0, (GLsizei)b->count);
+
+            if (mat_doublesided)
+            {
+                // Alpha-blended + double-sided needs a deterministic within-mesh order.
+                // Draw backfaces first, then frontfaces
+
+                glEnable(GL_CULL_FACE);
+
+                glCullFace(GL_FRONT);
+                R_stats_add_draw_instanced(r, lod->index_count, b->count);
+                glDrawElementsInstanced(GL_TRIANGLES, (GLsizei)lod->index_count, GL_UNSIGNED_INT, 0, (GLsizei)b->count);
+
+                glCullFace(GL_BACK);
+                R_stats_add_draw_instanced(r, lod->index_count, b->count);
+                glDrawElementsInstanced(GL_TRIANGLES, (GLsizei)lod->index_count, GL_UNSIGNED_INT, 0, (GLsizei)b->count);
+            }
+            else
+            {
+                glEnable(GL_CULL_FACE);
+                glCullFace(GL_BACK);
+                R_stats_add_draw_instanced(r, lod->index_count, b->count);
+                glDrawElementsInstanced(GL_TRIANGLES, (GLsizei)lod->index_count, GL_UNSIGNED_INT, 0, (GLsizei)b->count);
+            }
+
             glBindVertexArray(0);
         }
     }

@@ -264,6 +264,7 @@ void main()
         alpha_tex = texture(u_AlbedoTex, uv).a;
 
     float alpha = 1.0;
+    float coverage = 1.0;
     if (u_HasMaterial != 0)
         alpha = clamp(alpha_tex * u_Opacity, 0.0, 1.0);
 
@@ -273,15 +274,18 @@ void main()
         float a = smoothstep(u_AlphaCutoff - w, u_AlphaCutoff + w, alpha);
         if (a < 0.5)
             discard;
+        coverage = a;
         alpha = 1.0;
     }
     else if (u_MatAlphaBlend != 0)
     {
         alpha = clamp(alpha, 0.0, 1.0);
+        coverage = alpha;
     }
     else
     {
         alpha = 1.0;
+        coverage = 1.0;
     }
 
     int mode = dbg_mode();
@@ -304,6 +308,7 @@ void main()
         {
             float w = (u_LodXFadeMode == 0) ? (1.0 - f) : f;
             alpha = clamp(w, 0.0, 1.0);
+            coverage = alpha;
 
             bool would_discard = (alpha <= 0.0);
             if (mode == 6)
@@ -524,7 +529,12 @@ void main()
     if (mode == 1)
         color = debug_lod_tint(color, dbg_lod_p1());
 
-    vec3 mapped = vec3(1.0) - exp(-color);
+    // Write HDR to the scene buffer; tone mapping happens in `res/shaders/present.frag`.
+    // For cutout/A2C, attenuate lighting by coverage to reduce edge "specular glints".
+    if (u_MatAlphaBlend == 0)
+        color *= clamp(coverage, 0.0, 1.0);
+
+    vec3 mapped = color;
 
     if (mode == 2)
         mapped = mix(mapped, overlay2, overlay2_w);
