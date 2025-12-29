@@ -1106,11 +1106,8 @@ bool asset_model_gltf_init(asset_manager_t *am, asset_any_t *asset)
         gm.lods = vector_impl_create_vector(sizeof(mesh_lod_t));
         gm.flags = 0;
 
-        if (sm->flags & (uint8_t)CPU_SUBMESH_FLAG_HAS_AABB)
-        {
-            gm.local_aabb = sm->aabb;
-            gm.flags |= (uint8_t)MESH_FLAG_HAS_AABB;
-        }
+        // Used by renderer for transparent sorting, culling, etc.
+        mesh_set_local_aabb_from_cpu(&gm, sm);
 
         uint32_t want_lods = sm->lods.size;
         uint32_t uploaded = 0;

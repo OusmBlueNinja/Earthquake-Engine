@@ -992,6 +992,107 @@ static void R_mesh_bind_instance_attribs(renderer_t *r, uint32_t vao)
     glBindVertexArray(0);
 }
 
+static int R_resolve_batch_resources(renderer_t *r,
+                                     const inst_batch_t *b,
+                                     asset_model_t **out_mdl,
+                                     mesh_t **out_mesh,
+                                     const mesh_lod_t **out_lod,
+                                     asset_material_t **out_mat)
+{
+    if (!b || !ihandle_is_valid(b->model))
+        return 0;
+
+    asset_model_t *mdl = R_resolve_model(r, b->model);
+    if (!mdl)
+        return 0;
+
+    if (b->mesh_index >= mdl->meshes.size)
+        return 0;
+
+    mesh_t *mesh = (mesh_t *)vector_at((vector_t *)&mdl->meshes, b->mesh_index);
+    if (!mesh)
+        return 0;
+
+    const mesh_lod_t *lod = R_mesh_get_lod(mesh, b->lod);
+    if (!lod || !lod->vao || !lod->index_count)
+        return 0;
+
+    if (out_mdl)
+        *out_mdl = mdl;
+    if (out_mesh)
+        *out_mesh = mesh;
+    if (out_lod)
+        *out_lod = lod;
+    if (out_mat)
+        *out_mat = R_resolve_material(r, mesh->material);
+    return 1;
+}
+
+static void R_material_state(renderer_t *r,
+                             asset_material_t *mat,
+                             int *out_cutout,
+                             int *out_blend,
+                             int *out_doublesided,
+                             float *out_alpha_cutoff,
+                             uint32_t *out_albedo_tex)
+{
+    int cutout = 0;
+    int blend = 0;
+    int double_sided = 0;
+    float alpha_cutoff = 0.0f;
+    uint32_t albedo_tex = 0;
+
+    if (mat)
+    {
+        cutout = (mat->flags & MAT_FLAG_ALPHA_CUTOUT) ? 1 : 0;
+        blend = (mat->flags & MAT_FLAG_ALPHA_BLEND) ? 1 : 0;
+        double_sided = (mat->flags & MAT_FLAG_DOUBLE_SIDED) ? 1 : 0;
+
+        if (cutout)
+        {
+            alpha_cutoff = mat->alpha_cutoff;
+            if (alpha_cutoff < 0.0f)
+                alpha_cutoff = 0.0f;
+            if (alpha_cutoff > 1.0f)
+                alpha_cutoff = 1.0f;
+        }
+
+        albedo_tex = R_resolve_image_gl(r, mat->albedo_tex);
+    }
+
+    if (out_cutout)
+        *out_cutout = cutout;
+    if (out_blend)
+        *out_blend = blend;
+    if (out_doublesided)
+        *out_doublesided = double_sided;
+    if (out_alpha_cutoff)
+        *out_alpha_cutoff = alpha_cutoff;
+    if (out_albedo_tex)
+        *out_albedo_tex = albedo_tex;
+}
+
+static float R_batch_view_z(const renderer_t *r, const inst_batch_t *b, const mesh_t *mesh)
+{
+    if (!r || !b || b->count == 0)
+        return 0.0f;
+    instance_gpu_t *inst = (instance_gpu_t *)vector_at((vector_t *)&r->inst_mats, b->start);
+    if (!inst)
+        return 0.0f;
+
+    vec3 local_center = (vec3){0.0f, 0.0f, 0.0f};
+    if (mesh && (mesh->flags & MESH_FLAG_HAS_AABB))
+    {
+        local_center.x = (mesh->local_aabb.min.x + mesh->local_aabb.max.x) * 0.5f;
+        local_center.y = (mesh->local_aabb.min.y + mesh->local_aabb.max.y) * 0.5f;
+        local_center.z = (mesh->local_aabb.min.z + mesh->local_aabb.max.z) * 0.5f;
+    }
+
+    vec4 wp = mat4_mul_vec4(inst->m, (vec4){local_center.x, local_center.y, local_center.z, 1.0f});
+    vec4 vp = mat4_mul_vec4(r->camera.view, wp);
+    return vp.z;
+}
+
 static int R_inst_item_sort(const void *a, const void *b)
 {
     const inst_item_t *ia = (const inst_item_t *)a;
@@ -1328,27 +1429,39 @@ static void R_depth_prepass(renderer_t *r)
     for (uint32_t bi = 0; bi < r->inst_batches.size; ++bi)
     {
         inst_batch_t *b = (inst_batch_t *)vector_at(&r->inst_batches, bi);
-        if (!b || !ihandle_is_valid(b->model) || b->count == 0)
+        if (!b || b->count == 0)
             continue;
 
-        asset_model_t *mdl = R_resolve_model(r, b->model);
-        if (!mdl)
+        asset_material_t *mat = NULL;
+        const mesh_lod_t *lod = NULL;
+        if (!R_resolve_batch_resources(r, b, NULL, NULL, &lod, &mat))
             continue;
 
-        if (b->mesh_index >= mdl->meshes.size)
+        int mat_cutout = 0;
+        int mat_blend = 0;
+        int mat_doublesided = 0;
+        float alpha_cutoff = 0.0f;
+        uint32_t albedo_tex = 0;
+        R_material_state(r, mat, &mat_cutout, &mat_blend, &mat_doublesided, &alpha_cutoff, &albedo_tex);
+
+        // Skip blended surfaces entirely in depth prepass; transparency is handled later.
+        if (mat_blend)
             continue;
 
-        mesh_t *mesh = (mesh_t *)vector_at((vector_t *)&mdl->meshes, b->mesh_index);
-        if (!mesh)
-            continue;
+        if (mat_doublesided)
+        {
+            glDisable(GL_CULL_FACE);
+        }
+        else
+        {
+            glEnable(GL_CULL_FACE);
+            glCullFace(GL_BACK);
+        }
 
-        // asset_material_t *mat = R_resolve_material(r, mesh->material);
-        // if (mat && (mat->flags & (MAT_FLAG_ALPHA_BLEND | MAT_FLAG_ALPHA_CUTOUT)))
-        //     continue;
-
-        const mesh_lod_t *lod = R_mesh_get_lod(mesh, b->lod);
-        if (!lod || !lod->vao || !lod->index_count)
-            continue;
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, albedo_tex ? albedo_tex : r->black_tex);
+        shader_set_int(depth, "u_AlbedoTex", 0);
+        shader_set_float(depth, "u_AlphaCutoff", mat_cutout ? alpha_cutoff : 0.0f);
 
         instance_gpu_t *inst = (instance_gpu_t *)vector_at(&r->inst_mats, b->start);
         if (!inst)
@@ -1506,6 +1619,182 @@ static void R_sky_pass(renderer_t *r)
     glDepthFunc(GL_LEQUAL);
 }
 
+typedef struct blend_batch_ref_t
+{
+    inst_batch_t *b;
+    float depth2;
+} blend_batch_ref_t;
+
+static int R_blend_sort_back_to_front(const void *a, const void *b)
+{
+    const blend_batch_ref_t *aa = (const blend_batch_ref_t *)a;
+    const blend_batch_ref_t *bb = (const blend_batch_ref_t *)b;
+    // View-space Z is negative in front of the camera (RH). Sort far (more negative) -> near.
+    if (aa->depth2 < bb->depth2)
+        return -1;
+    if (aa->depth2 > bb->depth2)
+        return 1;
+    return 0;
+}
+
+static void R_forward_draw_filtered(renderer_t *r, shader_t *fwd, int draw_blend, int debug_mode)
+{
+    blend_batch_ref_t *blend_list = NULL;
+    uint32_t blend_count = 0;
+
+    if (draw_blend && r->inst_batches.size)
+    {
+        blend_list = (blend_batch_ref_t *)malloc(sizeof(blend_batch_ref_t) * r->inst_batches.size);
+    }
+
+    for (uint32_t bi = 0; bi < r->inst_batches.size; ++bi)
+    {
+        inst_batch_t *b = (inst_batch_t *)vector_at(&r->inst_batches, bi);
+        if (!b || b->count == 0)
+            continue;
+
+        asset_material_t *mat = NULL;
+        mesh_t *mesh = NULL;
+        const mesh_lod_t *lod = NULL;
+        if (!R_resolve_batch_resources(r, b, NULL, &mesh, &lod, &mat))
+            continue;
+
+        int mat_cutout = 0;
+        int mat_blend = 0;
+        int mat_doublesided = 0;
+        float alpha_cutoff = 0.0f;
+        uint32_t albedo_tex = 0;
+        R_material_state(r, mat, &mat_cutout, &mat_blend, &mat_doublesided, &alpha_cutoff, &albedo_tex);
+
+        if (draw_blend)
+        {
+            if (!mat_blend)
+                continue;
+            if (blend_list && blend_count < r->inst_batches.size)
+            {
+                blend_list[blend_count].b = b;
+                blend_list[blend_count].depth2 = R_batch_view_z(r, b, mesh);
+                blend_count++;
+            }
+            continue;
+        }
+
+        if (mat_blend)
+            continue;
+
+        glDisable(GL_BLEND);
+        glDepthMask(GL_TRUE);
+
+        if (mat_doublesided)
+        {
+            glDisable(GL_CULL_FACE);
+        }
+        else
+        {
+            glEnable(GL_CULL_FACE);
+            glCullFace(GL_BACK);
+        }
+
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, albedo_tex ? albedo_tex : r->black_tex);
+
+        instance_gpu_t *inst = (instance_gpu_t *)vector_at(&r->inst_mats, b->start);
+        if (!inst)
+            continue;
+
+        int lodp1 = (debug_mode == 1) ? (int)(b->lod + 1u) : 0;
+        int packed = (debug_mode & 255) | ((lodp1 & 255) << 8);
+        shader_set_int(fwd, "u_DebugMode", packed);
+
+        int xfade_enabled = (b->lod == 0 || b->lod == 1) ? 1 : 0;
+        int xfade_mode = (b->lod == 1) ? 1 : 0;
+        shader_set_int(fwd, "u_LodXFadeEnabled", xfade_enabled);
+        shader_set_int(fwd, "u_LodXFadeMode", xfade_mode);
+
+        R_upload_instances(r, inst, b->count);
+
+        R_mesh_bind_instance_attribs(r, lod->vao);
+        R_apply_material_or_default(r, fwd, mat);
+        shader_set_float(fwd, "u_AlphaCutoff", mat_cutout ? alpha_cutoff : 0.0f);
+
+        glBindVertexArray(lod->vao);
+        R_stats_add_draw_instanced(r, lod->index_count, b->count);
+        glDrawElementsInstanced(GL_TRIANGLES, (GLsizei)lod->index_count, GL_UNSIGNED_INT, 0, (GLsizei)b->count);
+        glBindVertexArray(0);
+    }
+
+    if (draw_blend && blend_count)
+    {
+        qsort(blend_list, blend_count, sizeof(blend_batch_ref_t), R_blend_sort_back_to_front);
+
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glDepthMask(GL_FALSE);
+
+        for (uint32_t i = 0; i < blend_count; ++i)
+        {
+            inst_batch_t *b = blend_list[i].b;
+            if (!b)
+                continue;
+
+            asset_material_t *mat = NULL;
+            const mesh_lod_t *lod = NULL;
+            if (!R_resolve_batch_resources(r, b, NULL, NULL, &lod, &mat))
+                continue;
+
+            int mat_cutout = 0;
+            int mat_blend = 0;
+            int mat_doublesided = 0;
+            float alpha_cutoff = 0.0f;
+            uint32_t albedo_tex = 0;
+            R_material_state(r, mat, &mat_cutout, &mat_blend, &mat_doublesided, &alpha_cutoff, &albedo_tex);
+
+            if (!mat_blend)
+                continue;
+
+            if (mat_doublesided)
+            {
+                glDisable(GL_CULL_FACE);
+            }
+            else
+            {
+                glEnable(GL_CULL_FACE);
+                glCullFace(GL_BACK);
+            }
+
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, albedo_tex ? albedo_tex : r->black_tex);
+
+            instance_gpu_t *inst = (instance_gpu_t *)vector_at(&r->inst_mats, b->start);
+            if (!inst)
+                continue;
+
+            int lodp1 = (debug_mode == 1) ? (int)(b->lod + 1u) : 0;
+            int packed = (debug_mode & 255) | ((lodp1 & 255) << 8);
+            shader_set_int(fwd, "u_DebugMode", packed);
+
+            int xfade_enabled = (b->lod == 0 || b->lod == 1) ? 1 : 0;
+            int xfade_mode = (b->lod == 1) ? 1 : 0;
+            shader_set_int(fwd, "u_LodXFadeEnabled", xfade_enabled);
+            shader_set_int(fwd, "u_LodXFadeMode", xfade_mode);
+
+            R_upload_instances(r, inst, b->count);
+
+            R_mesh_bind_instance_attribs(r, lod->vao);
+            R_apply_material_or_default(r, fwd, mat);
+            shader_set_float(fwd, "u_AlphaCutoff", mat_cutout ? alpha_cutoff : 0.0f);
+
+            glBindVertexArray(lod->vao);
+            R_stats_add_draw_instanced(r, lod->index_count, b->count);
+            glDrawElementsInstanced(GL_TRIANGLES, (GLsizei)lod->index_count, GL_UNSIGNED_INT, 0, (GLsizei)b->count);
+            glBindVertexArray(0);
+        }
+    }
+
+    if (blend_list)
+        free(blend_list);
+}
+
 static void R_forward_one_pass(renderer_t *r)
 {
     shader_t *fwd = (r->default_shader_id != 0xFF) ? R_get_shader(r, r->default_shader_id) : NULL;
@@ -1566,83 +1855,9 @@ static void R_forward_one_pass(renderer_t *r)
     if (mode > 255)
         mode = 255;
 
-    for (uint32_t bi = 0; bi < r->inst_batches.size; ++bi)
-    {
-        inst_batch_t *b = (inst_batch_t *)vector_at(&r->inst_batches, bi);
-        if (!b || !ihandle_is_valid(b->model) || b->count == 0)
-            continue;
-
-        asset_model_t *mdl = R_resolve_model(r, b->model);
-        if (!mdl)
-            continue;
-
-        if (b->mesh_index >= mdl->meshes.size)
-            continue;
-
-        mesh_t *mesh = (mesh_t *)vector_at((vector_t *)&mdl->meshes, b->mesh_index);
-        if (!mesh)
-            continue;
-
-        const mesh_lod_t *lod = R_mesh_get_lod(mesh, b->lod);
-        if (!lod || !lod->vao || !lod->index_count)
-            continue;
-
-        asset_material_t *mat = R_resolve_material(r, mesh->material);
-
-        int mat_cutout = (mat && (mat->flags & MAT_FLAG_ALPHA_CUTOUT)) ? 1 : 0;
-        int mat_blend = (mat && (mat->flags & MAT_FLAG_ALPHA_BLEND)) ? 1 : 0;
-        int mat_doublesided = (mat && (mat->flags & MAT_FLAG_DOUBLE_SIDED)) ? 1 : 0;
-
-        if (mat_doublesided)
-        {
-            glDisable(GL_CULL_FACE);
-        }
-        else
-        {
-            glEnable(GL_CULL_FACE);
-            glCullFace(GL_BACK);
-        }
-
-        if (mat_cutout)
-        {
-            glDisable(GL_BLEND);
-            glDepthMask(GL_TRUE);
-        }
-        else if (mat_blend)
-        {
-            glEnable(GL_BLEND);
-            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-            glDepthMask(GL_FALSE);
-        }
-        else
-        {
-            glDisable(GL_BLEND);
-            glDepthMask(GL_TRUE);
-        }
-
-        instance_gpu_t *inst = (instance_gpu_t *)vector_at(&r->inst_mats, b->start);
-        if (!inst)
-            continue;
-
-        int lodp1 = (mode == 1) ? (int)(b->lod + 1u) : 0;
-        int packed = (mode & 255) | ((lodp1 & 255) << 8);
-        shader_set_int(fwd, "u_DebugMode", packed);
-
-        int xfade_enabled = (b->lod == 0 || b->lod == 1) ? 1 : 0;
-        int xfade_mode = (b->lod == 1) ? 1 : 0;
-        shader_set_int(fwd, "u_LodXFadeEnabled", xfade_enabled);
-        shader_set_int(fwd, "u_LodXFadeMode", xfade_mode);
-
-        R_upload_instances(r, inst, b->count);
-
-        R_mesh_bind_instance_attribs(r, lod->vao);
-        R_apply_material_or_default(r, fwd, mat);
-
-        glBindVertexArray(lod->vao);
-        R_stats_add_draw_instanced(r, lod->index_count, b->count);
-        glDrawElementsInstanced(GL_TRIANGLES, (GLsizei)lod->index_count, GL_UNSIGNED_INT, 0, (GLsizei)b->count);
-        glBindVertexArray(0);
-    }
+    // Opaque + cutout first, blended afterwards to respect depth and transparency.
+    R_forward_draw_filtered(r, fwd, 0, mode);
+    R_forward_draw_filtered(r, fwd, 1, mode);
 
     glDisable(GL_BLEND);
     glDepthMask(GL_TRUE);
@@ -1909,6 +2124,12 @@ void R_begin_frame(renderer_t *r)
 
     glBindFramebuffer(GL_FRAMEBUFFER, r->light_fbo);
     glViewport(0, 0, r->fb_size.x, r->fb_size.y);
+
+    // Reset state that can affect clears (UI rendering often leaves scissor/masks enabled).
+    glDisable(GL_SCISSOR_TEST);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glDepthMask(GL_TRUE);
+    glClearDepth(1.0);
 
     glClearColor(r->clear_color.x, r->clear_color.y, r->clear_color.z, 0.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
