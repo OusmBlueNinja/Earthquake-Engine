@@ -43,6 +43,7 @@ uniform int u_ManualSRGB;
 
 uniform int u_MatAlphaCutout;
 uniform int u_MatAlphaBlend;
+uniform int u_MatDoubleSided;
 
 uniform int u_HasIBL;
 uniform float u_IBLIntensity;
@@ -241,7 +242,14 @@ void main()
     vec3 Nw = normalize(v.worldN);
     vec3 Vw = normalize(u_CameraPos - v.worldPos);
 
-    mat3 TBN = build_tbn(Nw, v.tangent);
+    vec4 tangent = v.tangent;
+    if (u_MatDoubleSided != 0 && !gl_FrontFacing)
+    {
+        Nw = -Nw;
+        tangent.xyz = -tangent.xyz;
+    }
+
+    mat3 TBN = build_tbn(Nw, tangent);
 
     vec2 uv = v.uv;
 
@@ -256,6 +264,7 @@ void main()
         alpha_tex = texture(u_AlbedoTex, uv).a;
 
     float alpha = 1.0;
+    float coverage = 1.0;
     if (u_HasMaterial != 0)
         alpha = clamp(alpha_tex * u_Opacity, 0.0, 1.0);
 
@@ -265,30 +274,51 @@ void main()
         float a = smoothstep(u_AlphaCutoff - w, u_AlphaCutoff + w, alpha);
         if (a < 0.5)
             discard;
+        coverage = a;
         alpha = 1.0;
     }
     else if (u_MatAlphaBlend != 0)
     {
         alpha = clamp(alpha, 0.0, 1.0);
+        coverage = alpha;
     }
     else
     {
         alpha = 1.0;
+        coverage = 1.0;
     }
+
+    int mode = dbg_mode();
 
     if (u_LodXFadeEnabled != 0)
     {
         float f = clamp(v.lodFade01, 0.0, 1.0);
-        float n = dither_noise(gl_FragCoord.xy);
 
-        if (u_LodXFadeMode == 0)
+        if (u_MatAlphaBlend != 0)
         {
-            if (n < f)
-                discard;
+            float w = (u_LodXFadeMode == 0) ? (1.0 - f) : f;
+            alpha = clamp(alpha * w, 0.0, 1.0);
+            if (mode == 6)
+            {
+                o_Color = vec4(vec3(w), 1.0);
+                return;
+            }
         }
         else
         {
-            if (n >= f)
+            float w = (u_LodXFadeMode == 0) ? (1.0 - f) : f;
+            alpha = clamp(w, 0.0, 1.0);
+            coverage = alpha;
+
+            bool would_discard = (alpha <= 0.0);
+            if (mode == 6)
+            {
+                vec3 col = would_discard ? vec3(1.0, 0.0, f) : vec3(0.0, 1.0, f);
+                o_Color = vec4(col, 1.0);
+                return;
+            }
+
+            if (would_discard)
                 discard;
         }
     }
@@ -300,7 +330,7 @@ void main()
         N = normalize(TBN * Nts);
     }
 
-    int mode = dbg_mode();
+
 
     ivec2 tileXY = ivec2(int(gl_FragCoord.x) / max(u_TileSize, 1), int(gl_FragCoord.y) / max(u_TileSize, 1));
     tileXY.x = clamp(tileXY.x, 0, max(u_TileCountX - 1, 0));
@@ -341,11 +371,14 @@ void main()
 
     if (mode == 4)
     {
-        o_Color = vec4(1.0, 1.0, 1.0, alpha);
+        if (u_MatAlphaBlend != 0)
+            o_Color = vec4(vec3(alpha), alpha);
+        else
+            o_Color = vec4(1.0, 1.0, 1.0, alpha);
         return;
     }
 
-        if (mode == 5)
+    if (mode == 5)
     {
         vec3 a = vec3(1.0);
         if ((u_MaterialTexMask & (1 << 0)) != 0)
@@ -354,7 +387,10 @@ void main()
             if (u_ManualSRGB != 0)
                 a = srgb_to_linear(a);
         }
-        o_Color = vec4(a, 1.0);
+        if (u_MatAlphaBlend != 0)
+            o_Color = vec4(a * alpha, alpha);
+        else
+            o_Color = vec4(a, 1.0);
         return;
     }
 
@@ -369,6 +405,8 @@ void main()
         vec3 a = texture(u_AlbedoTex, uv).rgb;
         if (u_ManualSRGB != 0)
             a = srgb_to_linear(a);
+        if (u_MatAlphaBlend != 0)
+            a *= alpha_tex;
         albedo *= a;
     }
 
@@ -402,7 +440,8 @@ void main()
     metallic = clamp(metallic, 0.0, 1.0);
     albedo = max(albedo, vec3(0.0));
 
-    float NoV = saturate(dot(N, Vw));
+    float NoV_raw = dot(N, Vw);
+    float NoV = (u_MatDoubleSided != 0) ? saturate(abs(NoV_raw)) : saturate(NoV_raw);
     vec3 F0 = mix(vec3(0.04), albedo, metallic);
 
     vec3 Lo = vec3(0.0);
@@ -439,7 +478,8 @@ void main()
             }
         }
 
-        float NoL = saturate(dot(N, L));
+        float NoL_raw = dot(N, L);
+        float NoL = (u_MatDoubleSided != 0) ? saturate(abs(NoL_raw)) : saturate(NoL_raw);
         if (NoL <= 1e-5)
             continue;
 
@@ -489,10 +529,18 @@ void main()
     if (mode == 1)
         color = debug_lod_tint(color, dbg_lod_p1());
 
-    vec3 mapped = vec3(1.0) - exp(-color);
+    // Write HDR to the scene buffer; tone mapping happens in `res/shaders/present.frag`.
+    // For cutout/A2C, attenuate lighting by coverage to reduce edge "specular glints".
+    if (u_MatAlphaBlend == 0)
+        color *= clamp(coverage, 0.0, 1.0);
+
+    vec3 mapped = color;
 
     if (mode == 2)
         mapped = mix(mapped, overlay2, overlay2_w);
 
-    o_Color = vec4(mapped, alpha);
+    if (u_MatAlphaBlend != 0)
+        o_Color = vec4(mapped * alpha, alpha);
+    else
+        o_Color = vec4(mapped, alpha);
 }

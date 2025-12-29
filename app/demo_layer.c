@@ -175,7 +175,12 @@ typedef struct demo_layer_state_t
 static void demo_layer_apply_camera(demo_layer_state_t *s, renderer_t *r)
 {
     float aspect = (r->fb_size.y != 0) ? ((float)r->fb_size.x / (float)r->fb_size.y) : 1.0f;
-    camera_set_perspective(&s->cam, s->fovy_rad, aspect, 0.1f, 200000.0f);
+
+    // Dynamically tighten the near/far planes to keep depth precision reasonable.
+    // The previous far plane (200000) caused severe depth precision loss and "far renders over near" artifacts.
+    float near_plane = demo_clampf(s->dist * 0.002f, 0.1f, 50.0f);
+    float far_plane = demo_clampf(s->dist * 2.0f, 200.0f, 50000.0f);
+    camera_set_perspective(&s->cam, s->fovy_rad, aspect, near_plane, far_plane);
 
     s->pitch = demo_clampf(s->pitch, -1.55f, 1.55f);
     s->dist = demo_clampf(s->dist, 1.5f, 20000.0f);
