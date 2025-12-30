@@ -29,6 +29,8 @@ typedef enum
     SV_PORT,
     CL_VSYNC,
     CL_BLOOM,
+    CL_MSAA,
+    CL_MSAA_SAMPLES,
     CL_RENDER_DEBUG,
     CL_CPU_THREADS,
     CL_LOG_LEVEL,

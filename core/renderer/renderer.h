@@ -33,6 +33,8 @@ typedef struct renderer_cfg_t
 {
     bool bloom;
     bool shadows;
+    bool msaa;
+    int msaa_samples;
 
     bool wireframe;
     int debug_mode;
@@ -148,6 +150,10 @@ typedef struct renderer_t
     uint32_t gbuf_fbo;
     uint32_t light_fbo;
     uint32_t final_fbo;
+    uint32_t msaa_fbo;
+    uint32_t msaa_color_rb;
+    uint32_t msaa_depth_rb;
+    int msaa_samples;
 
     uint32_t gbuf_albedo;
     uint32_t gbuf_normal;
@@ -208,3 +214,6 @@ const shader_t *R_get_shader_const(const renderer_t *r, uint8_t shader_id);
 uint32_t R_get_final_fbo(const renderer_t *r);
 
 shader_t *R_new_shader_from_files(const char *vp, const char *fp);
+
+//! private
+void R_update_resize(renderer_t *r);

@@ -102,6 +102,26 @@ float saturate(float x)
     return clamp(x, 0.0, 1.0);
 }
 
+float dither8x8_threshold(vec2 fragCoord)
+{
+    int x = int(fragCoord.x) & 7;
+    int y = int(fragCoord.y) & 7;
+    int i = x + y * 8;
+
+    const int bayer[64] = int[64](
+        0, 32, 8, 40, 2, 34, 10, 42,
+        48, 16, 56, 24, 50, 18, 58, 26,
+        12, 44, 4, 36, 14, 46, 6, 38,
+        60, 28, 52, 20, 62, 30, 54, 22,
+        3, 35, 11, 43, 1, 33, 9, 41,
+        51, 19, 59, 27, 49, 17, 57, 25,
+        15, 47, 7, 39, 13, 45, 5, 37,
+        63, 31, 55, 23, 61, 29, 53, 21
+    );
+
+    return (float(bayer[i]) + 0.5) * (1.0 / 64.0);
+}
+
 int shadow_pick_cascade(float viewDepth)
 {
     int c = clamp(u_ShadowCascadeCount, 1, 4);
@@ -467,11 +487,11 @@ void main()
 
     if (u_LodXFadeEnabled != 0)
     {
-        float f = clamp(v.lodFade01, 0.0, 1.0);
+        float t = clamp(v.lodFade01, 0.0, 1.0);
 
         if (u_MatAlphaBlend != 0)
         {
-            float w = (u_LodXFadeMode == 0) ? (1.0 - f) : f;
+            float w = (u_LodXFadeMode == 0) ? (1.0 - t) : t;
             alpha = clamp(alpha * w, 0.0, 1.0);
             if (mode == 6)
             {
@@ -481,14 +501,18 @@ void main()
         }
         else
         {
-            float w = (u_LodXFadeMode == 0) ? (1.0 - f) : f;
-            alpha = clamp(w, 0.0, 1.0);
-            coverage = alpha;
+            // Dithered LOD cross-fade (avoids translucency + avoids MSAA alpha-to-coverage patterns).
+            // Uses a single threshold so LOD0/LOD1 are mutually exclusive per pixel.
+            float r = dither8x8_threshold(gl_FragCoord.xy);
+            bool would_discard = false;
+            if (u_LodXFadeMode == 0)
+                would_discard = (r < t);
+            else
+                would_discard = (r >= t);
 
-            bool would_discard = (alpha <= 0.0);
             if (mode == 6)
             {
-                vec3 col = would_discard ? vec3(1.0, 0.0, f) : vec3(0.0, 1.0, f);
+                vec3 col = would_discard ? vec3(1.0, 0.0, t) : vec3(0.0, 1.0, t);
                 o_Color = vec4(col, 1.0);
                 return;
             }

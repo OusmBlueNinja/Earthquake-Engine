@@ -145,7 +145,7 @@ ihandle_t asset_manager_request_ptr(asset_manager_t *am, asset_type_t type, void
 ihandle_t asset_manager_request(asset_manager_t *am, asset_type_t type, const char *path);
 ihandle_t asset_manager_submit_raw(asset_manager_t *am, asset_type_t type, const void *raw_asset);
 
-void asset_manager_pump(asset_manager_t *am);
+void asset_manager_pump(asset_manager_t *am, uint32_t max_per_frame);
 
 const asset_any_t *asset_manager_get_any(const asset_manager_t *am, ihandle_t h);
 

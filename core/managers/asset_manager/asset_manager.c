@@ -1152,15 +1152,21 @@ ihandle_t asset_manager_submit_raw(asset_manager_t *am, asset_type_t type, const
 
     return h;
 }
-
-void asset_manager_pump(asset_manager_t *am)
+void asset_manager_pump(asset_manager_t *am, uint32_t max_per_frame)
 {
     if (!am)
         return;
 
+    if (max_per_frame == 0)
+        return;
+
     asset_done_t d;
-    while (doneq_pop(&am->done, &d))
+    uint32_t processed = 0;
+
+    while (processed < max_per_frame && doneq_pop(&am->done, &d))
     {
+        processed++;
+
         mutex_lock_impl(&am->state_m);
         asset_slot_t *slot = NULL;
         bool ok_slot = slot_valid_locked(am, d.handle, &slot);
@@ -1343,8 +1349,6 @@ static bool buf_align(buf_t *b, uint32_t align)
     return true;
 }
 
-
-
 static bool write_file_all(const char *path, const void *data, uint32_t size)
 {
     FILE *f = fopen(path, "wb");
@@ -1439,7 +1443,6 @@ static bool asset_save_blob(asset_manager_t *am, const asset_module_desc_t *m, i
     return true;
 }
 
-
 static void asset_free_blob(asset_manager_t *am, const asset_module_desc_t *m, asset_blob_t *blob)
 {
     if (!blob)
@@ -1516,7 +1519,7 @@ static bool asset_manager_build_pack_locked(asset_manager_t *am, uint8_t **out_d
         {
             char hb[64];
             handle_hex_triplet(hb, persistent);
-            LOG_ERROR("Asset save module invalid: type=%s handle=%s", ASSET_TYPE_TO_STRING( s->asset.type), hb);
+            LOG_ERROR("Asset save module invalid: type=%s handle=%s", ASSET_TYPE_TO_STRING(s->asset.type), hb);
             continue;
         }
 
@@ -1527,7 +1530,7 @@ static bool asset_manager_build_pack_locked(asset_manager_t *am, uint8_t **out_d
         {
             char hb[64];
             handle_hex_triplet(hb, persistent);
-            LOG_ERROR("Asset save failed: type=%s handle=%s", ASSET_TYPE_TO_STRING( s->asset.type), hb);
+            LOG_ERROR("Asset save failed: type=%s handle=%s", ASSET_TYPE_TO_STRING(s->asset.type), hb);
             asset_free_blob(am, m, &blob);
             continue;
         }
@@ -1628,7 +1631,7 @@ static bool asset_manager_save_separate_assets_locked(asset_manager_t *am, const
                 persistent0 = make_persistent_handle(am, s->asset.type);
             char hb0[64];
             handle_hex_triplet_filesafe(hb0, persistent0);
-            LOG_ERROR("Asset has no save function registered: type=%s handle=%s", ASSET_TYPE_TO_STRING( s->asset.type), hb0);
+            LOG_ERROR("Asset has no save function registered: type=%s handle=%s", ASSET_TYPE_TO_STRING(s->asset.type), hb0);
             continue;
         }
 
@@ -1641,7 +1644,7 @@ static bool asset_manager_save_separate_assets_locked(asset_manager_t *am, const
         {
             char hb[64];
             handle_hex_triplet_filesafe(hb, persistent);
-            LOG_ERROR("Asset has no save module: type=%s handle=%s", ASSET_TYPE_TO_STRING( s->asset.type), hb);
+            LOG_ERROR("Asset has no save module: type=%s handle=%s", ASSET_TYPE_TO_STRING(s->asset.type), hb);
             continue;
         }
 
@@ -1650,7 +1653,7 @@ static bool asset_manager_save_separate_assets_locked(asset_manager_t *am, const
         {
             char hb[64];
             handle_hex_triplet_filesafe(hb, persistent);
-            LOG_ERROR("Asset save module invalid: type=%s handle=%s", ASSET_TYPE_TO_STRING( s->asset.type), hb);
+            LOG_ERROR("Asset save module invalid: type=%s handle=%s", ASSET_TYPE_TO_STRING(s->asset.type), hb);
             continue;
         }
 
@@ -1661,7 +1664,7 @@ static bool asset_manager_save_separate_assets_locked(asset_manager_t *am, const
         {
             char hb[64];
             handle_hex_triplet_filesafe(hb, persistent);
-            LOG_ERROR("Asset save failed: type=%s handle=%s", ASSET_TYPE_TO_STRING( s->asset.type), hb);
+            LOG_ERROR("Asset save failed: type=%s handle=%s", ASSET_TYPE_TO_STRING(s->asset.type), hb);
             asset_free_blob(am, m, &blob);
             continue;
         }

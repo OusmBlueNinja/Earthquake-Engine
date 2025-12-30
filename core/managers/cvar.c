@@ -53,6 +53,8 @@ static cvar_entry_t g_cvars[SV_CVAR_COUNT] = {
 
     [CL_VSYNC] = {.name = "cl_vsync", .type = CVAR_BOOL, .def.b = true, .flags = CVAR_FLAG_NONE},
     [CL_BLOOM] = {.name = "cl_bloom", .type = CVAR_BOOL, .def.b = true, .flags = CVAR_FLAG_NONE},
+    [CL_MSAA] = {.name = "cl_msaa_enabled", .type = CVAR_BOOL, .def.b = false, .flags = CVAR_FLAG_NONE},
+    [CL_MSAA_SAMPLES] = {.name = "cl_msaa_samples", .type = CVAR_INT, .def.i = 4, .flags = CVAR_FLAG_NONE},
     [CL_RENDER_DEBUG] = {.name = "cl_render_debug", .type = CVAR_INT, .def.i = 0, .flags = CVAR_FLAG_NO_LOAD | CVAR_FLAG_NO_SAVE},
     [CL_CPU_THREADS] = {.name = "cl_cpu_threads", .type = CVAR_INT, .def.i = 1, .flags = CVAR_FLAG_READONLY | CVAR_FLAG_NO_LOAD},
     [CL_LOG_LEVEL] = {.name = "cl_log_level", .type = CVAR_INT, .def.i = LOG_LEVEL_INFO, .flags = CVAR_FLAG_NONE},

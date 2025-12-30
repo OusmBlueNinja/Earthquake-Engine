@@ -217,16 +217,61 @@ static void R_user_cfg_pull_from_cvars(renderer_t *r)
 {
     r->cfg.bloom = cvar_get_bool_name("cl_bloom");
     r->cfg.shadows = cvar_get_bool_name("cl_r_shadows");
+    r->cfg.msaa = cvar_get_bool_name("cl_msaa_enabled");
+    r->cfg.msaa_samples = cvar_get_int_name("cl_msaa_samples");
+    if (r->cfg.msaa_samples < 1)
+        r->cfg.msaa_samples = 1;
+    if (r->cfg.msaa_samples > 16)
+        r->cfg.msaa_samples = 16;
 
     r->cfg.wireframe = cvar_get_bool_name("cl_r_wireframe");
     r->cfg.debug_mode = cvar_get_int_name("cl_render_debug");
 }
 
 static int R_mip_count_2d(int w, int h);
+static uint32_t R_scene_draw_fbo(const renderer_t *r);
+static void R_msaa_resolve(renderer_t *r, GLbitfield mask);
 
 static float R_luminance(vec3 c)
 {
     return c.x * 0.2126f + c.y * 0.7152f + c.z * 0.0722f;
+}
+
+static uint32_t R_scene_draw_fbo(const renderer_t *r)
+{
+    if (!r)
+        return 0;
+    if (r->msaa_fbo && r->cfg.msaa && r->msaa_samples > 1)
+        return r->msaa_fbo;
+    return r->light_fbo;
+}
+
+static void R_msaa_resolve(renderer_t *r, GLbitfield mask)
+{
+    if (!r)
+        return;
+    if (!r->msaa_fbo || !r->light_fbo)
+        return;
+    if (!r->cfg.msaa || r->msaa_samples <= 1)
+        return;
+
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, r->msaa_fbo);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, r->light_fbo);
+
+    int w = r->fb_size.x;
+    int h = r->fb_size.y;
+    if (w < 1)
+        w = 1;
+    if (h < 1)
+        h = 1;
+
+    GLbitfield m = mask & (GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    if (m == 0)
+        return;
+
+    glBlitFramebuffer(0, 0, w, h,
+                      0, 0, w, h,
+                      m, GL_NEAREST);
 }
 
 static void R_auto_exposure_update(renderer_t *r)
@@ -385,7 +430,17 @@ static void R_shadow_ensure(renderer_t *r)
 
 static void R_on_cvar_any(renderer_t *r)
 {
+    bool old_msaa = r->cfg.msaa;
+    int old_msaa_samples = r->cfg.msaa_samples;
+
     R_user_cfg_pull_from_cvars(r);
+
+    if (r->cfg.msaa != old_msaa || r->cfg.msaa_samples != old_msaa_samples)
+    {
+        r->fb_size_last = (vec2i){0, 0};
+        r->exposure_adapted_valid = false;
+        R_update_resize(r);
+    }
 }
 
 static void R_on_bloom_change(sv_cvar_key_t key, const void *old_state, const void *state)
@@ -508,6 +563,13 @@ static void R_gl_delete_targets(renderer_t *r)
         glDeleteFramebuffers(1, &r->light_fbo);
     if (r->final_fbo)
         glDeleteFramebuffers(1, &r->final_fbo);
+    if (r->msaa_fbo)
+        glDeleteFramebuffers(1, &r->msaa_fbo);
+
+    if (r->msaa_color_rb)
+        glDeleteRenderbuffers(1, &r->msaa_color_rb);
+    if (r->msaa_depth_rb)
+        glDeleteRenderbuffers(1, &r->msaa_depth_rb);
 
     if (r->gbuf_albedo)
         glDeleteTextures(1, &r->gbuf_albedo);
@@ -528,6 +590,9 @@ static void R_gl_delete_targets(renderer_t *r)
     r->gbuf_fbo = 0;
     r->light_fbo = 0;
     r->final_fbo = 0;
+    r->msaa_fbo = 0;
+    r->msaa_color_rb = 0;
+    r->msaa_depth_rb = 0;
 
     r->gbuf_albedo = 0;
     r->gbuf_normal = 0;
@@ -695,6 +760,52 @@ static void R_create_targets(renderer_t *r)
     }
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    // Optional MSAA scene buffer (resolved into light_fbo targets)
+    r->msaa_fbo = 0;
+    r->msaa_color_rb = 0;
+    r->msaa_depth_rb = 0;
+    r->msaa_samples = 0;
+
+    if (r->cfg.msaa && r->cfg.msaa_samples > 1)
+    {
+        GLint max_samples = 0;
+        glGetIntegerv(GL_MAX_SAMPLES, &max_samples);
+        int samples = r->cfg.msaa_samples;
+        if (max_samples > 0 && samples > max_samples)
+            samples = max_samples;
+        if (samples < 2)
+            samples = 2;
+
+        glGenFramebuffers(1, &r->msaa_fbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, r->msaa_fbo);
+
+        glGenRenderbuffers(1, &r->msaa_color_rb);
+        glBindRenderbuffer(GL_RENDERBUFFER, r->msaa_color_rb);
+        glRenderbufferStorageMultisample(GL_RENDERBUFFER, samples, GL_RGBA16F, r->fb_size.x, r->fb_size.y);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, r->msaa_color_rb);
+
+        glGenRenderbuffers(1, &r->msaa_depth_rb);
+        glBindRenderbuffer(GL_RENDERBUFFER, r->msaa_depth_rb);
+        glRenderbufferStorageMultisample(GL_RENDERBUFFER, samples, GL_DEPTH_COMPONENT32F, r->fb_size.x, r->fb_size.y);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, r->msaa_depth_rb);
+
+        {
+            uint32_t bufs[] = {GL_COLOR_ATTACHMENT0};
+            glDrawBuffers(1, (const GLenum *)bufs);
+        }
+
+        {
+            uint32_t status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+            if (status != GL_FRAMEBUFFER_COMPLETE)
+                LOG_ERROR("MSAA FBO incomplete: 0x%x", (unsigned)status);
+        }
+
+        glBindRenderbuffer(GL_RENDERBUFFER, 0);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+        r->msaa_samples = samples;
+    }
 
     R_fp_resize_tile_buffers(r, r->fb_size, 1u);
     R_fp_ensure_lights_capacity(r, 1u);
@@ -1869,7 +1980,7 @@ static void R_depth_prepass(renderer_t *r)
     if (!r || !depth)
         return;
 
-    glBindFramebuffer(GL_FRAMEBUFFER, r->light_fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, R_scene_draw_fbo(r));
     glViewport(0, 0, r->fb_size.x, r->fb_size.y);
 
     glDisable(GL_BLEND);
@@ -2376,7 +2487,7 @@ static void R_sky_pass(renderer_t *r)
     if (!sky)
         return;
 
-    glBindFramebuffer(GL_FRAMEBUFFER, r->light_fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, R_scene_draw_fbo(r));
     glViewport(0, 0, r->fb_size.x, r->fb_size.y);
 
     glDisable(GL_CULL_FACE);
@@ -2499,7 +2610,10 @@ static void R_forward_draw_filtered(renderer_t *r, shader_t *fwd, int draw_blend
         int xfade_mode = (b->lod == 1) ? 1 : 0;
         shader_set_int(fwd, "u_LodXFadeEnabled", xfade_enabled);
         shader_set_int(fwd, "u_LodXFadeMode", xfade_mode);
-        if (xfade_enabled)
+        // IMPORTANT:
+        // LOD cross-fade should not turn the whole mesh translucent under MSAA.
+        // We only use alpha-to-coverage for alpha-cutout materials to smooth cutout edges.
+        if (r->cfg.msaa && r->msaa_samples > 1 && mat_cutout)
             glEnable(GL_SAMPLE_ALPHA_TO_COVERAGE);
         else
             glDisable(GL_SAMPLE_ALPHA_TO_COVERAGE);
@@ -2620,7 +2734,7 @@ static void R_forward_one_pass(renderer_t *r)
     uint32_t brdf = ibl_get_brdf_lut(r);
     int has_ibl = (irr && pre && brdf) ? 1 : 0;
 
-    glBindFramebuffer(GL_FRAMEBUFFER, r->light_fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, R_scene_draw_fbo(r));
     glViewport(0, 0, r->fb_size.x, r->fb_size.y);
 
     glEnable(GL_DEPTH_TEST);
@@ -2839,6 +2953,8 @@ int R_init(renderer_t *r, asset_manager_t *assets)
         LOG_ERROR("Bloom init failed");
 
     cvar_set_callback_name("cl_bloom", R_on_bloom_change);
+    cvar_set_callback_name("cl_msaa_enabled", R_on_bloom_change);
+    cvar_set_callback_name("cl_msaa_samples", R_on_bloom_change);
     cvar_set_callback_name("cl_render_debug", R_on_debug_mode_change);
     cvar_set_callback_name("cl_r_shadows", R_on_bloom_change);
 
@@ -2971,7 +3087,7 @@ void R_begin_frame(renderer_t *r)
     glDepthMask(GL_TRUE);
     glClearDepth(1.0);
 
-    glBindFramebuffer(GL_FRAMEBUFFER, r->light_fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, R_scene_draw_fbo(r));
     glViewport(0, 0, r->fb_size.x, r->fb_size.y);
 
     glClearColor(r->clear_color.x, r->clear_color.y, r->clear_color.z, 0.0f);
@@ -3005,11 +3121,17 @@ void R_end_frame(renderer_t *r)
 
     R_depth_prepass(r);
 
+    // Resolve depth early so compute passes can sample it (tile cull, sky, etc).
+    R_msaa_resolve(r, GL_DEPTH_BUFFER_BIT);
+
     R_fp_dispatch(r);
 
     R_sky_pass(r);
 
     R_forward_one_pass(r);
+
+    // Resolve color (and depth) for post-processing/tonemap.
+    R_msaa_resolve(r, GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 

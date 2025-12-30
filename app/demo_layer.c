@@ -501,7 +501,7 @@ static void demo_layer_draw(layer_t *layer)
     settings.delta_time = s->last_dt;
     R_push_scene_settings(r, &settings);
 
-    R_push_camera(r, &s->cam);
+    // R_push_camera(r, &s->cam);
     R_push_hdri(r, s->hdri_h);
 
     light_t lights[2 + MOVING_LIGHTS];

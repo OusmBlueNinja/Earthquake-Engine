@@ -197,7 +197,7 @@ void loop_application(void)
                 layer->update(layer, (float)dt);
         }
 
-                asset_manager_pump(&g_application.asset_manager);
+        asset_manager_pump(&g_application.asset_manager, /* How many assets to load each frame*/ 8);
 
         // R_resize(&g_application.renderer, wm_get_framebuffer_size(&g_application.window_manager));
 
