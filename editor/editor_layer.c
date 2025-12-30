@@ -429,9 +429,11 @@ void layer_init(layer_t *layer)
     d->am_show_queues = 1;
 
     d->asset_slot_pick = 0;
-    d->show_ui_demo = 1;
+    d->show_ui_demo = 0;
 
     ui_gl_backend_add_font_from_ttf_file(&d->glui, 0, "res/fonts/0xProtoNerdFontPropo-Regular.ttf", 16.0f);
+
+    ui_dock_load_layout_file(&d->ui, "editor_layout.txt");
 
     d->ui.style.bg = ui_color(ui_v3(0.05f, 0.055f, 0.065f), 1.0f);
     d->ui.style.panel_bg = ui_color(ui_v3(0.075f, 0.082f, 0.095f), 1.0f);
@@ -837,6 +839,7 @@ void layer_shutdown(layer_t *layer)
 
     if (d->inited)
     {
+        ui_dock_save_layout_file(&d->ui, "editor_layout.txt");
         ui_gl_backend_shutdown(&d->glui);
         ui_shutdown(&d->ui);
     }
