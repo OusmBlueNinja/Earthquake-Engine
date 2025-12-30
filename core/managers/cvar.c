@@ -81,6 +81,15 @@ static cvar_entry_t g_cvars[SV_CVAR_COUNT] = {
     [CL_R_SSR_MAX_DIST] = {.name = "cl_r_ssr_max_dist", .type = CVAR_FLOAT, .def.f = 50.0f, .flags = CVAR_FLAG_NONE},
     [CL_R_FORCE_LOD_LEVEL] = {.name = "cl_r_force_lod_level", .type = CVAR_INT, .def.i = -1, .flags = CVAR_FLAG_NONE},
 
+    [CL_R_SHADOWS] = {.name = "cl_r_shadows", .type = CVAR_BOOL, .def.b = true, .flags = CVAR_FLAG_NONE},
+    [CL_R_SHADOW_CASCADES] = {.name = "cl_r_shadow_cascades", .type = CVAR_INT, .def.i = 4, .flags = CVAR_FLAG_NONE},
+    [CL_R_SHADOW_MAP_SIZE] = {.name = "cl_r_shadow_map_size", .type = CVAR_INT, .def.i = 2048, .flags = CVAR_FLAG_NONE},
+    [CL_R_SHADOW_MAX_DIST] = {.name = "cl_r_shadow_max_dist", .type = CVAR_FLOAT, .def.f = 100.0f, .flags = CVAR_FLAG_NONE},
+    [CL_R_SHADOW_SPLIT_LAMBDA] = {.name = "cl_r_shadow_split_lambda", .type = CVAR_FLOAT, .def.f = 0.65f, .flags = CVAR_FLAG_NONE},
+    [CL_R_SHADOW_BIAS] = {.name = "cl_r_shadow_bias", .type = CVAR_FLOAT, .def.f = 0.0015f, .flags = CVAR_FLAG_NONE},
+    [CL_R_SHADOW_NORMAL_BIAS] = {.name = "cl_r_shadow_normal_bias", .type = CVAR_FLOAT, .def.f = 0.004f, .flags = CVAR_FLAG_NONE},
+    [CL_R_SHADOW_PCF] = {.name = "cl_r_shadow_pcf", .type = CVAR_BOOL, .def.b = true, .flags = CVAR_FLAG_NONE},
+
     [CL_R_WIREFRAME] = {.name = "cl_r_wireframe", .type = CVAR_BOOL, .def.b = false, .flags = CVAR_FLAG_NONE},
 };
 

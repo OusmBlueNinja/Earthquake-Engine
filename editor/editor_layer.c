@@ -638,6 +638,10 @@ void layer_post_update(layer_t *layer, float dt)
             ui_layout_row(&d->ui.layout, d->ui.style.line_h, 1, 0, d->ui.style.spacing);
             if (ui_radio(&d->ui, "6 LOD Dither", 0, &dbg, 6))
                 cvar_set_int_name("cl_render_debug", dbg);
+
+            ui_layout_row(&d->ui.layout, d->ui.style.line_h, 1, 0, d->ui.style.spacing);
+            if (ui_radio(&d->ui, "7 Shadow Cascades", 0, &dbg, 7))
+                cvar_set_int_name("cl_render_debug", dbg);
         }
 
         ui_layout_row(&d->ui.layout, d->ui.style.line_h, 1, 0, d->ui.style.spacing);
