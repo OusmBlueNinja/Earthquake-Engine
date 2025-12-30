@@ -226,6 +226,33 @@ void wm_set_title(window_manager *wm, const char *title)
     glfwSetWindowTitle(wm->window, title);
 }
 
+void wm_set_cursor_state(window_manager *wm, int state)
+{
+    if (!wm || !wm->window)
+        return;
+
+    int mode = GLFW_CURSOR_NORMAL;
+
+    switch (state)
+    {
+    case WM_CURSOR_NORMAL:
+        mode = GLFW_CURSOR_NORMAL;
+        break;
+    case WM_CURSOR_HIDDEN:
+        mode = GLFW_CURSOR_HIDDEN;
+        break;
+    case WM_CURSOR_DISABLED:
+        mode = GLFW_CURSOR_DISABLED;
+        break;
+    default:
+        mode = GLFW_CURSOR_NORMAL;
+        state = WM_CURSOR_NORMAL;
+        break;
+    }
+
+    glfwSetInputMode(wm->window, GLFW_CURSOR, mode);
+}
+
 double wm_get_time(void)
 {
     return glfwGetTime();

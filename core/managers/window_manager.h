@@ -25,6 +25,14 @@ enum
     WM_VSYNC_MAX
 };
 
+enum
+{
+    WM_CURSOR_NORMAL = 0,
+    WM_CURSOR_HIDDEN = 1,
+    WM_CURSOR_DISABLED = 2,
+    WM_CURSOR_MAX
+};
+
 int wm_init(window_manager *wm);
 void wm_shutdown(window_manager *wm);
 
@@ -34,6 +42,10 @@ void wm_swap_buffers(window_manager *wm);
 
 void wm_set_vsync(window_manager *wm, int state);
 void wm_set_title(window_manager *wm, const char *title);
+void wm_set_cursor_state(window_manager *wm, int state);
+
+
+
 
 double wm_get_time(void);
 vec2i wm_get_framebuffer_size(window_manager *wm);

@@ -107,6 +107,10 @@ typedef struct ui_ctx_t
 
     ui_array_t windows;
 
+    // Optional cursor state callback (e.g., integrate with your window manager).
+    void (*set_cursor_state_fn)(void *user, int state);
+    void *set_cursor_state_user;
+
     ui_io_t io;
     float delta_time;
     ui_vec2_t prev_mouse;
@@ -138,6 +142,10 @@ typedef struct ui_ctx_t
 
 void ui_init(ui_ctx_t *ui, ui_realloc_fn rfn, void *ruser);
 void ui_shutdown(ui_ctx_t *ui);
+
+// Cursor state routing (UI doesn't assume a windowing backend).
+void ui_set_cursor_state_callback(ui_ctx_t *ui, void (*fn)(void *user, int state), void *user);
+void ui_set_cursor_state(ui_ctx_t *ui, int state);
 
 void ui_input_mouse_pos(ui_ctx_t *ui, ui_vec2_t pos);
 void ui_input_mouse_btn(ui_ctx_t *ui, int button, int down);
