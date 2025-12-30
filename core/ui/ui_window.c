@@ -1392,6 +1392,11 @@ static void uiw_dock_collect_splitters(ui_win_ctx_t *c, ui_dockspace_t *ds, uint
     int hovered = uiw_pt_in(m, hr);
     if (hovered && ui->active_id == 0)
         ui->hot_id = sid;
+    if (hovered || ui->active_id == sid)
+    {
+        ui_request_cursor_state(ui, UI_CURSOR_NORMAL, 90);
+        ui_request_cursor_shape(ui, (n->split == UI_DOCKSPLIT_VERT) ? UI_CURSOR_RESIZE_EW : UI_CURSOR_RESIZE_NS, 90);
+    }
 
     // Start resizing if clicked.
     if (hovered && ui->mouse_pressed[0] && ui->active_id == 0 && c->drag_id == 0)
@@ -1690,11 +1695,36 @@ int ui_window_begin(ui_ctx_t *ui, const char *title, ui_window_flags_t flags)
         edge_hover = edge_mask != 0;
     }
 
+    if (grip_hover)
+    {
+        ui_request_cursor_state(ui, UI_CURSOR_NORMAL, 90);
+        ui_request_cursor_shape(ui, UI_CURSOR_RESIZE_NWSE, 90);
+    }
+    else if (edge_hover)
+    {
+        ui_request_cursor_state(ui, UI_CURSOR_NORMAL, 90);
+        ui_cursor_shape_t shape = UI_CURSOR_ARROW;
+        uint8_t msk = edge_mask;
+        if ((msk & (1 | 2)) && (msk & (4 | 8)))
+        {
+            // Corner.
+            if ((msk & 1) && (msk & 4)) shape = UI_CURSOR_RESIZE_NWSE;      // TL
+            else if ((msk & 2) && (msk & 8)) shape = UI_CURSOR_RESIZE_NWSE; // BR
+            else shape = UI_CURSOR_RESIZE_NESW;                             // TR/BL
+        }
+        else if (msk & (1 | 2))
+            shape = UI_CURSOR_RESIZE_EW;
+        else if (msk & (4 | 8))
+            shape = UI_CURSOR_RESIZE_NS;
+        ui_request_cursor_shape(ui, shape, 90);
+    }
+
     int can_interact = (c->pick_id == id) || (c->drag_id == id);
     if (c->drag_id != 0 && c->drag_id != id)
         can_interact = 0;
 
-    if (pressed && can_interact && c->drag_id == 0)
+    // Don't start window drag/undock while another UI interaction is active (e.g. dock splitter drag).
+    if (pressed && can_interact && c->drag_id == 0 && ui->active_id == 0)
     {
         if (header_hit)
         {
@@ -1753,6 +1783,8 @@ int ui_window_begin(ui_ctx_t *ui, const char *title, ui_window_flags_t flags)
 
             if (c->dragging_move)
             {
+                ui_request_cursor_state(ui, UI_CURSOR_NORMAL, 80);
+                ui_request_cursor_shape(ui, UI_CURSOR_ARROW, 80);
                 // If dragging a docked window, only undock after crossing a small drag threshold.
                 if (c->dock_drag_active && c->dock_drag_win_id == id && c->dock_drag_src_ds_id != 0 && c->dock_drag_armed)
                 {
@@ -1792,6 +1824,26 @@ int ui_window_begin(ui_ctx_t *ui, const char *title, ui_window_flags_t flags)
             }
             else if (c->dragging_resize && !(flags & UI_WIN_NO_RESIZE))
             {
+                ui_request_cursor_state(ui, UI_CURSOR_NORMAL, 90);
+                // Use edge mask if present, otherwise fall back to diagonal for the grip.
+                ui_cursor_shape_t shape = UI_CURSOR_RESIZE_NWSE;
+                uint8_t msk = c->resize_edge_mask;
+                if (msk)
+                {
+                    if ((msk & (1 | 2)) && (msk & (4 | 8)))
+                    {
+                        if ((msk & 1) && (msk & 4)) shape = UI_CURSOR_RESIZE_NWSE;
+                        else if ((msk & 2) && (msk & 8)) shape = UI_CURSOR_RESIZE_NWSE;
+                        else shape = UI_CURSOR_RESIZE_NESW;
+                    }
+                    else if (msk & (1 | 2))
+                        shape = UI_CURSOR_RESIZE_EW;
+                    else if (msk & (4 | 8))
+                        shape = UI_CURSOR_RESIZE_NS;
+                }
+                else if (!c->resize_using_grip)
+                    shape = UI_CURSOR_RESIZE_EW;
+                ui_request_cursor_shape(ui, shape, 90);
                 ui_vec4_t rr = c->drag_rect0;
 
                 if (c->resize_using_grip)

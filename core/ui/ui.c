@@ -98,6 +98,16 @@ void ui_init(ui_ctx_t *ui, ui_realloc_fn rfn, void *ruser)
 
     ui->id_seed = 0xC001D00Du;
     ui->backend = 0;
+    ui->set_cursor_state_fn = 0;
+    ui->set_cursor_state_user = 0;
+    ui->set_cursor_shape_fn = 0;
+    ui->set_cursor_shape_user = 0;
+    ui->cursor_state_req_set = 0;
+    ui->cursor_state_req = 0;
+    ui->cursor_state_prio = -2147483647;
+    ui->cursor_shape_req_set = 0;
+    ui->cursor_shape_req = 0;
+    ui->cursor_shape_prio = -2147483647;
 
     ui->delta_time = 1.0f / 60.0f;
     ui->prev_mouse = ui_v2(0.0f, 0.0f);
@@ -132,6 +142,56 @@ void ui_shutdown(ui_ctx_t *ui)
 {
     ui_cmd_stream_free(&ui->stream);
     ui->backend = 0;
+}
+
+void ui_set_cursor_state_callback(ui_ctx_t *ui, void (*fn)(void *user, int state), void *user)
+{
+    if (!ui)
+        return;
+    ui->set_cursor_state_fn = fn;
+    ui->set_cursor_state_user = user;
+}
+
+void ui_set_cursor_state(ui_ctx_t *ui, int state)
+{
+    ui_request_cursor_state(ui, state, 0);
+}
+
+void ui_request_cursor_state(ui_ctx_t *ui, int state, int priority)
+{
+    if (!ui)
+        return;
+    if (!ui->cursor_state_req_set || priority >= ui->cursor_state_prio)
+    {
+        ui->cursor_state_req_set = 1;
+        ui->cursor_state_req = state;
+        ui->cursor_state_prio = priority;
+    }
+}
+
+void ui_set_cursor_shape_callback(ui_ctx_t *ui, void (*fn)(void *user, int shape), void *user)
+{
+    if (!ui)
+        return;
+    ui->set_cursor_shape_fn = fn;
+    ui->set_cursor_shape_user = user;
+}
+
+void ui_set_cursor_shape(ui_ctx_t *ui, int shape)
+{
+    ui_request_cursor_shape(ui, shape, 0);
+}
+
+void ui_request_cursor_shape(ui_ctx_t *ui, int shape, int priority)
+{
+    if (!ui)
+        return;
+    if (!ui->cursor_shape_req_set || priority >= ui->cursor_shape_prio)
+    {
+        ui->cursor_shape_req_set = 1;
+        ui->cursor_shape_req = shape;
+        ui->cursor_shape_prio = priority;
+    }
 }
 
 void ui_input_mouse_pos(ui_ctx_t *ui, ui_vec2_t pos)
@@ -261,6 +321,18 @@ void ui_begin(ui_ctx_t *ui, ui_vec2i_t fb_size)
 
     ui_window_begin_frame(ui);
 
+    // Reset cursor requests for this frame (callers will set what they need).
+    ui->cursor_state_req_set = 0;
+    ui->cursor_state_prio = -2147483647;
+    ui->cursor_shape_req_set = 0;
+    ui->cursor_shape_prio = -2147483647;
+
+    if ((ui->active_id != 0) || (ui_window_hovered_id(ui) != 0))
+    {
+        ui_request_cursor_state(ui, UI_CURSOR_NORMAL, 10);
+        ui_request_cursor_shape(ui, UI_CURSOR_ARROW, 1);
+    }
+
     ui->clip_top = 0;
     ui_vec4_t full = ui_v4(0.0f, 0.0f, (float)fb_size.x, (float)fb_size.y);
     ui->clip_stack[ui->clip_top++] = full;
@@ -278,6 +350,12 @@ void ui_begin(ui_ctx_t *ui, ui_vec2i_t fb_size)
 void ui_end(ui_ctx_t *ui)
 {
     ui_window_end_frame(ui);
+
+    // Apply cursor requests once per frame to avoid oscillation.
+    if (ui->set_cursor_state_fn && ui->cursor_state_req_set)
+        ui->set_cursor_state_fn(ui->set_cursor_state_user, ui->cursor_state_req);
+    if (ui->set_cursor_shape_fn && ui->cursor_shape_req_set)
+        ui->set_cursor_shape_fn(ui->set_cursor_shape_user, ui->cursor_shape_req);
 
     ui->io.want_capture_mouse = (ui->active_id != 0) || (ui_window_hovered_id(ui) != 0);
     ui->io.want_capture_keyboard = (ui->active_id != 0);

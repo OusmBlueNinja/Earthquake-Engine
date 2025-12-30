@@ -358,6 +358,12 @@ ui_widget_result_t ui_button_ex(ui_ctx_t *ui, uint32_t id, ui_vec4_t rect)
     int held = (ui->active_id == id && ui->mouse_down[0]) ? 1 : 0;
     r.held = (uint8_t)held;
 
+    if (hovered || held)
+    {
+        ui_request_cursor_state(ui, UI_CURSOR_NORMAL, 50);
+        ui_request_cursor_shape(ui, UI_CURSOR_HAND, 50);
+    }
+
     if (ui->active_id == id)
     {
 #if defined(__GNUC__) || defined(__clang__)
@@ -498,6 +504,12 @@ static float uiw_slider_do(ui_ctx_t *ui, uint32_t id, ui_vec4_t r, float t01)
         float x = ui->mouse.x;
         float u = (x - r.x) / (r.z > 1.0f ? r.z : 1.0f);
         t01 = ui_clampf(u, 0.0f, 1.0f);
+    }
+
+    if (hovered || ui->active_id == id)
+    {
+        ui_request_cursor_state(ui, UI_CURSOR_NORMAL, 60);
+        ui_request_cursor_shape(ui, UI_CURSOR_RESIZE_EW, 60);
     }
 
     ui_color_t bg = ui->style.btn;
@@ -863,6 +875,12 @@ int ui_input_text(ui_ctx_t *ui, const char *label, uint32_t font_id, char *buf, 
 
     if (ui->active_id == id)
         ui->text_input_active = 1;
+
+    if (inside || ui->active_id == id)
+    {
+        ui_request_cursor_state(ui, UI_CURSOR_NORMAL, 70);
+        ui_request_cursor_shape(ui, UI_CURSOR_IBEAM, 70);
+    }
 
     ui_draw_rect(ui, r, bg, ui->style.corner, 0.0f);
     uiw_draw_outline(ui, r, ui->style.corner);

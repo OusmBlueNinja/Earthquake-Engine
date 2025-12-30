@@ -16,6 +16,7 @@
 #include "ui/backends/opengl_backend.h"
 
 #include "asset_manager/asset_manager.h"
+#include "managers/window_manager.h"
 #include "vector.h"
 
 static void *ui_editor_realloc(void *user, void *ptr, uint32_t size)
@@ -27,6 +28,22 @@ static void *ui_editor_realloc(void *user, void *ptr, uint32_t size)
         return 0;
     }
     return realloc(ptr, (size_t)size);
+}
+
+static void editor_ui_set_cursor_state(void *user, int state)
+{
+    window_manager *wm = (window_manager *)user;
+    if (!wm)
+        return;
+    wm_set_cursor_state(wm, state);
+}
+
+static void editor_ui_set_cursor_shape(void *user, int shape)
+{
+    window_manager *wm = (window_manager *)user;
+    if (!wm)
+        return;
+    wm_set_cursor_shape(wm, (wm_cursor_shape_t)shape);
 }
 
 typedef struct editor_layer_data_t
@@ -410,6 +427,8 @@ void layer_init(layer_t *layer)
         return;
 
     ui_attach_backend(&d->ui, ui_gl_backend_base(&d->glui));
+    ui_set_cursor_state_callback(&d->ui, editor_ui_set_cursor_state, &get_application()->window_manager);
+    ui_set_cursor_shape_callback(&d->ui, editor_ui_set_cursor_shape, &get_application()->window_manager);
 
     d->last_fb.x = 0;
     d->last_fb.y = 0;
