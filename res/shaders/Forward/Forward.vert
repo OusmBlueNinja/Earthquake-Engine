@@ -39,12 +39,14 @@ void main()
     vec4 wpos = M * vec4(a_Position, 1.0);
     v.worldPos = wpos.xyz;
 
-    mat3 Nrm = mat3(M);
-    v.worldN = normalize(Nrm * a_Normal);
+    mat3 M3 = mat3(M);
+    mat3 normalMat = transpose(inverse(M3));
+    v.worldN = normalize(normalMat * a_Normal);
 
     v.uv = a_UV;
 
-    vec3 T = normalize(Nrm * a_Tangent.xyz);
+    vec3 T = normalize(M3 * a_Tangent.xyz);
+    T = normalize(T - v.worldN * dot(v.worldN, T));
     v.tangent = vec4(T, a_Tangent.w);
 
     v.lodFade01 = (u_UseInstancing != 0) ? a_Fade01 : 0.0;

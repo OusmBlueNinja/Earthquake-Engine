@@ -33,38 +33,11 @@ typedef enum
     CL_CPU_THREADS,
     CL_LOG_LEVEL,
 
-    CL_R_BLOOM_THRESHOLD,
-    CL_R_BLOOM_KNEE,
-    CL_R_BLOOM_INTENSITY,
-    CL_R_BLOOM_MIPS,
-
-    CL_R_EXPOSURE_LEVEL,
-    CL_R_EXPOSURE_AUTO,
-    CL_R_OUTPUT_GAMMA,
-    CL_R_MANUAL_SRGB,
-
-    CL_R_ALPHA_TEST,
-    CL_R_ALPHA_CUTOFF,
-
-    CL_R_HEIGHT_INVERT,
-    CL_R_IBL_INTENSITY,
-
-    CL_R_SSR,
-    CL_R_SSR_INTENSITY,
-    CL_R_SSR_STEPS,
-    CL_R_SSR_STRIDE,
-    CL_R_SSR_THICKNESS,
-    CL_R_SSR_MAX_DIST,
-    CL_R_FORCE_LOD_LEVEL,
-
+    // Renderer user-facing toggles (should be saved)
     CL_R_SHADOWS,
-    CL_R_SHADOW_CASCADES,
-    CL_R_SHADOW_MAP_SIZE,
-    CL_R_SHADOW_MAX_DIST,
-    CL_R_SHADOW_SPLIT_LAMBDA,
-    CL_R_SHADOW_BIAS,
-    CL_R_SHADOW_NORMAL_BIAS,
-    CL_R_SHADOW_PCF,
+
+    // Renderer dev/debug (not intended to be saved)
+    CL_R_FORCE_LOD_LEVEL,
     CL_R_WIREFRAME,
     SV_CVAR_COUNT
 } sv_cvar_key_t;

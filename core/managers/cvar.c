@@ -53,44 +53,12 @@ static cvar_entry_t g_cvars[SV_CVAR_COUNT] = {
 
     [CL_VSYNC] = {.name = "cl_vsync", .type = CVAR_BOOL, .def.b = true, .flags = CVAR_FLAG_NONE},
     [CL_BLOOM] = {.name = "cl_bloom", .type = CVAR_BOOL, .def.b = true, .flags = CVAR_FLAG_NONE},
-    [CL_RENDER_DEBUG] = {.name = "cl_render_debug", .type = CVAR_INT, .def.i = 0, .flags = CVAR_FLAG_NONE},
+    [CL_RENDER_DEBUG] = {.name = "cl_render_debug", .type = CVAR_INT, .def.i = 0, .flags = CVAR_FLAG_NO_LOAD | CVAR_FLAG_NO_SAVE},
     [CL_CPU_THREADS] = {.name = "cl_cpu_threads", .type = CVAR_INT, .def.i = 1, .flags = CVAR_FLAG_READONLY | CVAR_FLAG_NO_LOAD},
     [CL_LOG_LEVEL] = {.name = "cl_log_level", .type = CVAR_INT, .def.i = LOG_LEVEL_INFO, .flags = CVAR_FLAG_NONE},
-
-    [CL_R_BLOOM_THRESHOLD] = {.name = "cl_r_bloom_threshold", .type = CVAR_FLOAT, .def.f = 1.0f, .flags = CVAR_FLAG_NONE},
-    [CL_R_BLOOM_KNEE] = {.name = "cl_r_bloom_knee", .type = CVAR_FLOAT, .def.f = 0.5f, .flags = CVAR_FLAG_NONE},
-    [CL_R_BLOOM_INTENSITY] = {.name = "cl_r_bloom_intensity", .type = CVAR_FLOAT, .def.f = 0.10f, .flags = CVAR_FLAG_NONE},
-    [CL_R_BLOOM_MIPS] = {.name = "cl_r_bloom_mips", .type = CVAR_INT, .def.i = 6, .flags = CVAR_FLAG_NONE},
-
-    [CL_R_EXPOSURE_LEVEL] = {.name = "cl_r_exposure_level", .type = CVAR_FLOAT, .def.f = 1.0f, .flags = CVAR_FLAG_NONE},
-    [CL_R_EXPOSURE_AUTO] = {.name = "cl_r_exposure_auto", .type = CVAR_BOOL, .def.b = true, .flags = CVAR_FLAG_NONE},
-    [CL_R_OUTPUT_GAMMA] = {.name = "cl_r_output_gamma", .type = CVAR_FLOAT, .def.f = 2.2f, .flags = CVAR_FLAG_NONE},
-    [CL_R_MANUAL_SRGB] = {.name = "cl_r_manual_srgb", .type = CVAR_BOOL, .def.b = false, .flags = CVAR_FLAG_NONE},
-
-    [CL_R_ALPHA_TEST] = {.name = "cl_r_alpha_test", .type = CVAR_BOOL, .def.b = false, .flags = CVAR_FLAG_NONE},
-    [CL_R_ALPHA_CUTOFF] = {.name = "cl_r_alpha_cutoff", .type = CVAR_FLOAT, .def.f = 0.5f, .flags = CVAR_FLAG_NONE},
-
-    [CL_R_HEIGHT_INVERT] = {.name = "cl_r_height_invert", .type = CVAR_BOOL, .def.b = false, .flags = CVAR_FLAG_NONE},
-    [CL_R_IBL_INTENSITY] = {.name = "cl_r_ibl_intensity", .type = CVAR_FLOAT, .def.f = 0.9f, .flags = CVAR_FLAG_NONE},
-
-    [CL_R_SSR] = {.name = "cl_r_ssr", .type = CVAR_BOOL, .def.b = false, .flags = CVAR_FLAG_NONE},
-    [CL_R_SSR_INTENSITY] = {.name = "cl_r_ssr_intensity", .type = CVAR_FLOAT, .def.f = 1.0f, .flags = CVAR_FLAG_NONE},
-    [CL_R_SSR_STEPS] = {.name = "cl_r_ssr_steps", .type = CVAR_INT, .def.i = 64, .flags = CVAR_FLAG_NONE},
-    [CL_R_SSR_STRIDE] = {.name = "cl_r_ssr_stride", .type = CVAR_FLOAT, .def.f = 0.15f, .flags = CVAR_FLAG_NONE},
-    [CL_R_SSR_THICKNESS] = {.name = "cl_r_ssr_thickness", .type = CVAR_FLOAT, .def.f = 0.2f, .flags = CVAR_FLAG_NONE},
-    [CL_R_SSR_MAX_DIST] = {.name = "cl_r_ssr_max_dist", .type = CVAR_FLOAT, .def.f = 50.0f, .flags = CVAR_FLAG_NONE},
-    [CL_R_FORCE_LOD_LEVEL] = {.name = "cl_r_force_lod_level", .type = CVAR_INT, .def.i = -1, .flags = CVAR_FLAG_NONE},
-
     [CL_R_SHADOWS] = {.name = "cl_r_shadows", .type = CVAR_BOOL, .def.b = true, .flags = CVAR_FLAG_NONE},
-    [CL_R_SHADOW_CASCADES] = {.name = "cl_r_shadow_cascades", .type = CVAR_INT, .def.i = 4, .flags = CVAR_FLAG_NONE},
-    [CL_R_SHADOW_MAP_SIZE] = {.name = "cl_r_shadow_map_size", .type = CVAR_INT, .def.i = 2048, .flags = CVAR_FLAG_NONE},
-    [CL_R_SHADOW_MAX_DIST] = {.name = "cl_r_shadow_max_dist", .type = CVAR_FLOAT, .def.f = 100.0f, .flags = CVAR_FLAG_NONE},
-    [CL_R_SHADOW_SPLIT_LAMBDA] = {.name = "cl_r_shadow_split_lambda", .type = CVAR_FLOAT, .def.f = 0.65f, .flags = CVAR_FLAG_NONE},
-    [CL_R_SHADOW_BIAS] = {.name = "cl_r_shadow_bias", .type = CVAR_FLOAT, .def.f = 0.0015f, .flags = CVAR_FLAG_NONE},
-    [CL_R_SHADOW_NORMAL_BIAS] = {.name = "cl_r_shadow_normal_bias", .type = CVAR_FLOAT, .def.f = 0.004f, .flags = CVAR_FLAG_NONE},
-    [CL_R_SHADOW_PCF] = {.name = "cl_r_shadow_pcf", .type = CVAR_BOOL, .def.b = true, .flags = CVAR_FLAG_NONE},
-
-    [CL_R_WIREFRAME] = {.name = "cl_r_wireframe", .type = CVAR_BOOL, .def.b = false, .flags = CVAR_FLAG_NONE},
+    [CL_R_FORCE_LOD_LEVEL] = {.name = "cl_r_force_lod_level", .type = CVAR_INT, .def.i = -1, .flags = CVAR_FLAG_NO_LOAD | CVAR_FLAG_NO_SAVE},
+    [CL_R_WIREFRAME] = {.name = "cl_r_wireframe", .type = CVAR_BOOL, .def.b = false, .flags = CVAR_FLAG_NO_LOAD | CVAR_FLAG_NO_SAVE},
 };
 
 void cvar_set_cheats_permission(bool allowed)

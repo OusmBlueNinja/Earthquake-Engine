@@ -155,14 +155,19 @@ float shadow_factor(vec3 worldPos, vec3 N, vec3 L)
 
     float NoL = saturate(dot(N, L));
     float bias = u_ShadowBias + u_ShadowNormalBias * (1.0 - NoL);
+    // Scale bias by cascade distance: near cascades need much less bias or self-shadowing disappears.
+    float maxSplit = u_ShadowSplits[c - 1];
+    float cascadeFar = u_ShadowSplits[ci];
+    float cascade01 = clamp(cascadeFar / max(maxSplit, 1e-3), 0.0, 1.0);
+    bias *= mix(0.5, 1.0, cascade01);
 
     float s0 = shadow_sample_cascade(ci, worldPos, bias);
 
     if (ci < c - 1)
     {
-        float splitFar = u_ShadowSplits[ci];
-        float band = max(0.5, splitFar * 0.06);
-        float t = saturate((viewDepth - (splitFar - band)) / max(band, 1e-3));
+        float splitFarDepth = u_ShadowSplits[ci];
+        float band = max(0.5, splitFarDepth * 0.06);
+        float t = saturate((viewDepth - (splitFarDepth - band)) / max(band, 1e-3));
         if (t > 0.0)
         {
             float s1 = shadow_sample_cascade(ci + 1, worldPos, bias);
@@ -226,6 +231,12 @@ float G_Smith(float NoV, float NoL, float a)
 vec3 F_Schlick(vec3 F0, float VoH)
 {
     return F0 + (1.0 - F0) * pow(1.0 - VoH, 5.0);
+}
+
+vec3 F_SchlickRoughness(vec3 F0, float NoV, float roughness)
+{
+    vec3 Fr = max(vec3(1.0 - roughness), F0);
+    return F0 + (Fr - F0) * pow(1.0 - NoV, 5.0);
 }
 
 vec2 parallax_uv(vec2 uv, vec3 V_ts)
@@ -521,6 +532,10 @@ void main()
 
             float NoL = saturate(dot(N, L));
             float bias = u_ShadowBias + u_ShadowNormalBias * (1.0 - NoL);
+            float maxSplit = u_ShadowSplits[c - 1];
+            float cascadeFar = u_ShadowSplits[ci];
+            float cascade01 = clamp(cascadeFar / max(maxSplit, 1e-3), 0.0, 1.0);
+            bias *= mix(0.5, 1.0, cascade01);
             shade = shadow_sample_cascade(ci, v.worldPos, bias);
         }
 
@@ -700,7 +715,7 @@ void main()
 
     if (u_HasIBL != 0)
     {
-        vec3 kS = F_Schlick(F0, NoV);
+        vec3 kS = F_SchlickRoughness(F0, NoV, roughness);
         vec3 kD = (vec3(1.0) - kS) * (1.0 - metallic);
 
         vec3 irradiance = texture(u_IrradianceMap, N).rgb;

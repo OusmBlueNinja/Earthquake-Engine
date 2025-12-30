@@ -183,7 +183,7 @@ void bloom_ensure(renderer_t *r)
 
     bloom_t *b = &r->bloom;
 
-    uint32_t want_mips = r->cfg.bloom_mips;
+    uint32_t want_mips = r->scene.bloom_mips;
     if (want_mips > 16)
         want_mips = 16;
     if (want_mips < 1)
@@ -219,8 +219,8 @@ static void bloom_prefilter(renderer_t *r, uint32_t src_tex)
 
     shader_bind(s);
 
-    shader_set_float(s, "u_Threshold", r->cfg.bloom_threshold);
-    shader_set_float(s, "u_Knee", r->cfg.bloom_knee);
+    shader_set_float(s, "u_Threshold", r->scene.bloom_threshold);
+    shader_set_float(s, "u_Knee", r->scene.bloom_knee);
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, src_tex);
@@ -463,34 +463,18 @@ void bloom_composite_to_final(renderer_t *r, uint32_t scene_tex, uint32_t bloom_
     shader_set_int(s, "u_Depth", 2);
 
     shader_set_int(s, "u_EnableBloom", (r->cfg.bloom && bloom_tex) ? 1 : 0);
-    shader_set_float(s, "u_BloomIntensity", r->cfg.bloom_intensity);
+    shader_set_float(s, "u_BloomIntensity", r->scene.bloom_intensity);
     shader_set_int(s, "u_DebugMode", r->cfg.debug_mode);
 
-    shader_set_float(s, "u_Exposure", r->cfg.exposure);
-    shader_set_float(s, "u_OutputGamma", r->cfg.output_gamma);
+    float exposure = r->scene.exposure;
+    if (r->scene.exposure_auto && r->exposure_adapted_valid)
+        exposure = r->exposure_adapted;
+    shader_set_float(s, "u_Exposure", exposure);
+    shader_set_float(s, "u_OutputGamma", r->scene.output_gamma);
 
     glBindVertexArray(r->fs_vao);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glBindVertexArray(0);
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
-}
-
-void bloom_set_params(renderer_t *r, float threshold, float knee, float intensity, uint32_t mips)
-{
-    if (!r)
-        return;
-
-    r->cfg.bloom_threshold = threshold;
-    r->cfg.bloom_knee = knee;
-    r->cfg.bloom_intensity = intensity;
-
-    if (mips < 1)
-        mips = 1;
-
-    if (r->cfg.bloom_mips != mips)
-    {
-        r->cfg.bloom_mips = mips;
-        bloom_ensure(r);
-    }
 }

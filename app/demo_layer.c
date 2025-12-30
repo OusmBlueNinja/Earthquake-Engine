@@ -38,8 +38,8 @@
 
 typedef struct demo_model_entry_t
 {
-    ihandle_t h;
-    mat4 m;
+    ihandle_t model;
+    mat4 model_matrix;
 } demo_model_entry_t;
 
 static float demo_clampf(float x, float lo, float hi)
@@ -162,6 +162,8 @@ typedef struct demo_layer_state_t
     uint64_t stats_frame_id;
 
     int focus_index;
+
+    float last_dt;
 } demo_layer_state_t;
 
 static vec3 demo_cam_forward(float yaw, float pitch)
@@ -200,7 +202,7 @@ static void demo_layer_focus_model(demo_layer_state_t *s, uint32_t index)
     if (!e)
         return;
 
-    vec3 target = demo_mat4_get_translation(e->m);
+    vec3 target = demo_mat4_get_translation(e->model_matrix);
 
     float dist = 3.0f;
 
@@ -334,8 +336,8 @@ static void demo_layer_add_model(demo_layer_state_t *s, asset_manager_t *am, con
         return;
 
     demo_model_entry_t e;
-    e.h = asset_manager_request(am, ASSET_MODEL, path);
-    e.m = mtx;
+    e.model = asset_manager_request(am, ASSET_MODEL, path);
+    e.model_matrix = mtx;
 
     vector_impl_push_back(&s->models, &e);
 }
@@ -389,6 +391,12 @@ static void demo_layer_init(layer_t *layer)
     demo_layer_add_model(s, am, "C:/Users/spenc/Desktop/Television_01_4k.gltf/Television_01_4k.gltf",
                          demo_transform_trs((vec3){3.5f, 0.0f, 0.0f}, 0.0f, (vec3){1.0f, 1.0f, 1.0f}));
 
+    demo_layer_add_model(s, am, "C:/Users/spenc/Desktop/ship_pinnace_4k.gltf/ship_pinnace_4k.gltf",
+                         demo_transform_trs((vec3){10.0f, 0.0f, 0.0f}, 0.0f, (vec3){1.0f, 1.0f, 1.0f}));
+
+    demo_layer_add_model(s, am, "C:/Users/spenc/Desktop/utility_box_02_4k.gltf/utility_box_02_4k.gltf",
+                         demo_transform_trs((vec3){-3.0f, 0.0f, 0.0f}, 0.0f, (vec3){1.0f, 1.0f, 1.0f}));
+
     s->focus_index = -1;
 
     s->stats_accum = 0.0f;
@@ -397,8 +405,6 @@ static void demo_layer_init(layer_t *layer)
     srand(1337u);
 
     s->t = 0.0f;
-
-    cvar_set_float_name("cl_r_ibl_intensity", 0.2f);
 
     s->ready = 1;
 }
@@ -422,6 +428,8 @@ static void demo_layer_update(layer_t *layer, float dt)
         return;
 
     renderer_t *r = &layer->app->renderer;
+
+    s->last_dt = dt;
 
     s->t += dt;
 
@@ -489,8 +497,15 @@ static void demo_layer_draw(layer_t *layer)
 
     renderer_t *r = &layer->app->renderer;
 
+    renderer_scene_settings_t settings = R_scene_settings_default();
+    settings.delta_time = s->last_dt;
+    R_push_scene_settings(r, &settings);
+
     R_push_camera(r, &s->cam);
     R_push_hdri(r, s->hdri_h);
+
+    light_t lights[2 + MOVING_LIGHTS];
+    uint32_t light_count = 0;
 
     {
         light_t sun = (light_t){0};
@@ -498,7 +513,7 @@ static void demo_layer_draw(layer_t *layer)
         sun.direction = demo_vec3_norm((vec3){-0.3f, -1.0f, -0.2f});
         sun.color = (vec3){1.0f, 1.0f, 1.0f};
         sun.intensity = 1.0f;
-        R_push_light(r, sun);
+        lights[light_count++] = sun;
     }
 
     {
@@ -510,7 +525,7 @@ static void demo_layer_draw(layer_t *layer)
         p.intensity = 1.0f;
         p.range = 20.0f;
         p.radius = p.range;
-        R_push_light(r, p);
+        lights[light_count++] = p;
     }
 
     for (int i = 0; i < MOVING_LIGHTS; ++i)
@@ -531,15 +546,18 @@ static void demo_layer_draw(layer_t *layer)
         lt.range = L->range;
         lt.radius = L->range;
 
-        R_push_light(r, lt);
+        lights[light_count++] = lt;
     }
+
+    for (uint32_t i = 0; i < light_count; ++i)
+        R_push_light(r, lights[i]);
 
     for (uint32_t i = 0; i < s->models.size; ++i)
     {
         demo_model_entry_t *e = (demo_model_entry_t *)vector_impl_at(&s->models, i);
         if (!e)
             continue;
-        R_push_model(r, e->h, e->m);
+        R_push_model(r, e->model, e->model_matrix);
     }
 }
 

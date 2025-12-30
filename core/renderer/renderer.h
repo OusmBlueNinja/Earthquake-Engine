@@ -31,9 +31,17 @@ typedef struct render_stats_t
 
 typedef struct renderer_cfg_t
 {
-    int bloom;
-    int debug_mode;
+    bool bloom;
+    bool shadows;
 
+    bool wireframe;
+    int debug_mode;
+} renderer_cfg_t;
+
+#define R_SHADOW_MAX_CASCADES 4
+
+typedef struct renderer_scene_settings_t
+{
     float bloom_threshold;
     float bloom_knee;
     float bloom_intensity;
@@ -41,24 +49,26 @@ typedef struct renderer_cfg_t
 
     float exposure;
     bool exposure_auto;
-
+    float delta_time;
+    float auto_exposure_speed;
+    float auto_exposure_min;
+    float auto_exposure_max;
     float output_gamma;
-    int manual_srgb;
+    bool manual_srgb;
 
-    int alpha_test;
+    bool alpha_test;
     float alpha_cutoff;
+    bool height_invert;
 
-    int height_invert;
     float ibl_intensity;
 
-    int ssr;
+    bool ssr;
     float ssr_intensity;
     int ssr_steps;
     float ssr_stride;
     float ssr_thickness;
     float ssr_max_dist;
 
-    bool shadows;
     int shadow_cascades;
     int shadow_map_size;
     float shadow_max_dist;
@@ -66,11 +76,7 @@ typedef struct renderer_cfg_t
     float shadow_bias;
     float shadow_normal_bias;
     bool shadow_pcf;
-
-    bool wireframe;
-} renderer_cfg_t;
-
-#define R_SHADOW_MAX_CASCADES 4
+} renderer_scene_settings_t;
 
 typedef struct renderer_shadow_t
 {
@@ -114,6 +120,9 @@ typedef struct renderer_t
     vec4 clear_color;
 
     renderer_cfg_t cfg;
+    renderer_scene_settings_t scene;
+    float exposure_adapted;
+    bool exposure_adapted_valid;
 
     camera_t camera;
 
@@ -187,6 +196,9 @@ void R_push_light(renderer_t *r, light_t light);
 void R_push_model(renderer_t *r, const ihandle_t model, mat4 model_matrix);
 
 void R_push_hdri(renderer_t *r, ihandle_t tex);
+
+renderer_scene_settings_t R_scene_settings_default(void);
+void R_push_scene_settings(renderer_t *r, const renderer_scene_settings_t *settings);
 
 const render_stats_t *R_get_stats(const renderer_t *r);
 

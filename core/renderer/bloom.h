@@ -31,4 +31,3 @@ void bloom_ensure(renderer_t *r);
 void bloom_run(renderer_t *r, uint32_t src_tex, uint32_t black_tex);
 uint32_t bloom_get_texture(renderer_t *r);
 void bloom_composite_to_final(renderer_t *r, uint32_t scene_tex, uint32_t bloom_tex, uint32_t depth_tex, uint32_t black_tex);
-void bloom_set_params(renderer_t *r, float threshold, float knee, float intensity, uint32_t mips);

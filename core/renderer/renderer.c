@@ -25,6 +25,54 @@
 
 #define FP_TILE_SIZE 16
 
+#define R_SHADOW_LIGHT_DISTANCE 200.0f
+#define R_SHADOW_PAD_XY 10.0f
+#define R_SHADOW_PAD_Z 50.0f
+
+renderer_scene_settings_t R_scene_settings_default(void)
+{
+    renderer_scene_settings_t s;
+    memset(&s, 0, sizeof(s));
+
+    s.bloom_threshold = 1.0f;
+    s.bloom_knee = 0.5f;
+    s.bloom_intensity = 0.08f;
+    s.bloom_mips = 6u;
+
+    s.exposure = 1.0f;
+    s.exposure_auto = 1;
+    s.delta_time = 1.0f / 60.0f;
+    s.auto_exposure_speed = 2.0f;
+    s.auto_exposure_min = 0.05f;
+    s.auto_exposure_max = 8.0f;
+
+    s.output_gamma = 2.2f;
+    s.manual_srgb = 0;
+
+    s.alpha_test = 0;
+    s.alpha_cutoff = 0.5f;
+
+    s.height_invert = 0;
+    s.ibl_intensity = 0.2f;
+
+    s.ssr = 0;
+    s.ssr_intensity = 1.0f;
+    s.ssr_steps = 48;
+    s.ssr_stride = 0.12f;
+    s.ssr_thickness = 0.18f;
+    s.ssr_max_dist = 40.0f;
+
+    s.shadow_cascades = 4;
+    s.shadow_map_size = 2048;
+    s.shadow_max_dist = 120.0f;
+    s.shadow_split_lambda = 0.65f;
+    s.shadow_bias = 0.0012f;
+    s.shadow_normal_bias = 0.0035f;
+    s.shadow_pcf = 1;
+
+    return s;
+}
+
 typedef struct gpu_light_t
 {
     float position[4];
@@ -165,54 +213,79 @@ static void R_make_black_cube(renderer_t *r)
     glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
 }
 
-static void R_cfg_pull_from_cvars(renderer_t *r)
+static void R_user_cfg_pull_from_cvars(renderer_t *r)
 {
-    r->cfg.bloom = cvar_get_bool_name("cl_bloom") ? 1 : 0;
+    r->cfg.bloom = cvar_get_bool_name("cl_bloom");
+    r->cfg.shadows = cvar_get_bool_name("cl_r_shadows");
+
+    r->cfg.wireframe = cvar_get_bool_name("cl_r_wireframe");
     r->cfg.debug_mode = cvar_get_int_name("cl_render_debug");
+}
 
-    r->cfg.bloom_threshold = cvar_get_float_name("cl_r_bloom_threshold");
-    r->cfg.bloom_knee = cvar_get_float_name("cl_r_bloom_knee");
-    r->cfg.bloom_intensity = cvar_get_float_name("cl_r_bloom_intensity");
+static int R_mip_count_2d(int w, int h);
 
+static float R_luminance(vec3 c)
+{
+    return c.x * 0.2126f + c.y * 0.7152f + c.z * 0.0722f;
+}
+
+static void R_auto_exposure_update(renderer_t *r)
+{
+    if (!r)
+        return;
+
+    if (!r->scene.exposure_auto)
     {
-        int32_t m = cvar_get_int_name("cl_r_bloom_mips");
-        if (m < 1)
-            m = 1;
-        if (m > 10)
-            m = 10;
-        r->cfg.bloom_mips = (uint32_t)m;
+        r->exposure_adapted = r->scene.exposure;
+        r->exposure_adapted_valid = true;
+        return;
     }
 
-    r->cfg.exposure = cvar_get_float_name("cl_r_exposure_level");
-    r->cfg.exposure_auto = cvar_get_bool_name("cl_r_exposure_auto") ? 1 : 0;
+    if (!r->light_color_tex)
+        return;
 
-    r->cfg.output_gamma = cvar_get_float_name("cl_r_output_gamma");
-    r->cfg.manual_srgb = cvar_get_bool_name("cl_r_manual_srgb") ? 1 : 0;
+    glBindTexture(GL_TEXTURE_2D, r->light_color_tex);
+    glGenerateMipmap(GL_TEXTURE_2D);
 
-    r->cfg.alpha_test = cvar_get_bool_name("cl_r_alpha_test") ? 1 : 0;
-    r->cfg.alpha_cutoff = cvar_get_float_name("cl_r_alpha_cutoff");
+    int levels = R_mip_count_2d(r->fb_size.x, r->fb_size.y);
+    int lod = levels - 1;
+    if (lod < 0)
+        lod = 0;
 
-    r->cfg.height_invert = cvar_get_bool_name("cl_r_height_invert") ? 1 : 0;
-    r->cfg.ibl_intensity = cvar_get_float_name("cl_r_ibl_intensity");
+    float px[4] = {0};
+    glGetTexImage(GL_TEXTURE_2D, lod, GL_RGBA, GL_FLOAT, px);
 
-    r->cfg.ssr = cvar_get_bool_name("cl_r_ssr") ? 1 : 0;
-    r->cfg.ssr_intensity = cvar_get_float_name("cl_r_ssr_intensity");
+    vec3 avg = (vec3){px[0], px[1], px[2]};
+    float avgLum = R_luminance(avg);
+    if (avgLum < 1e-6f)
+        avgLum = 1e-6f;
 
-    r->cfg.ssr_steps = cvar_get_int_name("cl_r_ssr_steps");
-    r->cfg.ssr_stride = cvar_get_float_name("cl_r_ssr_stride");
-    r->cfg.ssr_thickness = cvar_get_float_name("cl_r_ssr_thickness");
-    r->cfg.ssr_max_dist = cvar_get_float_name("cl_r_ssr_max_dist");
+    float targetExposure = 0.18f / avgLum;
+    float exMin = r->scene.auto_exposure_min;
+    float exMax = r->scene.auto_exposure_max;
+    if (exMin < 0.0f)
+        exMin = 0.0f;
+    if (exMax < exMin)
+        exMax = exMin;
+    if (targetExposure < exMin)
+        targetExposure = exMin;
+    if (targetExposure > exMax)
+        targetExposure = exMax;
 
-    r->cfg.shadows = cvar_get_bool_name("cl_r_shadows");
-    r->cfg.shadow_cascades = cvar_get_int_name("cl_r_shadow_cascades");
-    r->cfg.shadow_map_size = cvar_get_int_name("cl_r_shadow_map_size");
-    r->cfg.shadow_max_dist = cvar_get_float_name("cl_r_shadow_max_dist");
-    r->cfg.shadow_split_lambda = cvar_get_float_name("cl_r_shadow_split_lambda");
-    r->cfg.shadow_bias = cvar_get_float_name("cl_r_shadow_bias");
-    r->cfg.shadow_normal_bias = cvar_get_float_name("cl_r_shadow_normal_bias");
-    r->cfg.shadow_pcf = cvar_get_bool_name("cl_r_shadow_pcf");
+    float dt = r->scene.delta_time;
+    if (dt < 0.0f)
+        dt = 0.0f;
+    float speed = r->scene.auto_exposure_speed;
+    if (speed < 0.0f)
+        speed = 0.0f;
 
-    r->cfg.wireframe = cvar_get_bool_name("cl_r_wireframe") ? 1 : 0;
+    float cur = r->exposure_adapted_valid ? r->exposure_adapted : r->scene.exposure;
+    if (cur < 0.0f)
+        cur = 0.0f;
+
+    float k = 1.0f - expf(-speed * dt);
+    r->exposure_adapted = cur + (targetExposure - cur) * k;
+    r->exposure_adapted_valid = true;
 }
 
 static void R_shadow_delete(renderer_t *r)
@@ -265,8 +338,8 @@ static void R_shadow_ensure(renderer_t *r)
         return;
     }
 
-    int want_size = R_shadow_clamp_size(r->cfg.shadow_map_size);
-    int want_cascades = R_shadow_clamp_cascades(r->cfg.shadow_cascades);
+    int want_size = R_shadow_clamp_size(r->scene.shadow_map_size);
+    int want_cascades = R_shadow_clamp_cascades(r->scene.shadow_cascades);
 
     if (r->shadow.tex && r->shadow.fbo && r->shadow.size == want_size && r->shadow.cascades == want_cascades)
         return;
@@ -289,8 +362,8 @@ static void R_shadow_ensure(renderer_t *r)
                  GL_FLOAT,
                  NULL);
 
-    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, r->cfg.shadow_pcf ? GL_LINEAR : GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, r->cfg.shadow_pcf ? GL_LINEAR : GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, r->scene.shadow_pcf ? GL_LINEAR : GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, r->scene.shadow_pcf ? GL_LINEAR : GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
     glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
     glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_BORDER);
@@ -312,13 +385,7 @@ static void R_shadow_ensure(renderer_t *r)
 
 static void R_on_cvar_any(renderer_t *r)
 {
-    R_cfg_pull_from_cvars(r);
-
-    bloom_set_params(r,
-                     r->cfg.bloom_threshold,
-                     r->cfg.bloom_knee,
-                     r->cfg.bloom_intensity,
-                     r->cfg.bloom_mips);
+    R_user_cfg_pull_from_cvars(r);
 }
 
 static void R_on_bloom_change(sv_cvar_key_t key, const void *old_state, const void *state)
@@ -331,15 +398,6 @@ static void R_on_bloom_change(sv_cvar_key_t key, const void *old_state, const vo
 }
 
 static void R_on_debug_mode_change(sv_cvar_key_t key, const void *old_state, const void *state)
-{
-    (void)key;
-    (void)old_state;
-    (void)state;
-    renderer_t *r = &get_application()->renderer;
-    R_on_cvar_any(r);
-}
-
-static void R_on_r_cvar_change(sv_cvar_key_t key, const void *old_state, const void *state)
 {
     (void)key;
     (void)old_state;
@@ -406,6 +464,40 @@ static void R_alloc_tex2d(uint32_t *tex, uint32_t internal, int w, int h, uint32
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, (GLenum)magf);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+}
+
+static int R_mip_count_2d(int w, int h)
+{
+    int m = 1;
+    int s = (w > h) ? w : h;
+    while (s > 1)
+    {
+        s >>= 1;
+        ++m;
+    }
+    return m;
+}
+
+static void R_alloc_tex2d_rgba16f_mipped(uint32_t *tex, int w, int h)
+{
+    if (w < 1)
+        w = 1;
+    if (h < 1)
+        h = 1;
+
+    int levels = R_mip_count_2d(w, h);
+
+    glGenTextures(1, tex);
+    glBindTexture(GL_TEXTURE_2D, *tex);
+
+    glTexStorage2D(GL_TEXTURE_2D, levels, GL_RGBA16F, w, h);
+
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, levels - 1);
 }
 
 static void R_gl_delete_targets(renderer_t *r)
@@ -570,7 +662,7 @@ static void R_create_targets(renderer_t *r)
     glGenFramebuffers(1, &r->light_fbo);
     glBindFramebuffer(GL_FRAMEBUFFER, r->light_fbo);
 
-    R_alloc_tex2d(&r->light_color_tex, GL_RGBA16F, r->fb_size.x, r->fb_size.y, GL_RGBA, GL_FLOAT, GL_LINEAR, GL_LINEAR);
+    R_alloc_tex2d_rgba16f_mipped(&r->light_color_tex, r->fb_size.x, r->fb_size.y);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, r->light_color_tex, 0);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, r->gbuf_depth, 0);
 
@@ -804,8 +896,8 @@ static void R_bind_common_uniforms(renderer_t *r, const shader_t *s)
     shader_set_mat4(s, "u_Proj", r->camera.proj);
     shader_set_vec3(s, "u_CameraPos", r->camera.position);
 
-    shader_set_int(s, "u_HeightInvert", r->cfg.height_invert ? 1 : 0);
-    shader_set_int(s, "u_ManualSRGB", r->cfg.manual_srgb ? 1 : 0);
+    shader_set_int(s, "u_HeightInvert", r->scene.height_invert ? 1 : 0);
+    shader_set_int(s, "u_ManualSRGB", r->scene.manual_srgb ? 1 : 0);
 }
 
 static int R_force_lod_level(void)
@@ -1174,7 +1266,7 @@ static int R_resolve_batch_resources(renderer_t *r,
     return 1;
 }
 
-static void R_material_state(renderer_t *r,
+static void R_material_state(const renderer_t *r,
                              asset_material_t *mat,
                              int *out_cutout,
                              int *out_blend,
@@ -1929,13 +2021,13 @@ static void R_shadow_build_cascades(renderer_t *r, vec3 light_dir)
     float farZ = 1000.0f;
     R_camera_extract_near_far(&r->camera, &nearZ, &farZ);
 
-    float max_dist = r->cfg.shadow_max_dist;
+    float max_dist = r->scene.shadow_max_dist;
     if (max_dist < nearZ)
         max_dist = nearZ;
     if (max_dist > farZ)
         max_dist = farZ;
 
-    float lambda = r->cfg.shadow_split_lambda;
+    float lambda = r->scene.shadow_split_lambda;
     if (lambda < 0.0f)
         lambda = 0.0f;
     if (lambda > 1.0f)
@@ -1984,14 +2076,14 @@ static void R_shadow_build_cascades(renderer_t *r, vec3 light_dir)
             float xf = yf * aspect;
 
             vec4 v0 = vec4_make(-xn, -yn, -zn, 1.0f);
-            vec4 v1 = vec4_make( xn, -yn, -zn, 1.0f);
-            vec4 v2 = vec4_make( xn,  yn, -zn, 1.0f);
-            vec4 v3 = vec4_make(-xn,  yn, -zn, 1.0f);
+            vec4 v1 = vec4_make(xn, -yn, -zn, 1.0f);
+            vec4 v2 = vec4_make(xn, yn, -zn, 1.0f);
+            vec4 v3 = vec4_make(-xn, yn, -zn, 1.0f);
 
             vec4 v4 = vec4_make(-xf, -yf, -zf, 1.0f);
-            vec4 v5 = vec4_make( xf, -yf, -zf, 1.0f);
-            vec4 v6 = vec4_make( xf,  yf, -zf, 1.0f);
-            vec4 v7 = vec4_make(-xf,  yf, -zf, 1.0f);
+            vec4 v5 = vec4_make(xf, -yf, -zf, 1.0f);
+            vec4 v6 = vec4_make(xf, yf, -zf, 1.0f);
+            vec4 v7 = vec4_make(-xf, yf, -zf, 1.0f);
 
             vec4 w0 = mat4_mul_vec4(r->camera.inv_view, v0);
             vec4 w1 = mat4_mul_vec4(r->camera.inv_view, v1);
@@ -2018,7 +2110,7 @@ static void R_shadow_build_cascades(renderer_t *r, vec3 light_dir)
         center = vec3_div_f(center, 8.0f);
 
         vec3 up = R_shadow_pick_up(dir);
-        vec3 light_pos = vec3_sub(center, vec3_mul_f(dir, 200.0f));
+        vec3 light_pos = vec3_sub(center, vec3_mul_f(dir, R_SHADOW_LIGHT_DISTANCE));
         mat4 V = mat4_lookat(light_pos, center, up);
 
         vec3 bmin = (vec3){1e30f, 1e30f, 1e30f};
@@ -2032,8 +2124,8 @@ static void R_shadow_build_cascades(renderer_t *r, vec3 light_dir)
             bmax = vec3_max(bmax, q);
         }
 
-        float pad_xy = 10.0f;
-        float pad_z = 50.0f;
+        float pad_xy = R_SHADOW_PAD_XY;
+        float pad_z = R_SHADOW_PAD_Z;
 
         bmin.x -= pad_xy;
         bmin.y -= pad_xy;
@@ -2116,7 +2208,8 @@ static void R_shadow_pass(renderer_t *r)
     glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
 
     glEnable(GL_POLYGON_OFFSET_FILL);
-    glPolygonOffset(2.0f, 4.0f);
+    // Keep this conservative; too much polygon offset kills self-shadowing/punch-through on detailed meshes.
+    glPolygonOffset(1.0f, 1.0f);
 
     shader_bind(shadow);
     shader_set_int(shadow, "u_UseInstancing", 1);
@@ -2561,7 +2654,7 @@ static void R_forward_one_pass(renderer_t *r)
     shader_set_int(fwd, "u_ShadowMap", 11);
 
     shader_set_int(fwd, "u_HasIBL", has_ibl);
-    shader_set_float(fwd, "u_IBLIntensity", r->cfg.ibl_intensity);
+    shader_set_float(fwd, "u_IBLIntensity", r->scene.ibl_intensity);
 
     shader_set_int(fwd, "u_TileSize", FP_TILE_SIZE);
     shader_set_int(fwd, "u_TileCountX", r->fp.tile_count_x);
@@ -2576,10 +2669,10 @@ static void R_forward_one_pass(renderer_t *r)
     shader_set_int(fwd, "u_ShadowCascadeCount", r->shadow.cascades);
     shader_set_int(fwd, "u_ShadowMapSize", r->shadow.size);
     shader_set_int(fwd, "u_ShadowLightIndex", r->shadow.light_index);
-    shader_set_int(fwd, "u_ShadowPCF", r->cfg.shadow_pcf ? 1 : 0);
+    shader_set_int(fwd, "u_ShadowPCF", r->scene.shadow_pcf ? 1 : 0);
     shader_set_float_array(fwd, "u_ShadowSplits", r->shadow.splits, R_SHADOW_MAX_CASCADES);
-    shader_set_float(fwd, "u_ShadowBias", r->cfg.shadow_bias);
-    shader_set_float(fwd, "u_ShadowNormalBias", r->cfg.shadow_normal_bias);
+    shader_set_float(fwd, "u_ShadowBias", r->scene.shadow_bias);
+    shader_set_float(fwd, "u_ShadowNormalBias", r->scene.shadow_normal_bias);
 
     for (int i = 0; i < R_SHADOW_MAX_CASCADES; ++i)
     {
@@ -2657,7 +2750,10 @@ int R_init(renderer_t *r, asset_manager_t *assets)
     r->fp.shader_cull_id = 0xFF;
     r->fp.shader_finalize_id = 0xFF;
 
-    R_cfg_pull_from_cvars(r);
+    r->scene = R_scene_settings_default();
+    r->exposure_adapted = r->scene.exposure;
+    r->exposure_adapted_valid = false;
+    R_user_cfg_pull_from_cvars(r);
 
     r->shadow.fbo = 0;
     r->shadow.tex = 0;
@@ -2742,46 +2838,9 @@ int R_init(renderer_t *r, asset_manager_t *assets)
     if (!bloom_init(r))
         LOG_ERROR("Bloom init failed");
 
-    bloom_set_params(r,
-                     r->cfg.bloom_threshold,
-                     r->cfg.bloom_knee,
-                     r->cfg.bloom_intensity,
-                     r->cfg.bloom_mips);
-
     cvar_set_callback_name("cl_bloom", R_on_bloom_change);
     cvar_set_callback_name("cl_render_debug", R_on_debug_mode_change);
-
-    cvar_set_callback_name("cl_r_bloom_threshold", R_on_r_cvar_change);
-    cvar_set_callback_name("cl_r_bloom_knee", R_on_r_cvar_change);
-    cvar_set_callback_name("cl_r_bloom_intensity", R_on_r_cvar_change);
-    cvar_set_callback_name("cl_r_bloom_mips", R_on_r_cvar_change);
-
-    cvar_set_callback_name("cl_r_exposure_level", R_on_r_cvar_change);
-    cvar_set_callback_name("cl_r_exposure_auto", R_on_r_cvar_change);
-    cvar_set_callback_name("cl_r_output_gamma", R_on_r_cvar_change);
-    cvar_set_callback_name("cl_r_manual_srgb", R_on_r_cvar_change);
-
-    cvar_set_callback_name("cl_r_alpha_test", R_on_r_cvar_change);
-    cvar_set_callback_name("cl_r_alpha_cutoff", R_on_r_cvar_change);
-
-    cvar_set_callback_name("cl_r_height_invert", R_on_r_cvar_change);
-    cvar_set_callback_name("cl_r_ibl_intensity", R_on_r_cvar_change);
-
-    cvar_set_callback_name("cl_r_ssr", R_on_r_cvar_change);
-    cvar_set_callback_name("cl_r_ssr_intensity", R_on_r_cvar_change);
-    cvar_set_callback_name("cl_r_ssr_steps", R_on_r_cvar_change);
-    cvar_set_callback_name("cl_r_ssr_stride", R_on_r_cvar_change);
-    cvar_set_callback_name("cl_r_ssr_thickness", R_on_r_cvar_change);
-    cvar_set_callback_name("cl_r_ssr_max_dist", R_on_r_cvar_change);
-
-    cvar_set_callback_name("cl_r_shadows", R_on_r_cvar_change);
-    cvar_set_callback_name("cl_r_shadow_cascades", R_on_r_cvar_change);
-    cvar_set_callback_name("cl_r_shadow_map_size", R_on_r_cvar_change);
-    cvar_set_callback_name("cl_r_shadow_max_dist", R_on_r_cvar_change);
-    cvar_set_callback_name("cl_r_shadow_split_lambda", R_on_r_cvar_change);
-    cvar_set_callback_name("cl_r_shadow_bias", R_on_r_cvar_change);
-    cvar_set_callback_name("cl_r_shadow_normal_bias", R_on_r_cvar_change);
-    cvar_set_callback_name("cl_r_shadow_pcf", R_on_r_cvar_change);
+    cvar_set_callback_name("cl_r_shadows", R_on_bloom_change);
 
     cvar_set_callback_name("cl_r_wireframe", R_on_wireframe_change);
 
@@ -2865,7 +2924,7 @@ void R_update_resize(renderer_t *r)
 
     R_create_targets(r);
     bloom_ensure(r);
-    ssr_ensure(r);
+    ssr_on_resize(r);
 }
 
 void R_set_clear_color(renderer_t *r, vec4 color)
@@ -2881,6 +2940,10 @@ void R_begin_frame(renderer_t *r)
         return;
 
     R_update_resize(r);
+
+    // Scene settings are expected to be built and pushed every frame by the app.
+    // Reset to defaults here to avoid stale settings carrying across scenes.
+    r->scene = R_scene_settings_default();
 
     vector_clear(&r->lights);
     vector_clear(&r->models);
@@ -2950,10 +3013,20 @@ void R_end_frame(renderer_t *r)
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
+    R_auto_exposure_update(r);
+
     bloom_run(r, r->light_color_tex, r->black_tex);
 
     uint32_t bloom_tex = (r->cfg.bloom && r->bloom.mips) ? r->bloom.tex_up[0] : 0;
     bloom_composite_to_final(r, r->light_color_tex, bloom_tex, r->gbuf_depth, r->black_tex);
+}
+
+void R_push_scene_settings(renderer_t *r, const renderer_scene_settings_t *settings)
+{
+    if (!r || !settings)
+        return;
+
+    r->scene = *settings;
 }
 
 void R_push_camera(renderer_t *r, const camera_t *cam)

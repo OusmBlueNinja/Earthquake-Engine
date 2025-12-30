@@ -101,7 +101,7 @@ void ssr_run(renderer_t *r, uint32_t scene_tex)
 {
     if (!r)
         return;
-    if (!r->cfg.ssr)
+    if (!r->scene.ssr)
         return;
     if (!r->ssr.ready || !r->ssr.fbo || !r->ssr.color_tex)
         return;
@@ -141,11 +141,11 @@ void ssr_run(renderer_t *r, uint32_t scene_tex)
     shader_set_mat4(s, "u_InvProj", r->camera.inv_proj);
 
     shader_set_vec2(s, "u_InvResolution", (vec2){ 1.0f / (float)r->fb_size.x, 1.0f / (float)r->fb_size.y });
-    shader_set_float(s, "u_Intensity", r->cfg.ssr_intensity);
-    shader_set_int(s, "u_Steps", r->cfg.ssr_steps);
-    shader_set_float(s, "u_Stride", r->cfg.ssr_stride);
-    shader_set_float(s, "u_Thickness", r->cfg.ssr_thickness);
-    shader_set_float(s, "u_MaxDist", r->cfg.ssr_max_dist);
+    shader_set_float(s, "u_Intensity", r->scene.ssr_intensity);
+    shader_set_int(s, "u_Steps", r->scene.ssr_steps);
+    shader_set_float(s, "u_Stride", r->scene.ssr_stride);
+    shader_set_float(s, "u_Thickness", r->scene.ssr_thickness);
+    shader_set_float(s, "u_MaxDist", r->scene.ssr_max_dist);
 
     glBindVertexArray(r->fs_vao);
     glDrawArrays(GL_TRIANGLES, 0, 3);
