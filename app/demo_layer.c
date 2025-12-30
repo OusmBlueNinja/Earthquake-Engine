@@ -365,31 +365,29 @@ static void demo_layer_init(layer_t *layer)
     demo_layer_apply_camera(s, r);
     s->hdri_h = asset_manager_request(am, ASSET_IMAGE, "C:/Users/spenc/Desktop/Bistro_v5_2/Bistro_v5_2/san_giuseppe_bridge_4k.hdr");
 
-
-    
     demo_layer_add_model(s, am, "C:/Users/spenc/Desktop/38-floor/Floor.FBX",
                          demo_transform_trs((vec3){0.0f, -1.0f, 0.0f}, 0.0f, (vec3){1.0f, 1.0f, 1.0f}));
 
     demo_layer_add_model(s, am, "C:/Users/spenc/Desktop/CoffeeCart_01_4k.gltf/CoffeeCart_01_4k.gltf",
                          demo_transform_trs((vec3){-1.5f, 0.0f, 0.0f}, 0.0f, (vec3){1.0f, 1.0f, 1.0f}));
 
-    // demo_layer_add_model(s, am, "C:/Users/spenc/Desktop/CoffeeCart_01_4k.gltf/CoffeeCart_01_4k.gltf",
-    //                      demo_transform_trs((vec3){-1.5f, 0.0f, 0.0f}, 0.0f, (vec3){1.0f, 1.0f, 1.0f}));
-    //
-    // demo_layer_add_model(s, am, "C:/Users/spenc/Desktop/Camera_01_4k.gltf/Camera_01_4k.gltf",
-    //                     demo_transform_trs((vec3){0.0f, 0.0f, 0.0f}, 0.0f, (vec3){4.0f, 4.0f, 4.0f}));
-    //
-    // demo_layer_add_model(s, am, "C:/Users/spenc/Desktop/vintage_video_camera_4k.gltf/vintage_video_camera_4k.gltf",
-    //                     demo_transform_trs((vec3){0.5f, 0.0f, 0.0f}, 0.0f, (vec3){4.0f, 4.0f, 4.0f}));
-    //
-    // demo_layer_add_model(s, am, "C:/Users/spenc/Desktop/CashRegister_01_4k.gltf/CashRegister_01_4k.gltf",
-    //                     demo_transform_trs((vec3){1.5f, 0.0f, 0.0f}, 0.0f, (vec3){1.0f, 1.0f, 1.0f}));
-    //
-    // demo_layer_add_model(s, am, "C:/Users/spenc/Desktop/electric_stove_4k.gltf/electric_stove_4k.gltf",
-    //                     demo_transform_trs((vec3){2.5f, 0.0f, 0.0f}, 0.0f, (vec3){1.0f, 1.0f, 1.0f}));
-    //
-    // demo_layer_add_model(s, am, "C:/Users/spenc/Desktop/Television_01_4k.gltf/Television_01_4k.gltf",
-    // demo_transform_trs((vec3){3.5f, 0.0f, 0.0f}, 0.0f, (vec3){1.0f, 1.0f, 1.0f}));
+    demo_layer_add_model(s, am, "C:/Users/spenc/Desktop/CoffeeCart_01_4k.gltf/CoffeeCart_01_4k.gltf",
+                         demo_transform_trs((vec3){-1.5f, 0.0f, 0.0f}, 0.0f, (vec3){1.0f, 1.0f, 1.0f}));
+
+    demo_layer_add_model(s, am, "C:/Users/spenc/Desktop/Camera_01_4k.gltf/Camera_01_4k.gltf",
+                         demo_transform_trs((vec3){0.0f, 0.0f, 0.0f}, 0.0f, (vec3){4.0f, 4.0f, 4.0f}));
+
+    demo_layer_add_model(s, am, "C:/Users/spenc/Desktop/vintage_video_camera_4k.gltf/vintage_video_camera_4k.gltf",
+                         demo_transform_trs((vec3){0.5f, 0.0f, 0.0f}, 0.0f, (vec3){4.0f, 4.0f, 4.0f}));
+
+    demo_layer_add_model(s, am, "C:/Users/spenc/Desktop/CashRegister_01_4k.gltf/CashRegister_01_4k.gltf",
+                         demo_transform_trs((vec3){1.5f, 0.0f, 0.0f}, 0.0f, (vec3){1.0f, 1.0f, 1.0f}));
+
+    demo_layer_add_model(s, am, "C:/Users/spenc/Desktop/electric_stove_4k.gltf/electric_stove_4k.gltf",
+                         demo_transform_trs((vec3){2.5f, 0.0f, 0.0f}, 0.0f, (vec3){1.0f, 1.0f, 1.0f}));
+
+    demo_layer_add_model(s, am, "C:/Users/spenc/Desktop/Television_01_4k.gltf/Television_01_4k.gltf",
+                         demo_transform_trs((vec3){3.5f, 0.0f, 0.0f}, 0.0f, (vec3){1.0f, 1.0f, 1.0f}));
 
     s->focus_index = -1;
 
