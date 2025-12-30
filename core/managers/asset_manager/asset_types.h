@@ -5,14 +5,29 @@
 #include "asset_types/material.h"
 #include "asset_types/model.h"
 
+#define ASSET_TYPE_LIST(X) \
+    X(ASSET_NONE)          \
+    X(ASSET_IMAGE)         \
+    X(ASSET_MATERIAL)      \
+    X(ASSET_MODEL)
+
 typedef enum asset_type_t
 {
-    ASSET_NONE = 0,
-    ASSET_IMAGE,
-    ASSET_MATERIAL,
-    ASSET_MODEL,
-
+#define X(e) e,
+    ASSET_TYPE_LIST(X)
+#undef X
+        ASSET_MAX
 } asset_type_t;
+
+static const char *const g_asset_type_names[ASSET_MAX] =
+    {
+#define X(e) [e] = #e,
+        ASSET_TYPE_LIST(X)
+#undef X
+};
+
+#define ASSET_TYPE_TO_STRING(t) \
+    (((unsigned)(t) < (unsigned)ASSET_MAX) ? g_asset_type_names[(t)] : "ASSET_UNKNOWN")
 
 typedef enum asset_state_t
 {

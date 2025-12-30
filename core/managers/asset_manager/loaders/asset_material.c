@@ -374,7 +374,7 @@ static void asset_material_blob_free(asset_manager_t *am, asset_blob_t *blob)
 
 asset_module_desc_t asset_module_material(void)
 {
-    asset_module_desc_t m;
+    asset_module_desc_t m = {0};
     m.type = ASSET_MATERIAL;
     m.name = "ASSET_MATERIAL_KV1";
     m.load_fn = asset_material_load;

@@ -86,6 +86,7 @@ typedef void (*asset_cleanup_fn_t)(asset_manager_t *am, asset_any_t *asset);
 
 typedef bool (*asset_save_blob_fn_t)(asset_manager_t *am, ihandle_t h, const asset_any_t *asset, asset_blob_t *out_blob);
 typedef void (*asset_blob_free_fn_t)(asset_manager_t *am, asset_blob_t *blob);
+typedef bool (*asset_can_load_fn_t)(asset_manager_t *am, const char *path, uint32_t path_is_ptr);
 
 typedef struct asset_module_desc_t
 {
@@ -96,6 +97,7 @@ typedef struct asset_module_desc_t
     asset_cleanup_fn_t cleanup_fn;
     asset_save_blob_fn_t save_blob_fn;
     asset_blob_free_fn_t blob_free_fn;
+    asset_can_load_fn_t can_load_fn;
 } asset_module_desc_t;
 
 typedef struct asset_manager_desc_t

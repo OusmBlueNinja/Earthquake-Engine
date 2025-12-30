@@ -494,24 +494,106 @@ typedef struct worker_ctx_t
     asset_manager_t *am;
 } worker_ctx_t;
 
+static const char *asset_path_ext(const char *path)
+{
+    if (!path)
+        return "";
+    const char *dot = strrchr(path, '.');
+    if (!dot || dot == path)
+        return "";
+    return dot;
+}
+
+
+
 static bool asset_try_load_any(asset_manager_t *am, asset_type_t type, const char *path, uint32_t path_is_ptr, asset_any_t *out_asset, uint16_t *out_module_index)
 {
     if (!am || !out_asset || !out_module_index)
         return false;
-
     if (!path)
         return false;
 
-    if (!path_is_ptr && (!path[0]))
-        return false;
+    if (path_is_ptr)
+    {
+        if ((uintptr_t)path < (uintptr_t)0x10000u)
+            return false;
+    }
+    else
+    {
+        if (!path[0])
+            return false;
+    }
 
     *out_module_index = 0xFFFFu;
     asset_zero(out_asset);
 
+    uint8_t have_can = 0;
+    uint8_t have_any_load = 0;
+
+    uint16_t strong[512];
+    uint32_t strong_n = 0;
+
+    uint16_t weak[512];
+    uint32_t weak_n = 0;
+
     for (uint32_t i = 0; i < am->modules.size; ++i)
     {
         const asset_module_desc_t *m = (const asset_module_desc_t *)vector_impl_at(&am->modules, i);
-        if (!m || m->type != type || !m->load_fn)
+        if (!m || m->type != type)
+            continue;
+
+        if (m->load_fn)
+        {
+            if ((uintptr_t)m->load_fn < (uintptr_t)0x10000u)
+                continue;
+            have_any_load = 1;
+        }
+        else
+        {
+            continue;
+        }
+
+        if (m->can_load_fn)
+        {
+            if ((uintptr_t)m->can_load_fn < (uintptr_t)0x10000u)
+                continue;
+
+            have_can = 1;
+
+            bool ok = m->can_load_fn(am, path, path_is_ptr);
+            if (ok && strong_n < (uint32_t)(sizeof(strong) / sizeof(strong[0])))
+                strong[strong_n++] = (uint16_t)i;
+        }
+        else
+        {
+            if (weak_n < (uint32_t)(sizeof(weak) / sizeof(weak[0])))
+                weak[weak_n++] = (uint16_t)i;
+        }
+    }
+
+    if (!have_any_load)
+    {
+        const char *ext = path_is_ptr ? "" : asset_path_ext(path);
+
+        if (path_is_ptr)
+            LOG_ERROR("No loader modules registered for asset type %u (path=%p).", (unsigned)type, (void *)path);
+        else
+            LOG_ERROR("No loader modules registered for asset type %u (file=%s%s%s).",
+                      (unsigned)type,
+                      path,
+                      ext[0] ? " ext=" : "",
+                      ext[0] ? ext : "");
+
+        return false;
+    }
+
+    for (uint32_t k = 0; k < strong_n; ++k)
+    {
+        uint16_t i = strong[k];
+        const asset_module_desc_t *m = asset_manager_get_module_by_index(am, i);
+        if (!m || !m->load_fn)
+            continue;
+        if ((uintptr_t)m->load_fn < (uintptr_t)0x10000u)
             continue;
 
         asset_any_t tmp;
@@ -520,13 +602,76 @@ static bool asset_try_load_any(asset_manager_t *am, asset_type_t type, const cha
         if (m->load_fn(am, path, path_is_ptr, &tmp))
         {
             *out_asset = tmp;
-            *out_module_index = (uint16_t)i;
+            *out_module_index = i;
             return true;
         }
     }
 
+    if (!have_can)
+    {
+        for (uint32_t i = 0; i < am->modules.size; ++i)
+        {
+            const asset_module_desc_t *m = (const asset_module_desc_t *)vector_impl_at(&am->modules, i);
+            if (!m || m->type != type || !m->load_fn)
+                continue;
+            if ((uintptr_t)m->load_fn < (uintptr_t)0x10000u)
+                continue;
+
+            asset_any_t tmp;
+            asset_zero(&tmp);
+
+            if (m->load_fn(am, path, path_is_ptr, &tmp))
+            {
+                *out_asset = tmp;
+                *out_module_index = (uint16_t)i;
+                return true;
+            }
+        }
+
+        {
+            const char *ext = path_is_ptr ? "" : asset_path_ext(path);
+            if (path_is_ptr)
+                LOG_ERROR("Failed to load asset: no loader succeeded for type=%u path_ptr=%p", (unsigned)type, (void *)path);
+            else
+                LOG_ERROR("Failed to load asset: no loader succeeded for type=%u ext=%s path=%s", (unsigned)type, ext[0] ? ext : "(none)", path);
+        }
+
+        return false;
+    }
+
+    for (uint32_t k = 0; k < weak_n; ++k)
+    {
+        uint16_t i = weak[k];
+        const asset_module_desc_t *m = asset_manager_get_module_by_index(am, i);
+        if (!m || !m->load_fn)
+            continue;
+        if ((uintptr_t)m->load_fn < (uintptr_t)0x10000u)
+            continue;
+
+        asset_any_t tmp;
+        asset_zero(&tmp);
+
+        if (m->load_fn(am, path, path_is_ptr, &tmp))
+        {
+            *out_asset = tmp;
+            *out_module_index = i;
+            return true;
+        }
+    }
+
+    {
+        const char *ext = path_is_ptr ? "" : asset_path_ext(path);
+        if (path_is_ptr)
+            LOG_ERROR("Failed to find a compatible module for type=%u path_ptr=%p", (unsigned)type, (void *)path);
+        else
+            LOG_ERROR("Failed to find a compatible module for type=%u ext=%s path=%s", (unsigned)type, ext[0] ? ext : "(none)", path);
+    }
+
     return false;
 }
+
+
+
 
 static void worker_main(void *p)
 {
@@ -567,13 +712,6 @@ static void worker_main(void *p)
         if (ok)
         {
             d.asset = out;
-        }
-        else
-        {
-            if (j.path_is_ptr)
-                LOG_ERROR("Failed to load asset: [%s](%p)", asset_type_name(am, j.type), (void *)j.path);
-            else
-                LOG_ERROR("Failed to load asset: [%s](%s)", asset_type_name(am, j.type), j.path);
         }
 
         if (!j.path_is_ptr)
@@ -730,6 +868,16 @@ ihandle_t asset_manager_request(asset_manager_t *am, asset_type_t type, const ch
 {
     if (!am || !path || !path[0])
         return ihandle_invalid();
+
+    {
+        FILE *f = fopen(path, "rb");
+        if (!f)
+        {
+            LOG_ERROR("File Not Found: '%s'(%u)", path, (unsigned)type);
+            return ihandle_invalid();
+        }
+        fclose(f);
+    }
 
     mutex_lock_impl(&am->state_m);
     uint32_t sd = am->shutting_down;

@@ -27,6 +27,40 @@
 #define CGLTF_IMPLEMENTATION
 #include "cgltf.h"
 
+#define MDL_LOGE(...) LOG_ERROR(__VA_ARGS__)
+#define MDL_LOGW(...) LOG_ERROR(__VA_ARGS__)
+
+
+
+static const char *mdl_cgltf_result_str(cgltf_result r)
+{
+    switch (r)
+    {
+    case cgltf_result_success:
+        return "success";
+    case cgltf_result_data_too_short:
+        return "data_too_short";
+    case cgltf_result_unknown_format:
+        return "unknown_format";
+    case cgltf_result_invalid_json:
+        return "invalid_json";
+    case cgltf_result_invalid_gltf:
+        return "invalid_gltf";
+    case cgltf_result_invalid_options:
+        return "invalid_options";
+    case cgltf_result_file_not_found:
+        return "file_not_found";
+    case cgltf_result_io_error:
+        return "io_error";
+    case cgltf_result_out_of_memory:
+        return "out_of_memory";
+    case cgltf_result_legacy_gltf:
+        return "legacy_gltf";
+    default:
+        return "unknown";
+    }
+}
+
 typedef struct mdl_gltf_mat_entry_t
 {
     const cgltf_material *m;
@@ -356,7 +390,10 @@ typedef struct asset_image_mem_desc_t
 static ihandle_t mdl_gltf_request_image(asset_manager_t *am, const char *gltf_path, cgltf_data *data, const cgltf_image *img)
 {
     if (!am || !img || !gltf_path)
+    {
+        MDL_LOGE("image request failed: bad args (am=%p img=%p path=%p)", (void *)am, (void *)img, (void *)gltf_path);
         return ihandle_invalid();
+    }
 
     if (img->uri && img->uri[0] && strncmp(img->uri, "data:", 5))
     {
@@ -364,15 +401,23 @@ static ihandle_t mdl_gltf_request_image(asset_manager_t *am, const char *gltf_pa
         char *full = dir ? mdl_path_join_dup(dir, img->uri) : NULL;
         free(dir);
         if (!full)
+        {
+            MDL_LOGE("image request failed: couldn't join path (%s + %s)", gltf_path, img->uri);
             return ihandle_invalid();
+        }
         ihandle_t h = asset_manager_request(am, ASSET_IMAGE, full);
         free(full);
+        if (!ihandle_is_valid(h))
+            MDL_LOGE("image request failed: asset_manager_request returned invalid handle");
         return h;
     }
 
     asset_image_mem_desc_t *desc = (asset_image_mem_desc_t *)malloc(sizeof(asset_image_mem_desc_t));
     if (!desc)
+    {
+        MDL_LOGE("image request failed: out of memory (desc)");
         return ihandle_invalid();
+    }
     memset(desc, 0, sizeof(*desc));
 
     if (img->name && img->name[0])
@@ -380,11 +425,20 @@ static ihandle_t mdl_gltf_request_image(asset_manager_t *am, const char *gltf_pa
     else
         desc->debug_name = mdl_strdup("gltf_embedded_image");
 
+    if (!desc->debug_name)
+    {
+        free(desc);
+        MDL_LOGE("image request failed: out of memory (debug_name)");
+        return ihandle_invalid();
+    }
+
     if (img->uri && img->uri[0] && !strncmp(img->uri, "data:", 5))
     {
+
         const char *comma = strchr(img->uri, ',');
         if (!comma)
         {
+            MDL_LOGE("image data uri invalid: missing comma");
             free(desc->debug_name);
             free(desc);
             return ihandle_invalid();
@@ -406,6 +460,7 @@ static ihandle_t mdl_gltf_request_image(asset_manager_t *am, const char *gltf_pa
 
         if (!is_b64)
         {
+            MDL_LOGE("image data uri unsupported: not base64");
             free(desc->debug_name);
             free(desc);
             return ihandle_invalid();
@@ -415,6 +470,7 @@ static ihandle_t mdl_gltf_request_image(asset_manager_t *am, const char *gltf_pa
         uint8_t *bytes = mdl_b64_decode(b64, strlen(b64), &out_n);
         if (!bytes || !out_n)
         {
+            MDL_LOGE("image base64 decode failed");
             free(bytes);
             free(desc->debug_name);
             free(desc);
@@ -427,6 +483,7 @@ static ihandle_t mdl_gltf_request_image(asset_manager_t *am, const char *gltf_pa
         ihandle_t h = asset_manager_request_ptr(am, ASSET_IMAGE, desc);
         if (!ihandle_is_valid(h))
         {
+            MDL_LOGE("image request failed: asset_manager_request_ptr invalid handle");
             free(bytes);
             free(desc->debug_name);
             free(desc);
@@ -436,13 +493,23 @@ static ihandle_t mdl_gltf_request_image(asset_manager_t *am, const char *gltf_pa
 
     if (img->buffer_view && img->buffer_view->buffer && img->buffer_view->buffer->data)
     {
+
         const uint8_t *base = (const uint8_t *)img->buffer_view->buffer->data;
         size_t off = (size_t)img->buffer_view->offset;
         size_t sz = (size_t)img->buffer_view->size;
 
+        if (sz == 0)
+        {
+            MDL_LOGE("image bufferView invalid: size=0");
+            free(desc->debug_name);
+            free(desc);
+            return ihandle_invalid();
+        }
+
         uint8_t *bytes = (uint8_t *)malloc(sz);
         if (!bytes)
         {
+            MDL_LOGE("image request failed: out of memory (bytes)");
             free(desc->debug_name);
             free(desc);
             return ihandle_invalid();
@@ -456,6 +523,7 @@ static ihandle_t mdl_gltf_request_image(asset_manager_t *am, const char *gltf_pa
         ihandle_t h = asset_manager_request_ptr(am, ASSET_IMAGE, desc);
         if (!ihandle_is_valid(h))
         {
+            MDL_LOGE("image request failed: asset_manager_request_ptr invalid handle");
             free(bytes);
             free(desc->debug_name);
             free(desc);
@@ -463,6 +531,7 @@ static ihandle_t mdl_gltf_request_image(asset_manager_t *am, const char *gltf_pa
         return h;
     }
 
+    MDL_LOGE("image request failed: no uri and no bufferView for '%s'", desc->debug_name ? desc->debug_name : "(null)");
     free(desc->debug_name);
     free(desc);
     (void)data;
@@ -504,15 +573,25 @@ static ihandle_t mdl_gltf_material_to_handle(asset_manager_t *am, const char *gl
         if (p->base_color_texture.texture)
         {
             const cgltf_image *img = mdl_gltf_tex_image(p->base_color_texture.texture);
-            cur.albedo_tex = mdl_gltf_request_image(am, gltf_path, data, img);
+            if (!img)
+                MDL_LOGW("material '%s': baseColorTexture present but image missing", cur.name ? cur.name : "(unnamed)");
+            else
+                cur.albedo_tex = mdl_gltf_request_image(am, gltf_path, data, img);
         }
 
         if (p->metallic_roughness_texture.texture)
         {
             const cgltf_image *img = mdl_gltf_tex_image(p->metallic_roughness_texture.texture);
-            ihandle_t t = mdl_gltf_request_image(am, gltf_path, data, img);
-            cur.roughness_tex = t;
-            cur.metallic_tex = t;
+            if (!img)
+            {
+                MDL_LOGW("material '%s': metallicRoughnessTexture present but image missing", cur.name ? cur.name : "(unnamed)");
+            }
+            else
+            {
+                ihandle_t t = mdl_gltf_request_image(am, gltf_path, data, img);
+                cur.roughness_tex = t;
+                cur.metallic_tex = t;
+            }
         }
     }
 
@@ -521,13 +600,19 @@ static ihandle_t mdl_gltf_material_to_handle(asset_manager_t *am, const char *gl
     if (m->emissive_texture.texture)
     {
         const cgltf_image *img = mdl_gltf_tex_image(m->emissive_texture.texture);
-        cur.emissive_tex = mdl_gltf_request_image(am, gltf_path, data, img);
+        if (!img)
+            MDL_LOGW("material '%s': emissiveTexture present but image missing", cur.name ? cur.name : "(unnamed)");
+        else
+            cur.emissive_tex = mdl_gltf_request_image(am, gltf_path, data, img);
     }
 
     if (m->normal_texture.texture)
     {
         const cgltf_image *img = mdl_gltf_tex_image(m->normal_texture.texture);
-        cur.normal_tex = mdl_gltf_request_image(am, gltf_path, data, img);
+        if (!img)
+            MDL_LOGW("material '%s': normalTexture present but image missing", cur.name ? cur.name : "(unnamed)");
+        else
+            cur.normal_tex = mdl_gltf_request_image(am, gltf_path, data, img);
         if (m->normal_texture.scale > 0.0f)
             cur.normal_strength = m->normal_texture.scale;
     }
@@ -535,17 +620,16 @@ static ihandle_t mdl_gltf_material_to_handle(asset_manager_t *am, const char *gl
     if (m->occlusion_texture.texture)
     {
         const cgltf_image *img = mdl_gltf_tex_image(m->occlusion_texture.texture);
-        cur.occlusion_tex = mdl_gltf_request_image(am, gltf_path, data, img);
+        if (!img)
+            MDL_LOGW("material '%s': occlusionTexture present but image missing", cur.name ? cur.name : "(unnamed)");
+        else
+            cur.occlusion_tex = mdl_gltf_request_image(am, gltf_path, data, img);
     }
 
     if (m->alpha_mode == cgltf_alpha_mode_blend)
-    {
         cur.opacity = mdl_clamp01(cur.opacity);
-    }
     else
-    {
         cur.opacity = 1.0f;
-    }
 
     return asset_manager_submit_raw(am, ASSET_MATERIAL, &cur);
 }
@@ -563,6 +647,9 @@ static ihandle_t mdl_gltf_get_or_make_mat(asset_manager_t *am, const char *gltf_
     }
 
     ihandle_t h = mdl_gltf_material_to_handle(am, gltf_path, data, m);
+    if (!ihandle_is_valid(h))
+        MDL_LOGE("material submit failed (material ptr=%p)", (void *)m);
+
     mdl_gltf_mat_entry_t e;
     e.m = m;
     e.h = h;
@@ -921,25 +1008,39 @@ static bool mdl_emit_node_mesh(asset_manager_t *am, const char *path, cgltf_data
     if (node && node->mesh)
     {
         cgltf_mesh *mesh = node->mesh;
+        const char *node_name = (node && node->name) ? node->name : "(unnamed node)";
+        const char *mesh_name = (mesh && mesh->name) ? mesh->name : "(unnamed mesh)";
 
         for (cgltf_size pi = 0; pi < mesh->primitives_count; ++pi)
         {
             cgltf_primitive *prim = &mesh->primitives[pi];
             if (!prim)
+            {
+                MDL_LOGW("skip: null primitive (node=%s mesh=%s prim=%u)", node_name, mesh_name, (unsigned)pi);
                 continue;
+            }
 
             cgltf_attribute *a_pos = mdl_gltf_find_attr(prim, cgltf_attribute_type_position, 0);
             if (!a_pos || !a_pos->data)
+            {
+                MDL_LOGW("skip: missing POSITION (node=%s mesh=%s prim=%u)", node_name, mesh_name, (unsigned)pi);
                 continue;
+            }
 
             if (!(prim->type == cgltf_primitive_type_triangles ||
                   prim->type == cgltf_primitive_type_triangle_strip ||
                   prim->type == cgltf_primitive_type_triangle_fan))
+            {
+                MDL_LOGW("skip: unsupported primitive type %d (node=%s mesh=%s prim=%u)", (int)prim->type, node_name, mesh_name, (unsigned)pi);
                 continue;
+            }
 
             uint32_t vcount = (uint32_t)a_pos->data->count;
             if (!vcount)
+            {
+                MDL_LOGW("skip: POSITION count=0 (node=%s mesh=%s prim=%u)", node_name, mesh_name, (unsigned)pi);
                 continue;
+            }
 
             int has_tangent = 0;
             cgltf_attribute *a_tan = mdl_gltf_find_attr(prim, cgltf_attribute_type_tangent, 0);
@@ -948,7 +1049,10 @@ static bool mdl_emit_node_mesh(asset_manager_t *am, const char *path, cgltf_data
 
             model_vertex_t *vtx = (model_vertex_t *)malloc((size_t)vcount * sizeof(model_vertex_t));
             if (!vtx)
+            {
+                MDL_LOGE("out of memory allocating vertices (vcount=%u) (node=%s mesh=%s prim=%u)", (unsigned)vcount, node_name, mesh_name, (unsigned)pi);
                 return false;
+            }
 
             for (uint32_t i = 0; i < vcount; ++i)
             {
@@ -956,6 +1060,7 @@ static bool mdl_emit_node_mesh(asset_manager_t *am, const char *path, cgltf_data
                 memset(&v, 0, sizeof(v));
                 if (!mdl_gltf_read_vtx(&v, prim, (cgltf_size)i, world, has_tangent))
                 {
+                    MDL_LOGE("vertex read failed (i=%u) (node=%s mesh=%s prim=%u)", (unsigned)i, node_name, mesh_name, (unsigned)pi);
                     free(vtx);
                     return false;
                 }
@@ -966,6 +1071,7 @@ static bool mdl_emit_node_mesh(asset_manager_t *am, const char *path, cgltf_data
             uint32_t *idx = mdl_gltf_build_indices(prim, vcount, &icount);
             if (!idx || !icount)
             {
+                MDL_LOGE("index build failed (icount=%u) (node=%s mesh=%s prim=%u)", (unsigned)icount, node_name, mesh_name, (unsigned)pi);
                 free(idx);
                 free(vtx);
                 return false;
@@ -987,6 +1093,9 @@ static bool mdl_emit_node_mesh(asset_manager_t *am, const char *path, cgltf_data
             vector_impl_push_back(&sm.lods, &lod0);
             sm.material_name = NULL;
             sm.material = mdl_gltf_get_or_make_mat(am, path, data, mat_map, prim->material);
+
+            if (!ihandle_is_valid(sm.material))
+                MDL_LOGW("material handle invalid (node=%s mesh=%s prim=%u)", node_name, mesh_name, (unsigned)pi);
 
             sm.aabb = mdl_aabb_from_vertices(vtx, vcount);
             sm.flags = (uint8_t)(sm.flags | (uint8_t)CPU_SUBMESH_FLAG_HAS_AABB);
@@ -1013,12 +1122,23 @@ static bool mdl_emit_node_mesh(asset_manager_t *am, const char *path, cgltf_data
 bool asset_model_gltf_load(asset_manager_t *am, const char *path, uint32_t path_is_ptr, asset_any_t *out_asset)
 {
     if (!am || !out_asset || !path)
+    {
+        MDL_LOGE("load failed: bad args (am=%p out=%p path=%p)", (void *)am, (void *)out_asset, (void *)path);
         return false;
+    }
     if (path_is_ptr)
+    {
+        MDL_LOGE("load failed: path_is_ptr not supported for gltf/glb");
         return false;
+    }
 
     if (!mdl_gltf_quick_verify(path))
+    {
+        MDL_LOGE("load failed: not a gltf/glb (path='%s')", path);
         return false;
+    }
+
+    const char *ext = strrchr(path, '.');
 
     cgltf_options opt;
     memset(&opt, 0, sizeof(opt));
@@ -1026,11 +1146,15 @@ bool asset_model_gltf_load(asset_manager_t *am, const char *path, uint32_t path_
     cgltf_data *data = NULL;
     cgltf_result r = cgltf_parse_file(&opt, path, &data);
     if (r != cgltf_result_success || !data)
+    {
+        MDL_LOGE("cgltf_parse_file failed: %s (path='%s')", mdl_cgltf_result_str(r), path);
         return false;
+    }
 
     r = cgltf_load_buffers(&opt, data, path);
     if (r != cgltf_result_success)
     {
+        MDL_LOGE("cgltf_load_buffers failed: %s (path='%s')", mdl_cgltf_result_str(r), path);
         cgltf_free(data);
         return false;
     }
@@ -1038,6 +1162,7 @@ bool asset_model_gltf_load(asset_manager_t *am, const char *path, uint32_t path_
     r = cgltf_validate(data);
     if (r != cgltf_result_success)
     {
+        MDL_LOGE("cgltf_validate failed: %s (path='%s')", mdl_cgltf_result_str(r), path);
         cgltf_free(data);
         return false;
     }
@@ -1054,22 +1179,53 @@ bool asset_model_gltf_load(asset_manager_t *am, const char *path, uint32_t path_
     else if (data->scenes_count)
         scene = &data->scenes[0];
 
-    if (scene && scene->nodes_count)
+    if (!scene)
+    {
+        MDL_LOGE("load failed: gltf has no scene");
+        vector_impl_free(&mat_map);
+        mdl_gltf_free_raw(&raw);
+        cgltf_free(data);
+        return false;
+    }
+
+    if (!scene->nodes_count)
+    {
+        MDL_LOGE("load failed: scene has 0 nodes");
+        vector_impl_free(&mat_map);
+        mdl_gltf_free_raw(&raw);
+        cgltf_free(data);
+        return false;
+    }
+
     {
         mat4 I = mat4_identity();
         for (cgltf_size ni = 0; ni < scene->nodes_count; ++ni)
         {
             cgltf_node *n = scene->nodes[ni];
             if (!n)
+            {
+                MDL_LOGW("scene node[%u] is null, skipping", (unsigned)ni);
                 continue;
+            }
             if (!mdl_emit_node_mesh(am, path, data, &mat_map, &raw, n, I))
             {
+                const char *nn = n->name ? n->name : "(unnamed node)";
+                MDL_LOGE("load failed: emit node mesh failed (node[%u]=%s)", (unsigned)ni, nn);
                 vector_impl_free(&mat_map);
                 mdl_gltf_free_raw(&raw);
                 cgltf_free(data);
                 return false;
             }
         }
+    }
+
+    if (raw.submeshes.size == 0)
+    {
+        MDL_LOGE("load failed: no submeshes emitted (file may contain no meshes or unsupported primitives)");
+        vector_impl_free(&mat_map);
+        mdl_gltf_free_raw(&raw);
+        cgltf_free(data);
+        return false;
     }
 
     vector_impl_free(&mat_map);
@@ -1090,7 +1246,10 @@ bool asset_model_gltf_init(asset_manager_t *am, asset_any_t *asset)
     (void)am;
 
     if (!asset || asset->type != ASSET_MODEL)
+    {
+        MDL_LOGE("init failed: bad asset");
         return false;
+    }
 
     asset_model_t model = asset_model_make();
 
@@ -1098,7 +1257,10 @@ bool asset_model_gltf_init(asset_manager_t *am, asset_any_t *asset)
     {
         model_cpu_submesh_t *sm = (model_cpu_submesh_t *)vector_impl_at(&asset->as.model_raw.submeshes, i);
         if (!sm || sm->lods.size == 0)
+        {
+            MDL_LOGW("init: skip submesh[%u] missing lods", (unsigned)i);
             continue;
+        }
 
         mesh_t gm;
         memset(&gm, 0, sizeof(gm));
@@ -1106,7 +1268,6 @@ bool asset_model_gltf_init(asset_manager_t *am, asset_any_t *asset)
         gm.lods = vector_impl_create_vector(sizeof(mesh_lod_t));
         gm.flags = 0;
 
-        // Used by renderer for transparent sorting, culling, etc.
         mesh_set_local_aabb_from_cpu(&gm, sm);
 
         uint32_t want_lods = sm->lods.size;
@@ -1116,7 +1277,10 @@ bool asset_model_gltf_init(asset_manager_t *am, asset_any_t *asset)
         {
             model_cpu_lod_t *cl = (model_cpu_lod_t *)vector_impl_at(&sm->lods, li);
             if (!cl || !cl->vertices || !cl->indices || !cl->vertex_count || !cl->index_count)
+            {
+                MDL_LOGW("init: skip submesh[%u] lod[%u] missing data", (unsigned)i, (unsigned)li);
                 continue;
+            }
 
             mesh_lod_t glod;
             memset(&glod, 0, sizeof(glod));
@@ -1155,6 +1319,7 @@ bool asset_model_gltf_init(asset_manager_t *am, asset_any_t *asset)
         }
         else
         {
+            MDL_LOGW("init: submesh[%u] uploaded 0 lods", (unsigned)i);
             vector_impl_free(&gm.lods);
         }
     }
@@ -1205,9 +1370,25 @@ void asset_model_gltf_cleanup(asset_manager_t *am, asset_any_t *asset)
     asset_model_destroy_cpu_only(&asset->as.model);
 }
 
+static bool asset_model_gltf_can_load(asset_manager_t *am, const char *path, uint32_t path_is_ptr)
+{
+    (void)am;
+    if (!path || path_is_ptr)
+        return false;
+
+    const char *ext = strrchr(path, '.');
+    if (!ext)
+        return false;
+
+    if (!strcmp(ext, ".gltf") || !strcmp(ext, ".GLTF") || !strcmp(ext, ".glb") || !strcmp(ext, ".GLB"))
+        return true;
+
+    return false;
+}
+
 asset_module_desc_t asset_module_model_gltf(void)
 {
-    asset_module_desc_t m;
+    asset_module_desc_t m = {0};
     m.type = ASSET_MODEL;
     m.name = "ASSET_MODEL_GLTF";
     m.load_fn = asset_model_gltf_load;
@@ -1215,5 +1396,6 @@ asset_module_desc_t asset_module_model_gltf(void)
     m.cleanup_fn = asset_model_gltf_cleanup;
     m.save_blob_fn = NULL;
     m.blob_free_fn = NULL;
+    m.can_load_fn = asset_model_gltf_can_load;
     return m;
 }
