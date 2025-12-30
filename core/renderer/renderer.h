@@ -131,6 +131,9 @@ typedef struct renderer_t
     vector_t fwd_inst_batches;
     vector_t inst_mats;
 
+    vector_t shadow_inst_batches;
+    vector_t shadow_inst_mats;
+
     uint32_t fs_vao;
 
     uint32_t gbuf_fbo;

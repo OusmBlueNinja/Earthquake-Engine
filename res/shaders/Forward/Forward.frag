@@ -56,6 +56,7 @@ uniform int u_ShadowEnabled;
 uniform int u_ShadowCascadeCount;
 uniform int u_ShadowMapSize;
 uniform int u_ShadowLightIndex;
+uniform int u_ShadowPCF;
 uniform float u_ShadowSplits[4];
 uniform float u_ShadowBias;
 uniform float u_ShadowNormalBias;
@@ -121,7 +122,22 @@ float shadow_sample_cascade(int ci, vec3 worldPos, float bias)
     if (uvw.x < 0.0 || uvw.x > 1.0 || uvw.y < 0.0 || uvw.y > 1.0 || uvw.z < 0.0 || uvw.z > 1.0)
         return 1.0;
 
-    return texture(u_ShadowMap, vec4(uvw.xy, float(ci), uvw.z - bias));
+    float ref = uvw.z - bias;
+
+    if (u_ShadowPCF == 0)
+        return texture(u_ShadowMap, vec4(uvw.xy, float(ci), ref));
+
+    float sum = 0.0;
+    vec2 texel = vec2(1.0) / vec2(float(max(u_ShadowMapSize, 1)));
+
+    for (int y = -1; y <= 1; ++y)
+    for (int x = -1; x <= 1; ++x)
+    {
+        vec2 o = vec2(float(x), float(y)) * texel;
+        sum += texture(u_ShadowMap, vec4(uvw.xy + o, float(ci), ref));
+    }
+
+    return sum / 9.0;
 }
 
 float shadow_factor(vec3 worldPos, vec3 N, vec3 L)
@@ -134,11 +150,27 @@ float shadow_factor(vec3 worldPos, vec3 N, vec3 L)
     vec4 vp = u_View * vec4(worldPos, 1.0);
     float viewDepth = -vp.z;
 
+    int c = clamp(u_ShadowCascadeCount, 1, 4);
     int ci = shadow_pick_cascade(viewDepth);
 
     float NoL = saturate(dot(N, L));
     float bias = u_ShadowBias + u_ShadowNormalBias * (1.0 - NoL);
-    return shadow_sample_cascade(ci, worldPos, bias);
+
+    float s0 = shadow_sample_cascade(ci, worldPos, bias);
+
+    if (ci < c - 1)
+    {
+        float splitFar = u_ShadowSplits[ci];
+        float band = max(0.5, splitFar * 0.06);
+        float t = saturate((viewDepth - (splitFar - band)) / max(band, 1e-3));
+        if (t > 0.0)
+        {
+            float s1 = shadow_sample_cascade(ci + 1, worldPos, bias);
+            s0 = mix(s0, s1, t);
+        }
+    }
+
+    return s0;
 }
 
 vec3 srgb_to_linear(vec3 c)
@@ -356,6 +388,19 @@ void sample_mrao(vec2 uv, out float outMetal, out float outRough, out float outA
     }
 }
 
+vec3 debug_cascade_color(int ci, int cascadeCount)
+{
+    if (cascadeCount <= 1)
+        return vec3(1.0, 1.0, 1.0);
+
+    if (ci == 0) return vec3(1.0, 0.20, 0.20);
+    if (ci == 1) return vec3(0.20, 1.0, 0.20);
+    if (ci == 2) return vec3(0.20, 0.50, 1.0);
+    if (ci == 3) return vec3(1.0, 0.20, 1.0);
+
+    return vec3(1.0, 1.0, 0.20);
+}
+
 void main()
 {
     vec3 Nw = normalize(v.worldN);
@@ -447,6 +492,42 @@ void main()
     {
         vec3 Nts = tangent_space_normal(uv);
         N = normalize(TBN * Nts);
+    }
+
+    // NEW DEBUG MODE: 7 = cascade visualization
+    // Colors by cascade index, intensity optionally modulated by shadow test.
+    if (mode == 7)
+    {
+        vec4 vp = u_View * vec4(v.worldPos, 1.0);
+        float viewDepth = -vp.z;
+
+        int c = clamp(u_ShadowCascadeCount, 1, 4);
+        int ci = shadow_pick_cascade(viewDepth);
+
+        vec3 base = debug_cascade_color(ci, c);
+
+        float shade = 1.0;
+        if (u_ShadowEnabled != 0 && u_ShadowLightIndex >= 0)
+        {
+            // Try to modulate by actual shadowing using the directional light direction if available.
+            // If the indexed light isn't directional, still sample with a conservative bias (NoL=1).
+            vec3 L = vec3(0.0, 1.0, 0.0);
+            if (u_ShadowLightIndex < int(g_Lights.length()))
+            {
+                GPU_Light Ld = g_Lights[uint(u_ShadowLightIndex)];
+                if (Ld.meta.x == 1)
+                    L = normalize(-Ld.direction.xyz);
+            }
+
+            float NoL = saturate(dot(N, L));
+            float bias = u_ShadowBias + u_ShadowNormalBias * (1.0 - NoL);
+            shade = shadow_sample_cascade(ci, v.worldPos, bias);
+        }
+
+        // Keep it readable: brighten lit, darken shadowed.
+        vec3 col = mix(base * 0.35, base, saturate(shade));
+        o_Color = vec4(col, 1.0);
+        return;
     }
 
     ivec2 tileXY = ivec2(int(gl_FragCoord.x) / max(u_TileSize, 1), int(gl_FragCoord.y) / max(u_TileSize, 1));

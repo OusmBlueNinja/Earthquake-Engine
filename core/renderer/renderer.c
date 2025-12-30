@@ -1063,6 +1063,9 @@ static void R_instance_stream_init(renderer_t *r)
     r->fwd_inst_batches = create_vector(inst_batch_t);
     r->inst_mats = create_vector(instance_gpu_t);
 
+    r->shadow_inst_batches = create_vector(inst_batch_t);
+    r->shadow_inst_mats = create_vector(instance_gpu_t);
+
     glGenBuffers(1, &r->instance_vbo);
     glBindBuffer(GL_ARRAY_BUFFER, r->instance_vbo);
 
@@ -1083,6 +1086,9 @@ static void R_instance_stream_shutdown(renderer_t *r)
     vector_free(&r->inst_batches);
     vector_free(&r->fwd_inst_batches);
     vector_free(&r->inst_mats);
+
+    vector_free(&r->shadow_inst_batches);
+    vector_free(&r->shadow_inst_mats);
 }
 
 static void R_upload_instances(renderer_t *r, const instance_gpu_t *inst, uint32_t count)
@@ -1306,7 +1312,7 @@ static int R_inst_item_is_alpha_blend(const renderer_t *r, const inst_item_t *it
     return mat_blend ? 1 : 0;
 }
 
-static void R_emit_batches_from_items(renderer_t *r, inst_item_t *items, uint32_t n, vector_t *batches)
+static void R_emit_batches_from_items(renderer_t *r, inst_item_t *items, uint32_t n, vector_t *batches, vector_t *mats)
 {
     if (!n)
         return;
@@ -1326,7 +1332,7 @@ static void R_emit_batches_from_items(renderer_t *r, inst_item_t *items, uint32_
 
         if (!have_cur)
         {
-            cur_start = r->inst_mats.size;
+            cur_start = mats->size;
             cur.model = items[i].model;
             cur.mesh_index = items[i].mesh_index;
             cur.lod = items[i].lod;
@@ -1344,11 +1350,11 @@ static void R_emit_batches_from_items(renderer_t *r, inst_item_t *items, uint32_
 
             if (cur_blend || item_blend || !same_key)
             {
-                cur.count = r->inst_mats.size - cur_start;
+                cur.count = mats->size - cur_start;
                 if (cur.count)
                     vector_push_back(batches, &cur);
 
-                cur_start = r->inst_mats.size;
+                cur_start = mats->size;
                 cur.model = items[i].model;
                 cur.mesh_index = items[i].mesh_index;
                 cur.lod = items[i].lod;
@@ -1363,11 +1369,11 @@ static void R_emit_batches_from_items(renderer_t *r, inst_item_t *items, uint32_
         ig.m = items[i].m;
         ig.fade01 = items[i].fade01;
 
-        vector_push_back(&r->inst_mats, &ig);
+        vector_push_back(mats, &ig);
 
         if (item_blend)
         {
-            cur.count = r->inst_mats.size - cur_start;
+            cur.count = mats->size - cur_start;
             if (cur.count)
                 vector_push_back(batches, &cur);
             have_cur = 0;
@@ -1377,7 +1383,7 @@ static void R_emit_batches_from_items(renderer_t *r, inst_item_t *items, uint32_
 
     if (have_cur)
     {
-        cur.count = r->inst_mats.size - cur_start;
+        cur.count = mats->size - cur_start;
         if (cur.count)
             vector_push_back(batches, &cur);
     }
@@ -1540,7 +1546,159 @@ static void R_build_instancing(renderer_t *r)
     }
 
     if (n)
-        R_emit_batches_from_items(r, items, n, &r->inst_batches);
+        R_emit_batches_from_items(r, items, n, &r->inst_batches, &r->inst_mats);
+
+    free(items);
+}
+
+static void R_build_shadow_instancing(renderer_t *r)
+{
+    vector_clear(&r->shadow_inst_batches);
+    vector_clear(&r->shadow_inst_mats);
+
+    uint32_t max_items = 0;
+
+    for (uint32_t i = 0; i < r->models.size; ++i)
+    {
+        pushed_model_t *pm = (pushed_model_t *)vector_at(&r->models, i);
+        if (!pm || !ihandle_is_valid(pm->model))
+            continue;
+
+        asset_model_t *mdl = R_resolve_model(r, pm->model);
+        if (!mdl)
+            continue;
+
+        max_items += mdl->meshes.size * 2u;
+    }
+
+    for (uint32_t i = 0; i < r->fwd_models.size; ++i)
+    {
+        pushed_model_t *pm = (pushed_model_t *)vector_at(&r->fwd_models, i);
+        if (!pm || !ihandle_is_valid(pm->model))
+            continue;
+
+        asset_model_t *mdl = R_resolve_model(r, pm->model);
+        if (!mdl)
+            continue;
+
+        max_items += mdl->meshes.size * 2u;
+    }
+
+    if (!max_items)
+        return;
+
+    inst_item_t *items = (inst_item_t *)malloc(sizeof(inst_item_t) * (size_t)max_items);
+    if (!items)
+        return;
+
+    uint32_t n = 0;
+
+    for (uint32_t i = 0; i < r->models.size; ++i)
+    {
+        pushed_model_t *pm = (pushed_model_t *)vector_at(&r->models, i);
+        if (!pm || !ihandle_is_valid(pm->model))
+            continue;
+
+        asset_model_t *mdl = R_resolve_model(r, pm->model);
+        if (!mdl)
+            continue;
+
+        for (uint32_t mi = 0; mi < mdl->meshes.size; ++mi)
+        {
+            mesh_t *mesh = (mesh_t *)vector_at((vector_t *)&mdl->meshes, mi);
+            if (!mesh)
+                continue;
+
+            float fade01 = 0.0f;
+            int xfade01 = 0;
+            uint32_t lod = R_pick_lod_level_for_mesh_fade01(r, mesh, &pm->model_matrix, pm->model, mi, &fade01, &xfade01);
+
+            if (xfade01 && mesh->lods.size >= 2)
+            {
+                items[n].model = pm->model;
+                items[n].mesh_index = mi;
+                items[n].lod = 0;
+                items[n].fade01 = fade01;
+                items[n].m = pm->model_matrix;
+                n++;
+
+                items[n].model = pm->model;
+                items[n].mesh_index = mi;
+                items[n].lod = 1;
+                items[n].fade01 = fade01;
+                items[n].m = pm->model_matrix;
+                n++;
+            }
+            else
+            {
+                float f = 0.0f;
+                if (lod == 1)
+                    f = 1.0f;
+
+                items[n].model = pm->model;
+                items[n].mesh_index = mi;
+                items[n].lod = lod;
+                items[n].fade01 = f;
+                items[n].m = pm->model_matrix;
+                n++;
+            }
+        }
+    }
+
+    for (uint32_t i = 0; i < r->fwd_models.size; ++i)
+    {
+        pushed_model_t *pm = (pushed_model_t *)vector_at(&r->fwd_models, i);
+        if (!pm || !ihandle_is_valid(pm->model))
+            continue;
+
+        asset_model_t *mdl = R_resolve_model(r, pm->model);
+        if (!mdl)
+            continue;
+
+        for (uint32_t mi = 0; mi < mdl->meshes.size; ++mi)
+        {
+            mesh_t *mesh = (mesh_t *)vector_at((vector_t *)&mdl->meshes, mi);
+            if (!mesh)
+                continue;
+
+            float fade01 = 0.0f;
+            int xfade01 = 0;
+            uint32_t lod = R_pick_lod_level_for_mesh_fade01(r, mesh, &pm->model_matrix, pm->model, mi, &fade01, &xfade01);
+
+            if (xfade01 && mesh->lods.size >= 2)
+            {
+                items[n].model = pm->model;
+                items[n].mesh_index = mi;
+                items[n].lod = 0;
+                items[n].fade01 = fade01;
+                items[n].m = pm->model_matrix;
+                n++;
+
+                items[n].model = pm->model;
+                items[n].mesh_index = mi;
+                items[n].lod = 1;
+                items[n].fade01 = fade01;
+                items[n].m = pm->model_matrix;
+                n++;
+            }
+            else
+            {
+                float f = 0.0f;
+                if (lod == 1)
+                    f = 1.0f;
+
+                items[n].model = pm->model;
+                items[n].mesh_index = mi;
+                items[n].lod = lod;
+                items[n].fade01 = f;
+                items[n].m = pm->model_matrix;
+                n++;
+            }
+        }
+    }
+
+    if (n)
+        R_emit_batches_from_items(r, items, n, &r->shadow_inst_batches, &r->shadow_inst_mats);
 
     free(items);
 }
@@ -1974,9 +2132,9 @@ static void R_shadow_pass(renderer_t *r)
         shader_set_mat4(shadow, "u_View", mat4_identity());
         shader_set_mat4(shadow, "u_Proj", r->shadow.vp[ci]);
 
-        for (uint32_t bi = 0; bi < r->inst_batches.size; ++bi)
+        for (uint32_t bi = 0; bi < r->shadow_inst_batches.size; ++bi)
         {
-            inst_batch_t *b = (inst_batch_t *)vector_at(&r->inst_batches, bi);
+            inst_batch_t *b = (inst_batch_t *)vector_at(&r->shadow_inst_batches, bi);
             if (!b || b->count == 0)
                 continue;
 
@@ -2015,7 +2173,7 @@ static void R_shadow_pass(renderer_t *r)
             shader_set_int(shadow, "u_LodXFadeEnabled", xfade_enabled);
             shader_set_int(shadow, "u_LodXFadeMode", xfade_mode);
 
-            instance_gpu_t *inst = (instance_gpu_t *)vector_at(&r->inst_mats, b->start);
+            instance_gpu_t *inst = (instance_gpu_t *)vector_at(&r->shadow_inst_mats, b->start);
             if (!inst)
                 continue;
 
@@ -2418,6 +2576,7 @@ static void R_forward_one_pass(renderer_t *r)
     shader_set_int(fwd, "u_ShadowCascadeCount", r->shadow.cascades);
     shader_set_int(fwd, "u_ShadowMapSize", r->shadow.size);
     shader_set_int(fwd, "u_ShadowLightIndex", r->shadow.light_index);
+    shader_set_int(fwd, "u_ShadowPCF", r->cfg.shadow_pcf ? 1 : 0);
     shader_set_float_array(fwd, "u_ShadowSplits", r->shadow.splits, R_SHADOW_MAX_CASCADES);
     shader_set_float(fwd, "u_ShadowBias", r->cfg.shadow_bias);
     shader_set_float(fwd, "u_ShadowNormalBias", r->cfg.shadow_normal_bias);
@@ -2776,6 +2935,8 @@ void R_end_frame(renderer_t *r)
     ibl_ensure(r);
 
     R_build_instancing(r);
+
+    R_build_shadow_instancing(r);
 
     R_shadow_pass(r);
 
