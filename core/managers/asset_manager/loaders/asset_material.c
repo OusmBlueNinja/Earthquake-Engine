@@ -281,14 +281,72 @@ static bool ikv_write_to_memory(const ikv_node_t *root, void **out_bytes, uint32
     return true;
 }
 
-static bool asset_material_load(asset_manager_t *am, const char *path, uint32_t path_is_ptr, asset_any_t *out_asset)
+static bool ikv_try_read_ihandle(const ikv_node_t *root, ihandle_t *out_h)
+{
+    if (!root || !out_h)
+        return false;
+
+    ikv_node_t *hobj = ikv_object_get(root, "ihandle");
+    if (!hobj || hobj->type != IKV_OBJECT)
+        return false;
+
+    ikv_node_t *v = ikv_object_get(hobj, "value");
+    ikv_node_t *t = ikv_object_get(hobj, "type");
+    ikv_node_t *m = ikv_object_get(hobj, "meta");
+
+    if (!v || !t || !m)
+        return false;
+    if (v->type != IKV_INT || t->type != IKV_INT || m->type != IKV_INT)
+        return false;
+
+    ihandle_t h;
+    memset(&h, 0, sizeof(h));
+    h.value = (uint32_t)v->value.i;
+    h.type = (ihandle_type_t)t->value.i;
+    h.meta = (uint16_t)m->value.i;
+
+    if (!ihandle_is_valid(h))
+        return false;
+
+    *out_h = h;
+    return true;
+}
+
+static void ikv_write_ihandle(ikv_node_t *root, ihandle_t h)
+{
+    if (!root)
+        return;
+    ikv_node_t *o = ikv_object_add_object(root, "ihandle");
+    if (!o)
+        return;
+    ikv_object_set_int(o, "value", (int64_t)h.value);
+    ikv_object_set_int(o, "type", (int64_t)h.type);
+    ikv_object_set_int(o, "meta", (int64_t)h.meta);
+}
+
+static bool asset_material_load(asset_manager_t *am, const char *path, uint32_t path_is_ptr, asset_any_t *out_asset, ihandle_t *out_handle)
 {
     (void)am;
+
+    if (out_handle)
+        *out_handle = ihandle_invalid();
 
     if (!out_asset || !path)
         return false;
     if (path_is_ptr)
         return false;
+
+    if (out_handle)
+    {
+        ikv_node_t *root = ikv_parse_file(path);
+        if (root)
+        {
+            ihandle_t htmp = ihandle_invalid();
+            if (ikv_try_read_ihandle(root, &htmp))
+                *out_handle = htmp;
+            ikv_free(root);
+        }
+    }
 
     asset_material_t m = material_make_default(get_renderer()->default_shader_id);
     if (!material_load_file(path, &m))
@@ -328,7 +386,6 @@ static void asset_material_cleanup(asset_manager_t *am, asset_any_t *asset)
 static bool asset_material_save_blob(asset_manager_t *am, ihandle_t handle, const asset_any_t *asset, asset_blob_t *out_blob)
 {
     (void)am;
-    (void)handle;
 
     if (!asset || asset->type != ASSET_MATERIAL || !out_blob)
         return false;
@@ -338,6 +395,8 @@ static bool asset_material_save_blob(asset_manager_t *am, ihandle_t handle, cons
     ikv_node_t *root = material_to_ikv(&asset->as.material, "material");
     if (!root)
         return false;
+
+    ikv_write_ihandle(root, handle);
 
     void *bytes = NULL;
     uint32_t bytes_n = 0;
@@ -351,7 +410,7 @@ static bool asset_material_save_blob(asset_manager_t *am, ihandle_t handle, cons
         return false;
     }
 
-    out_blob->data = bytes;
+    out_blob->data = (uint8_t *)bytes;
     out_blob->size = bytes_n;
     out_blob->uncompressed_size = bytes_n;
     out_blob->codec = 0;
@@ -374,7 +433,7 @@ static void asset_material_blob_free(asset_manager_t *am, asset_blob_t *blob)
 
 asset_module_desc_t asset_module_material(void)
 {
-    asset_module_desc_t m;
+    asset_module_desc_t m = {0};
     m.type = ASSET_MATERIAL;
     m.name = "ASSET_MATERIAL_KV1";
     m.load_fn = asset_material_load;

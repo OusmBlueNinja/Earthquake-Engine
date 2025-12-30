@@ -104,6 +104,53 @@ static void wm_glfw_char(GLFWwindow *window, unsigned int codepoint)
     wm_dispatch(&e);
 }
 
+static GLFWcursor *wm_get_standard_cursor(window_manager *wm, wm_cursor_shape_t shape)
+{
+    if (!wm)
+        return NULL;
+
+    if ((int)shape < 0 || shape >= WM_CURSOR_SHAPE_MAX)
+        shape = WM_CURSOR_ARROW;
+
+    if (wm->cursors[shape])
+        return wm->cursors[shape];
+
+    int standard = GLFW_ARROW_CURSOR;
+    switch (shape)
+    {
+    case WM_CURSOR_ARROW:
+        standard = GLFW_ARROW_CURSOR;
+        break;
+    case WM_CURSOR_IBEAM:
+        standard = GLFW_IBEAM_CURSOR;
+        break;
+    case WM_CURSOR_CROSSHAIR:
+        standard = GLFW_CROSSHAIR_CURSOR;
+        break;
+    case WM_CURSOR_HAND:
+        standard = GLFW_HAND_CURSOR;
+        break;
+    case WM_CURSOR_HRESIZE:
+        standard = GLFW_HRESIZE_CURSOR;
+        break;
+    case WM_CURSOR_VRESIZE:
+        standard = GLFW_VRESIZE_CURSOR;
+        break;
+    case WM_CURSOR_DRESIZE_NESW:
+        standard = GLFW_HRESIZE_CURSOR;
+        break;
+    case WM_CURSOR_DRESIZE_NWSE:
+        standard = GLFW_VRESIZE_CURSOR;
+        break;
+    default:
+        standard = GLFW_ARROW_CURSOR;
+        break;
+    }
+
+    wm->cursors[shape] = glfwCreateStandardCursor(standard);
+    return wm->cursors[shape];
+}
+
 int wm_init(window_manager *wm)
 {
     if (!wm)
@@ -118,6 +165,9 @@ int wm_init(window_manager *wm)
 
     wm->fbo = 0;
     wm->fbo_size = (vec2i){0, 0};
+
+    for (int i = 0; i < WM_CURSOR_SHAPE_MAX; ++i)
+        wm->cursors[i] = NULL;
 
     glfwSetErrorCallback(wm_error_callback);
 
@@ -177,6 +227,15 @@ void wm_shutdown(window_manager *wm)
     if (!wm)
         return;
 
+    for (int i = 0; i < WM_CURSOR_SHAPE_MAX; ++i)
+    {
+        if (wm->cursors[i])
+        {
+            glfwDestroyCursor(wm->cursors[i]);
+            wm->cursors[i] = NULL;
+        }
+    }
+
     if (wm->window)
     {
         glfwDestroyWindow(wm->window);
@@ -224,6 +283,41 @@ void wm_set_title(window_manager *wm, const char *title)
 
     wm->title = title;
     glfwSetWindowTitle(wm->window, title);
+}
+
+void wm_set_cursor_state(window_manager *wm, int state)
+{
+    if (!wm || !wm->window)
+        return;
+
+    int mode = GLFW_CURSOR_NORMAL;
+
+    switch (state)
+    {
+    case WM_CURSOR_NORMAL:
+        mode = GLFW_CURSOR_NORMAL;
+        break;
+    case WM_CURSOR_HIDDEN:
+        mode = GLFW_CURSOR_HIDDEN;
+        break;
+    case WM_CURSOR_DISABLED:
+        mode = GLFW_CURSOR_DISABLED;
+        break;
+    default:
+        mode = GLFW_CURSOR_NORMAL;
+        break;
+    }
+
+    glfwSetInputMode(wm->window, GLFW_CURSOR, mode);
+}
+
+void wm_set_cursor_shape(window_manager *wm, wm_cursor_shape_t shape)
+{
+    if (!wm || !wm->window)
+        return;
+
+    GLFWcursor *c = wm_get_standard_cursor(wm, shape);
+    glfwSetCursor(wm->window, c);
 }
 
 double wm_get_time(void)

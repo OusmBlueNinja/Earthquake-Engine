@@ -319,23 +319,33 @@ static void mdl_submesh_free_cpu(model_cpu_submesh_t *sm)
 
 static bool mdl_obj_quick_verify(const char *path)
 {
+    if (!path || !path[0])
+        return false;
+
     const char *ext = strrchr(path, '.');
-    if (ext && (!strcmp(ext, ".obj") || !strcmp(ext, ".OBJ")))
-        return true;
+    if (!ext)
+        return false;
+
+    if (strcmp(ext, ".obj") && strcmp(ext, ".OBJ"))
+        return false;
 
     FILE *f = fopen(path, "rb");
     if (!f)
         return false;
 
-    char buf[4096];
+    char buf[16384];
     size_t n = fread(buf, 1, sizeof(buf) - 1, f);
     fclose(f);
     buf[n] = 0;
 
-    bool saw_v = false;
-    bool saw_f = false;
-
     char *p = buf;
+    if (n >= 3 && (unsigned char)p[0] == 0xEF && (unsigned char)p[1] == 0xBB && (unsigned char)p[2] == 0xBF)
+        p += 3;
+
+    int v_lines = 0;
+    int f_lines = 0;
+    int saw_any_obj_kw = 0;
+
     while (*p)
     {
         while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n')
@@ -350,17 +360,63 @@ static bool mdl_obj_quick_verify(const char *path)
             continue;
         }
 
-        if (p[0] == 'v' && (p[1] == ' ' || p[1] == 't' || p[1] == 'n'))
-            saw_v = true;
-
-        if (p[0] == 'f' && (p[1] == ' ' || p[1] == '\t'))
-            saw_f = true;
-
+        char *line = p;
         while (*p && *p != '\n')
             p++;
+
+        char *q = line;
+        while (*q == ' ' || *q == '\t')
+            q++;
+
+        if (!*q || *q == '#')
+            continue;
+
+        if (q[0] == '{' || q[0] == '<')
+            return false;
+
+        if (q[0] == 'v' && (q[1] == ' ' || q[1] == '\t'))
+        {
+            v_lines++;
+            saw_any_obj_kw = 1;
+            continue;
+        }
+
+        if (q[0] == 'f' && (q[1] == ' ' || q[1] == '\t'))
+        {
+            f_lines++;
+            saw_any_obj_kw = 1;
+            continue;
+        }
+
+        if (q[0] == 'v' && (q[1] == 't' || q[1] == 'n') && (q[2] == ' ' || q[2] == '\t'))
+        {
+            saw_any_obj_kw = 1;
+            continue;
+        }
+
+        if (!strncmp(q, "mtllib", 6) && (q[6] == ' ' || q[6] == '\t'))
+        {
+            saw_any_obj_kw = 1;
+            continue;
+        }
+
+        if (!strncmp(q, "usemtl", 6) && (q[6] == ' ' || q[6] == '\t'))
+        {
+            saw_any_obj_kw = 1;
+            continue;
+        }
+
+        if ((q[0] == 'o' || q[0] == 'g' || q[0] == 's') && (q[1] == ' ' || q[1] == '\t'))
+        {
+            saw_any_obj_kw = 1;
+            continue;
+        }
     }
 
-    return saw_v && saw_f;
+    if (!saw_any_obj_kw)
+        return false;
+
+    return (v_lines >= 1 && f_lines >= 1);
 }
 
 static bool mdl_parse_obj_index(const char *tok, int *vi, int *vti, int *vni)
@@ -951,8 +1007,15 @@ static void mdl_free_mtl_entries(vector_t *entries)
     vector_impl_free(entries);
 }
 
-static bool asset_model_load(asset_manager_t *am, const char *path, uint32_t path_is_ptr, asset_any_t *out_asset)
+static bool asset_model_load(asset_manager_t *am, const char *path, uint32_t path_is_ptr, asset_any_t *out_asset, ihandle_t *out_handle)
 {
+    (void)am;
+    if (out_handle)
+        *out_handle = ihandle_invalid();
+
+    if (!out_asset)
+        return false;
+
     if (path_is_ptr)
         return false;
 
@@ -1115,16 +1178,29 @@ static void asset_model_cleanup(asset_manager_t *am, asset_any_t *asset)
     asset_model_destroy_cpu_only(&asset->as.model);
 }
 
+static bool asset_model_obj_can_load(asset_manager_t *am, const char *path, uint32_t path_is_ptr)
+{
+    (void)am;
+    if (!path || path_is_ptr)
+        return false;
+
+    const char *ext = strrchr(path, '.');
+    if (!ext)
+        return false;
+
+    return (!strcmp(ext, ".obj") || !strcmp(ext, ".OBJ"));
+}
+
 static asset_module_desc_t asset_module_model(void)
 {
-    asset_module_desc_t m;
+    asset_module_desc_t m = {0};
     m.type = ASSET_MODEL;
     m.name = "ASSET_MODEL_OBJ";
     m.load_fn = asset_model_load;
     m.init_fn = asset_model_init;
     m.cleanup_fn = asset_model_cleanup;
-
     m.save_blob_fn = NULL;
     m.blob_free_fn = NULL;
+    m.can_load_fn = asset_model_obj_can_load;
     return m;
 }

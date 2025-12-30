@@ -26,6 +26,10 @@ void ui_window_end_frame(struct ui_ctx_t *ui);
 
 void ui_dockspace(struct ui_ctx_t *ui, const char *id, ui_vec4_t rect);
 
+// Docking/Window layout persistence (simple text format).
+int ui_dock_load_layout_file(struct ui_ctx_t *ui, const char *path);
+int ui_dock_save_layout_file(struct ui_ctx_t *ui, const char *path);
+
 void ui_window_set_next_pos(struct ui_ctx_t *ui, ui_vec2_t pos);
 void ui_window_set_next_size(struct ui_ctx_t *ui, ui_vec2_t size);
 /* ImGui-friendly aliases */

@@ -1,4 +1,5 @@
 #include "handle.h"
+#include <stdio.h>
 
 static uint32_t pack_u16_u16(uint16_t a, uint16_t b)
 {
@@ -81,4 +82,17 @@ uint32_t ihandle_hash(ihandle_t h)
     x *= 0x846ca68bu;
     x ^= x >> 16;
     return x;
+}
+
+void handle_hex_triplet(char out[64], ihandle_t h)
+{
+    snprintf(out, 64, "%08X:%04X:%04X", (unsigned)h.value, (unsigned)h.type, (unsigned)h.meta);
+}
+
+void handle_hex_triplet_filesafe(char out[64], ihandle_t h)
+{
+    uint32_t v = h.value;
+    uint16_t idx = ihandle_index(h);
+    uint16_t gen = ihandle_generation(h);
+    snprintf(out, 64, "%08X_%04X_%04X", (unsigned)v, (unsigned)idx, (unsigned)gen);
 }

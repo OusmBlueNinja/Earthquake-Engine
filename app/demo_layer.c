@@ -24,7 +24,23 @@
 #include <GL/glew.h>
 #endif
 
-#define MOVING_LIGHTS 100
+#define MOVING_LIGHTS 5
+
+#define KEY_SPACE 32
+#define KEY_LEFT_SHIFT 340
+#define KEY_RIGHT_SHIFT 344
+#define KEY_LEFT_CONTROL 341
+#define KEY_RIGHT_CONTROL 345
+#define KEY_LEFT 263
+#define KEY_RIGHT 262
+#define KEY_UP 265
+#define KEY_DOWN 264
+
+typedef struct demo_model_entry_t
+{
+    ihandle_t h;
+    mat4 m;
+} demo_model_entry_t;
 
 static float demo_clampf(float x, float lo, float hi)
 {
@@ -35,30 +51,6 @@ static float demo_clampf(float x, float lo, float hi)
     return x;
 }
 
-static mat4 demo_mat4_rotate_x(float a)
-{
-    mat4 m = mat4_identity();
-    float c = cosf(a);
-    float s = sinf(a);
-    m.m[5] = c;
-    m.m[6] = s;
-    m.m[9] = -s;
-    m.m[10] = c;
-    return m;
-}
-
-static mat4 demo_mat4_rotate_y(float a)
-{
-    mat4 m = mat4_identity();
-    float c = cosf(a);
-    float s = sinf(a);
-    m.m[0] = c;
-    m.m[2] = -s;
-    m.m[8] = s;
-    m.m[10] = c;
-    return m;
-}
-
 static mat4 demo_mat4_translate(vec3 t)
 {
     mat4 m = mat4_identity();
@@ -66,15 +58,6 @@ static mat4 demo_mat4_translate(vec3 t)
     m.m[13] = t.y;
     m.m[14] = t.z;
     return m;
-}
-
-static vec3 demo_mat4_mul_vec3_dir(mat4 m, vec3 v)
-{
-    vec3 r;
-    r.x = m.m[0] * v.x + m.m[4] * v.y + m.m[8] * v.z;
-    r.y = m.m[1] * v.x + m.m[5] * v.y + m.m[9] * v.z;
-    r.z = m.m[2] * v.x + m.m[6] * v.y + m.m[10] * v.z;
-    return r;
 }
 
 static vec3 demo_vec3_add(vec3 a, vec3 b)
@@ -105,14 +88,12 @@ static vec3 demo_vec3_norm(vec3 a)
     return demo_vec3_scale(a, 1.0f / l);
 }
 
-static float demo_frand01(void)
+static vec3 demo_vec3_cross(vec3 a, vec3 b)
 {
-    return (float)rand() / (float)RAND_MAX;
-}
-
-static float demo_frand_range(float lo, float hi)
-{
-    return lo + (hi - lo) * demo_frand01();
+    return (vec3){
+        a.y * b.z - a.z * b.y,
+        a.z * b.x - a.x * b.z,
+        a.x * b.y - a.y * b.x};
 }
 
 static mat4 demo_transform_trs(vec3 t, float yaw, vec3 s)
@@ -121,6 +102,11 @@ static mat4 demo_transform_trs(vec3 t, float yaw, vec3 s)
     mat4 R = mat4_rotate_y(yaw);
     mat4 S = mat4_scale(s);
     return mat4_mul(T, mat4_mul(R, S));
+}
+
+static vec3 demo_mat4_get_translation(mat4 m)
+{
+    return (vec3){m.m[12], m.m[13], m.m[14]};
 }
 
 typedef struct moving_light_t
@@ -138,29 +124,33 @@ typedef struct demo_layer_state_t
 {
     ihandle_t hdri_h;
 
-    ihandle_t model_h;
-    mat4 model_m;
+    vector_t models;
 
     camera_t cam;
     float fovy_rad;
 
     int ready;
 
-    int orbit_down;
-    int pan_down;
+    int look_down;
     double last_mx;
     double last_my;
     int have_last_mouse;
 
     float yaw;
     float pitch;
-    float dist;
-    vec3 focus;
+    vec3 pos;
 
     int key_w;
     int key_a;
     int key_s;
     int key_d;
+    int key_space;
+    int key_ctrl;
+
+    int key_left;
+    int key_right;
+    int key_up;
+    int key_down;
 
     float move_speed;
     float boost_mult;
@@ -170,29 +160,61 @@ typedef struct demo_layer_state_t
 
     float stats_accum;
     uint64_t stats_frame_id;
+
+    int focus_index;
 } demo_layer_state_t;
+
+static vec3 demo_cam_forward(float yaw, float pitch)
+{
+    float cy = cosf(yaw);
+    float sy = sinf(yaw);
+    float cp = cosf(pitch);
+    float sp = sinf(pitch);
+    return demo_vec3_norm((vec3){cp * cy, sp, cp * sy});
+}
 
 static void demo_layer_apply_camera(demo_layer_state_t *s, renderer_t *r)
 {
     float aspect = (r->fb_size.y != 0) ? ((float)r->fb_size.x / (float)r->fb_size.y) : 1.0f;
 
-    // Dynamically tighten the near/far planes to keep depth precision reasonable.
-    // The previous far plane (200000) caused severe depth precision loss and "far renders over near" artifacts.
-    float near_plane = demo_clampf(s->dist * 0.002f, 0.1f, 50.0f);
-    float far_plane = demo_clampf(s->dist * 2.0f, 200.0f, 50000.0f);
+    float near_plane = 0.1f;
+    float far_plane = 5000.0f;
     camera_set_perspective(&s->cam, s->fovy_rad, aspect, near_plane, far_plane);
 
     s->pitch = demo_clampf(s->pitch, -1.55f, 1.55f);
-    s->dist = demo_clampf(s->dist, 1.5f, 20000.0f);
 
-    mat4 ry = demo_mat4_rotate_y(s->yaw);
-    mat4 rx = demo_mat4_rotate_x(s->pitch);
-    mat4 rxy = mat4_mul(ry, rx);
+    vec3 fwd = demo_cam_forward(s->yaw, s->pitch);
+    vec3 target = demo_vec3_add(s->pos, fwd);
 
-    vec3 offset = demo_mat4_mul_vec3_dir(rxy, (vec3){0.0f, 0.0f, s->dist});
-    vec3 cam_pos = demo_vec3_add(s->focus, offset);
+    camera_look_at(&s->cam, s->pos, target, (vec3){0.0f, 1.0f, 0.0f});
+}
 
-    camera_look_at(&s->cam, cam_pos, s->focus, (vec3){0.0f, 1.0f, 0.0f});
+static void demo_layer_focus_model(demo_layer_state_t *s, uint32_t index)
+{
+    if (!s)
+        return;
+    if (index >= s->models.size)
+        return;
+
+    demo_model_entry_t *e = (demo_model_entry_t *)vector_impl_at(&s->models, index);
+    if (!e)
+        return;
+
+    vec3 target = demo_mat4_get_translation(e->m);
+
+    float dist = 3.0f;
+
+    vec3 fwd = demo_cam_forward(s->yaw, s->pitch);
+    s->pos = demo_vec3_sub(target, demo_vec3_scale(fwd, dist));
+}
+
+static int demo_key_to_focus_index(int key)
+{
+    if (key >= '1' && key <= '9')
+        return (key - '1');
+    if (key == '0')
+        return 9;
+    return -1;
 }
 
 static bool demo_layer_on_event(layer_t *layer, event_t *e)
@@ -207,21 +229,21 @@ static bool demo_layer_on_event(layer_t *layer, event_t *e)
         int b = e->as.mouse_button.button;
 
         if (b == 1)
-            s->orbit_down = down;
-        if (b == 2)
-            s->pan_down = down;
+            s->look_down = down;
 
         s->have_last_mouse = 0;
 
-        e->handled = (b == 1 || b == 2);
+        e->handled = (b == 1);
         return e->handled;
     }
 
     if (e->type == EV_MOUSE_SCROLL)
     {
         double dy = e->as.mouse_scroll.dy;
-        float k = powf(0.90f, (float)dy);
-        s->dist = demo_clampf(s->dist * k, 1.5f, 20000.0f);
+        float k = (dy > 0.0) ? 1.10f : 0.90f;
+        float steps = (float)fabs(dy);
+        float mult = powf(k, steps);
+        s->move_speed = demo_clampf(s->move_speed * mult, 0.25f, 5000.0f);
         e->handled = true;
         return true;
     }
@@ -244,28 +266,11 @@ static bool demo_layer_on_event(layer_t *layer, event_t *e)
         s->last_mx = mx;
         s->last_my = my;
 
-        if (s->orbit_down)
+        if (s->look_down)
         {
-            float sens = 0.0050f;
+            float sens = 0.0025f;
             s->yaw -= (float)dx * sens;
             s->pitch += (float)-dy * sens;
-            e->handled = true;
-            return true;
-        }
-
-        if (s->pan_down)
-        {
-            float pan_scale = 0.0018f * s->dist;
-
-            float cy = -cosf(s->yaw);
-            float sy = -sinf(s->yaw);
-
-            vec3 right = (vec3){-sy, 0.0f, cy};
-            vec3 fwd = (vec3){cy, 0.0f, sy};
-
-            s->focus = demo_vec3_add(s->focus, demo_vec3_scale(right, (float)(-dx) * pan_scale));
-            s->focus = demo_vec3_add(s->focus, demo_vec3_scale(fwd, (float)(dy)*pan_scale));
-
             e->handled = true;
             return true;
         }
@@ -278,6 +283,18 @@ static bool demo_layer_on_event(layer_t *layer, event_t *e)
         int down = (e->type == EV_KEY_DOWN) ? 1 : 0;
         int key = e->as.key.key;
 
+        if (down)
+        {
+            int fi = demo_key_to_focus_index(key);
+            if (fi >= 0 && (uint32_t)fi < s->models.size)
+            {
+                s->focus_index = fi;
+                demo_layer_focus_model(s, (uint32_t)fi);
+                e->handled = 1;
+                return true;
+            }
+        }
+
         if (key == 'W')
             s->key_w = down;
         if (key == 'A')
@@ -287,34 +304,40 @@ static bool demo_layer_on_event(layer_t *layer, event_t *e)
         if (key == 'D')
             s->key_d = down;
 
-        if (key == 340 || key == 344)
+        if (key == KEY_SPACE)
+            s->key_space = down;
+        if (key == KEY_LEFT_CONTROL || key == KEY_RIGHT_CONTROL)
+            s->key_ctrl = down;
+
+        if (key == KEY_RIGHT)
+            s->key_left = down;
+        if (key == KEY_LEFT)
+            s->key_right = down;
+        if (key == KEY_UP)
+            s->key_up = down;
+        if (key == KEY_DOWN)
+            s->key_down = down;
+
+        if (key == KEY_LEFT_SHIFT || key == KEY_RIGHT_SHIFT)
             s->boost_mult = down ? 4.0f : 1.0f;
 
-        e->handled = (key == 'W' || key == 'A' || key == 'S' || key == 'D' || key == 340 || key == 344);
-        return e->handled;
+        e->handled = 1;
+        return true;
     }
 
     return false;
 }
 
-static void demo_init_moving_lights(demo_layer_state_t *s)
+static void demo_layer_add_model(demo_layer_state_t *s, asset_manager_t *am, const char *path, mat4 mtx)
 {
-    for (int i = 0; i < MOVING_LIGHTS; ++i)
-    {
-        float a = (float)i / (float)MOVING_LIGHTS;
+    if (!s || !am || !path || !path[0])
+        return;
 
-        s->lights[i].radius = demo_frand_range(10.0f, 55.0f);
-        s->lights[i].speed = demo_frand_range(0.25f, 1.10f) * (demo_frand01() < 0.5f ? -1.0f : 1.0f);
-        s->lights[i].phase = demo_frand_range(0.0f, 6.283185307179586f);
-        s->lights[i].height = demo_frand_range(1.0f, 15.0f);
-        s->lights[i].intensity = demo_frand_range(1.0f, 10.0f);
-        s->lights[i].range = demo_frand_range(5.0f, 10.0f);
+    demo_model_entry_t e;
+    e.h = asset_manager_request(am, ASSET_MODEL, path);
+    e.m = mtx;
 
-        float r = 0.5f + 0.5f * cosf(6.283185307179586f * (a + 0.00f));
-        float g = 0.5f + 0.5f * cosf(6.283185307179586f * (a + 0.11f));
-        float b = 0.5f + 0.5f * cosf(6.283185307179586f * (a + 0.22f));
-        s->lights[i].color = (vec3){r, g, b};
-    }
+    vector_impl_push_back(&s->models, &e);
 }
 
 static void demo_layer_init(layer_t *layer)
@@ -327,29 +350,46 @@ static void demo_layer_init(layer_t *layer)
 
     layer->on_event = demo_layer_on_event;
 
+    s->models = vector_impl_create_vector(sizeof(demo_model_entry_t));
+
     s->cam = camera_create();
     s->fovy_rad = 60.0f * 0.017453292519943295f;
 
-    s->yaw = 0.35f;
-    s->pitch = -0.20f;
-    s->dist = 200.0f;
-    s->focus = (vec3){0.0f, 3.0f, 0.0f};
+    s->yaw = 0.0f;
+    s->pitch = 0.0f;
+    s->pos = (vec3){-0.0f, 3.0f, -10.0f};
 
-    s->move_speed = 10.0f;
-    s->boost_mult = 1.0f;
+    s->move_speed = 1.0f;
+    s->boost_mult = 2.0f;
 
     demo_layer_apply_camera(s, r);
     s->hdri_h = asset_manager_request(am, ASSET_IMAGE, "C:/Users/spenc/Desktop/Bistro_v5_2/Bistro_v5_2/san_giuseppe_bridge_4k.hdr");
 
-    s->model_h = asset_manager_request(am, ASSET_MODEL, "C:/Users/spenc/Desktop/Bistro.glb");
-    s->model_m = mat4_identity();
+    demo_layer_add_model(s, am, "C:/Users/spenc/Desktop/CoffeeCart_01_4k.gltf/CoffeeCart_01_4k.gltf",
+                         demo_transform_trs((vec3){-1.5f, 0.0f, 0.0f}, 0.0f, (vec3){1.0f, 1.0f, 1.0f}));
+
+    demo_layer_add_model(s, am, "C:/Users/spenc/Desktop/Camera_01_4k.gltf/Camera_01_4k.gltf",
+                         demo_transform_trs((vec3){0.0f, 0.0f, 0.0f}, 0.0f, (vec3){4.0f, 4.0f, 4.0f}));
+
+    demo_layer_add_model(s, am, "C:/Users/spenc/Desktop/vintage_video_camera_4k.gltf/vintage_video_camera_4k.gltf",
+                         demo_transform_trs((vec3){0.5f, 0.0f, 0.0f}, 0.0f, (vec3){4.0f, 4.0f, 4.0f}));
+
+    demo_layer_add_model(s, am, "C:/Users/spenc/Desktop/CashRegister_01_4k.gltf/CashRegister_01_4k.gltf",
+                         demo_transform_trs((vec3){1.5f, 0.0f, 0.0f}, 0.0f, (vec3){1.0f, 1.0f, 1.0f}));
+
+    demo_layer_add_model(s, am, "C:/Users/spenc/Desktop/electric_stove_4k.gltf/electric_stove_4k.gltf",
+                         demo_transform_trs((vec3){2.5f, 0.0f, 0.0f}, 0.0f, (vec3){1.0f, 1.0f, 1.0f}));
+
+    demo_layer_add_model(s, am, "C:/Users/spenc/Desktop/Television_01_4k.gltf/Television_01_4k.gltf",
+                         demo_transform_trs((vec3){3.5f, 0.0f, 0.0f}, 0.0f, (vec3){1.0f, 1.0f, 1.0f}));
+
+    s->focus_index = -1;
 
     s->stats_accum = 0.0f;
     s->stats_frame_id = 0;
 
     srand(1337u);
 
-    demo_init_moving_lights(s);
     s->t = 0.0f;
 
     cvar_set_float_name("cl_r_ibl_intensity", 0.2f);
@@ -362,6 +402,8 @@ static void demo_layer_shutdown(layer_t *layer)
     demo_layer_state_t *s = (demo_layer_state_t *)layer->data;
     if (!s)
         return;
+
+    vector_impl_free(&s->models);
 
     free(s);
     layer->data = NULL;
@@ -377,13 +419,24 @@ static void demo_layer_update(layer_t *layer, float dt)
 
     s->t += dt;
 
+    float rot_speed = 1.6f;
+    if (s->key_left)
+        s->yaw += rot_speed * dt;
+    if (s->key_right)
+        s->yaw -= rot_speed * dt;
+    if (s->key_up)
+        s->pitch += rot_speed * dt;
+    if (s->key_down)
+        s->pitch -= rot_speed * dt;
+
+    s->pitch = demo_clampf(s->pitch, -1.55f, 1.55f);
+
     float move = s->move_speed * s->boost_mult * dt;
 
-    float cy = cosf(s->yaw);
-    float sy = sinf(s->yaw);
-
-    vec3 fwd = demo_vec3_norm((vec3){cy, 0.0f, sy});
-    vec3 right = demo_vec3_norm((vec3){-sy, 0.0f, cy});
+    vec3 world_up = (vec3){0.0f, 1.0f, 0.0f};
+    vec3 fwd = demo_cam_forward(s->yaw, s->pitch);
+    vec3 right = demo_vec3_norm(demo_vec3_cross(fwd, world_up));
+    vec3 up = demo_vec3_norm(demo_vec3_cross(right, fwd));
 
     vec3 delta = (vec3){0, 0, 0};
 
@@ -391,21 +444,35 @@ static void demo_layer_update(layer_t *layer, float dt)
         delta = demo_vec3_add(delta, fwd);
     if (s->key_s)
         delta = demo_vec3_sub(delta, fwd);
-    if (s->key_a)
-        delta = demo_vec3_add(delta, right);
     if (s->key_d)
+        delta = demo_vec3_add(delta, right);
+    if (s->key_a)
         delta = demo_vec3_sub(delta, right);
+
+    if (s->key_space)
+        delta = demo_vec3_add(delta, world_up);
+    if (s->key_ctrl)
+        delta = demo_vec3_sub(delta, world_up);
 
     float dl = demo_vec3_len(delta);
     if (dl > 1e-6f)
         delta = demo_vec3_scale(delta, move / dl);
 
-    s->focus = demo_vec3_add(s->focus, delta);
+    s->pos = demo_vec3_add(s->pos, delta);
 
     demo_layer_apply_camera(s, r);
 
     s->stats_accum += dt;
     s->stats_frame_id++;
+
+    // if (all_loaded(&layer->app->asset_manager))
+    //{
+    //     uint8_t *pack = 0;
+    //     uint32_t pack_size = 0;
+    //     asset_manager_build_pack_ex(&layer->app->asset_manager, &pack, &pack_size, SAVE_FLAG_SEPARATE_ASSETS, "./test/save");
+    //     asset_manager_free_pack(pack);
+    //     layer->app->running = false;
+    // }
 }
 
 static void demo_layer_draw(layer_t *layer)
@@ -427,7 +494,7 @@ static void demo_layer_draw(layer_t *layer)
         float x = cosf(a) * L->radius;
         float z = sinf(a) * L->radius;
 
-        light_t lt = {0};
+        light_t lt = (light_t){0};
 
         lt.type = LIGHT_POINT;
         lt.position = (vec3){x, L->height, z};
@@ -440,10 +507,12 @@ static void demo_layer_draw(layer_t *layer)
         R_push_light(r, lt);
     }
 
+    for (uint32_t i = 0; i < s->models.size; ++i)
     {
-        mat4 H = demo_transform_trs((vec3){0.0f, 0.0f, 0.0f}, 0.0f, (vec3){1.0f, 1.0f, 1.0f});
-        s->model_m = H;
-        R_push_model(r, s->model_h, s->model_m);
+        demo_model_entry_t *e = (demo_model_entry_t *)vector_impl_at(&s->models, i);
+        if (!e)
+            continue;
+        R_push_model(r, e->h, e->m);
     }
 }
 
@@ -455,6 +524,5 @@ layer_t create_demo_layer(void)
     layer.update = demo_layer_update;
     layer.draw = demo_layer_draw;
     layer.on_event = demo_layer_on_event;
-    // layer.flags |= LAYER_FLAG_HIDDEN_IN_TITLE;
     return layer;
 }

@@ -40,6 +40,7 @@ find_package(GLEW REQUIRED)
 
 file(GLOB_RECURSE CORE_SRC CONFIGURE_DEPENDS
     "${CMAKE_SOURCE_DIR}/core/*.c"
+    "${CMAKE_SOURCE_DIR}/vendor/*.c"
 )
 
 add_library(core STATIC ${CORE_SRC})
@@ -55,7 +56,7 @@ target_include_directories(core PUBLIC
     "${CMAKE_SOURCE_DIR}/core/managers"
     "${CMAKE_SOURCE_DIR}/core/systems"
     "${CMAKE_SOURCE_DIR}/core/types"
-    "${CMAKE_SOURCE_DIR}/vendor"
+    "${CMAKE_SOURCE_DIR}/vendor/"
     "${meshoptimizer_SOURCE_DIR}/src"
 )
 
