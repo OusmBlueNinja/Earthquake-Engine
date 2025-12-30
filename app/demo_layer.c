@@ -364,6 +364,8 @@ static void demo_layer_init(layer_t *layer)
 
     demo_layer_apply_camera(s, r);
     s->hdri_h = asset_manager_request(am, ASSET_IMAGE, "C:/Users/spenc/Desktop/Bistro_v5_2/Bistro_v5_2/san_giuseppe_bridge_4k.hdr");
+    demo_layer_add_model(s, am, "C:/Users/spenc/Desktop/38-floor/Floor.FBX",
+                         demo_transform_trs((vec3){0.0f, -1.0f, 0.0f}, 0.0f, (vec3){1.0f, 1.0f, 1.0f}));
 
     demo_layer_add_model(s, am, "C:/Users/spenc/Desktop/CoffeeCart_01_4k.gltf/CoffeeCart_01_4k.gltf",
                          demo_transform_trs((vec3){-1.5f, 0.0f, 0.0f}, 0.0f, (vec3){1.0f, 1.0f, 1.0f}));
@@ -485,6 +487,27 @@ static void demo_layer_draw(layer_t *layer)
 
     R_push_camera(r, &s->cam);
     R_push_hdri(r, s->hdri_h);
+
+    {
+        light_t sun = (light_t){0};
+        sun.type = LIGHT_DIRECTIONAL;
+        sun.direction = demo_vec3_norm((vec3){-0.3f, -1.0f, -0.2f});
+        sun.color = (vec3){1.0f, 1.0f, 1.0f};
+        sun.intensity = 1.0f;
+        R_push_light(r, sun);
+    }
+
+    {
+        light_t p = (light_t){0};
+        p.type = LIGHT_POINT;
+        p.position = (vec3){0.0f, 4.0f, 0.0f};
+        p.direction = (vec3){0.0f, -1.0f, 0.0f};
+        p.color = (vec3){1.0f, 0.82f, 0.70f};
+        p.intensity = 1.0f;
+        p.range = 20.0f;
+        p.radius = p.range;
+        R_push_light(r, p);
+    }
 
     for (int i = 0; i < MOVING_LIGHTS; ++i)
     {

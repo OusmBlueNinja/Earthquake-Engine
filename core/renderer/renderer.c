@@ -203,7 +203,111 @@ static void R_cfg_pull_from_cvars(renderer_t *r)
     r->cfg.ssr_thickness = cvar_get_float_name("cl_r_ssr_thickness");
     r->cfg.ssr_max_dist = cvar_get_float_name("cl_r_ssr_max_dist");
 
+    r->cfg.shadows = cvar_get_bool_name("cl_r_shadows");
+    r->cfg.shadow_cascades = cvar_get_int_name("cl_r_shadow_cascades");
+    r->cfg.shadow_map_size = cvar_get_int_name("cl_r_shadow_map_size");
+    r->cfg.shadow_max_dist = cvar_get_float_name("cl_r_shadow_max_dist");
+    r->cfg.shadow_split_lambda = cvar_get_float_name("cl_r_shadow_split_lambda");
+    r->cfg.shadow_bias = cvar_get_float_name("cl_r_shadow_bias");
+    r->cfg.shadow_normal_bias = cvar_get_float_name("cl_r_shadow_normal_bias");
+    r->cfg.shadow_pcf = cvar_get_bool_name("cl_r_shadow_pcf");
+
     r->cfg.wireframe = cvar_get_bool_name("cl_r_wireframe") ? 1 : 0;
+}
+
+static void R_shadow_delete(renderer_t *r)
+{
+    if (!r)
+        return;
+
+    if (r->shadow.fbo)
+        glDeleteFramebuffers(1, &r->shadow.fbo);
+    r->shadow.fbo = 0;
+
+    if (r->shadow.tex)
+        glDeleteTextures(1, &r->shadow.tex);
+    r->shadow.tex = 0;
+
+    r->shadow.size = 0;
+    r->shadow.cascades = 0;
+    r->shadow.light_index = -1;
+    memset(r->shadow.vp, 0, sizeof(r->shadow.vp));
+    memset(r->shadow.splits, 0, sizeof(r->shadow.splits));
+}
+
+static int R_shadow_clamp_cascades(int c)
+{
+    if (c < 1)
+        c = 1;
+    if (c > R_SHADOW_MAX_CASCADES)
+        c = R_SHADOW_MAX_CASCADES;
+    return c;
+}
+
+static int R_shadow_clamp_size(int s)
+{
+    if (s < 256)
+        s = 256;
+    if (s > 8192)
+        s = 8192;
+    return s;
+}
+
+static void R_shadow_ensure(renderer_t *r)
+{
+    if (!r)
+        return;
+
+    if (!r->cfg.shadows)
+    {
+        if (r->shadow.tex || r->shadow.fbo)
+            R_shadow_delete(r);
+        return;
+    }
+
+    int want_size = R_shadow_clamp_size(r->cfg.shadow_map_size);
+    int want_cascades = R_shadow_clamp_cascades(r->cfg.shadow_cascades);
+
+    if (r->shadow.tex && r->shadow.fbo && r->shadow.size == want_size && r->shadow.cascades == want_cascades)
+        return;
+
+    R_shadow_delete(r);
+
+    glGenFramebuffers(1, &r->shadow.fbo);
+
+    glGenTextures(1, &r->shadow.tex);
+    glBindTexture(GL_TEXTURE_2D_ARRAY, r->shadow.tex);
+
+    glTexImage3D(GL_TEXTURE_2D_ARRAY,
+                 0,
+                 GL_DEPTH_COMPONENT32F,
+                 want_size,
+                 want_size,
+                 want_cascades,
+                 0,
+                 GL_DEPTH_COMPONENT,
+                 GL_FLOAT,
+                 NULL);
+
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, r->cfg.shadow_pcf ? GL_LINEAR : GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, r->cfg.shadow_pcf ? GL_LINEAR : GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_BORDER);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_BASE_LEVEL, 0);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAX_LEVEL, 0);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL);
+    {
+        float bc[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+        glTexParameterfv(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_BORDER_COLOR, bc);
+    }
+
+    glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
+
+    r->shadow.size = want_size;
+    r->shadow.cascades = want_cascades;
+    r->shadow.light_index = -1;
 }
 
 static void R_on_cvar_any(renderer_t *r)
@@ -1596,6 +1700,341 @@ static void R_depth_prepass(renderer_t *r)
     shader_memory_barrier(GL_TEXTURE_FETCH_BARRIER_BIT | GL_FRAMEBUFFER_BARRIER_BIT);
 }
 
+static void R_camera_extract_near_far(const camera_t *c, float *out_near, float *out_far)
+{
+    float nearZ = 0.1f;
+    float farZ = 1000.0f;
+
+    if (c)
+    {
+        float m22 = c->proj.m[10];
+        float m32 = c->proj.m[14];
+
+        float dn = (m22 - 1.0f);
+        float df = (m22 + 1.0f);
+
+        if (fabsf(dn) > 1e-8f && fabsf(df) > 1e-8f)
+        {
+            float n = m32 / dn;
+            float f = m32 / df;
+            if (n > 1e-6f && f > n)
+            {
+                nearZ = n;
+                farZ = f;
+            }
+        }
+    }
+
+    if (out_near)
+        *out_near = nearZ;
+    if (out_far)
+        *out_far = farZ;
+}
+
+static int R_shadow_pick_light_index(const renderer_t *r)
+{
+    if (!r)
+        return -1;
+
+    for (uint32_t i = 0; i < r->lights.size; ++i)
+    {
+        const light_t *l = (const light_t *)vector_at((vector_t *)&r->lights, i);
+        if (!l)
+            continue;
+        if (l->type == LIGHT_DIRECTIONAL)
+            return (int)i;
+    }
+
+    return -1;
+}
+
+static vec3 R_shadow_pick_up(vec3 dir)
+{
+    dir = vec3_norm_safe(dir, 1e-6f);
+    if (fabsf(dir.y) > 0.99f)
+        return (vec3){0.0f, 0.0f, 1.0f};
+    return (vec3){0.0f, 1.0f, 0.0f};
+}
+
+static void R_shadow_build_cascades(renderer_t *r, vec3 light_dir)
+{
+    if (!r)
+        return;
+
+    int cascades = r->shadow.cascades;
+    if (cascades < 1)
+        cascades = 1;
+    if (cascades > R_SHADOW_MAX_CASCADES)
+        cascades = R_SHADOW_MAX_CASCADES;
+
+    float nearZ = 0.1f;
+    float farZ = 1000.0f;
+    R_camera_extract_near_far(&r->camera, &nearZ, &farZ);
+
+    float max_dist = r->cfg.shadow_max_dist;
+    if (max_dist < nearZ)
+        max_dist = nearZ;
+    if (max_dist > farZ)
+        max_dist = farZ;
+
+    float lambda = r->cfg.shadow_split_lambda;
+    if (lambda < 0.0f)
+        lambda = 0.0f;
+    if (lambda > 1.0f)
+        lambda = 1.0f;
+
+    float splits[R_SHADOW_MAX_CASCADES] = {0};
+    for (int i = 0; i < cascades; ++i)
+    {
+        float p = (float)(i + 1) / (float)cascades;
+        float logd = nearZ * powf(max_dist / nearZ, p);
+        float unid = nearZ + (max_dist - nearZ) * p;
+        splits[i] = lambda * logd + (1.0f - lambda) * unid;
+    }
+
+    for (int i = 0; i < R_SHADOW_MAX_CASCADES; ++i)
+        r->shadow.splits[i] = (i < cascades) ? splits[i] : 0.0f;
+
+    float proj_fy = r->camera.proj.m[5];
+    float proj_fx = r->camera.proj.m[0];
+    if (fabsf(proj_fy) < 1e-6f)
+        proj_fy = 1.0f;
+    if (fabsf(proj_fx) < 1e-6f)
+        proj_fx = 1.0f;
+
+    float tan_half_fovy = 1.0f / proj_fy;
+    float aspect = proj_fy / proj_fx;
+
+    vec3 dir = vec3_norm_safe(light_dir, 1e-6f);
+    if (vec3_len_sq(dir) < 1e-12f)
+        dir = (vec3){0.0f, -1.0f, 0.0f};
+
+    for (int ci = 0; ci < cascades; ++ci)
+    {
+        float split_near = (ci == 0) ? nearZ : splits[ci - 1];
+        float split_far = splits[ci];
+
+        vec3 corners_ws[8];
+        {
+            float zn = split_near;
+            float zf = split_far;
+
+            float yn = zn * tan_half_fovy;
+            float xn = yn * aspect;
+
+            float yf = zf * tan_half_fovy;
+            float xf = yf * aspect;
+
+            vec4 v0 = vec4_make(-xn, -yn, -zn, 1.0f);
+            vec4 v1 = vec4_make( xn, -yn, -zn, 1.0f);
+            vec4 v2 = vec4_make( xn,  yn, -zn, 1.0f);
+            vec4 v3 = vec4_make(-xn,  yn, -zn, 1.0f);
+
+            vec4 v4 = vec4_make(-xf, -yf, -zf, 1.0f);
+            vec4 v5 = vec4_make( xf, -yf, -zf, 1.0f);
+            vec4 v6 = vec4_make( xf,  yf, -zf, 1.0f);
+            vec4 v7 = vec4_make(-xf,  yf, -zf, 1.0f);
+
+            vec4 w0 = mat4_mul_vec4(r->camera.inv_view, v0);
+            vec4 w1 = mat4_mul_vec4(r->camera.inv_view, v1);
+            vec4 w2 = mat4_mul_vec4(r->camera.inv_view, v2);
+            vec4 w3 = mat4_mul_vec4(r->camera.inv_view, v3);
+            vec4 w4 = mat4_mul_vec4(r->camera.inv_view, v4);
+            vec4 w5 = mat4_mul_vec4(r->camera.inv_view, v5);
+            vec4 w6 = mat4_mul_vec4(r->camera.inv_view, v6);
+            vec4 w7 = mat4_mul_vec4(r->camera.inv_view, v7);
+
+            corners_ws[0] = (vec3){w0.x / w0.w, w0.y / w0.w, w0.z / w0.w};
+            corners_ws[1] = (vec3){w1.x / w1.w, w1.y / w1.w, w1.z / w1.w};
+            corners_ws[2] = (vec3){w2.x / w2.w, w2.y / w2.w, w2.z / w2.w};
+            corners_ws[3] = (vec3){w3.x / w3.w, w3.y / w3.w, w3.z / w3.w};
+            corners_ws[4] = (vec3){w4.x / w4.w, w4.y / w4.w, w4.z / w4.w};
+            corners_ws[5] = (vec3){w5.x / w5.w, w5.y / w5.w, w5.z / w5.w};
+            corners_ws[6] = (vec3){w6.x / w6.w, w6.y / w6.w, w6.z / w6.w};
+            corners_ws[7] = (vec3){w7.x / w7.w, w7.y / w7.w, w7.z / w7.w};
+        }
+
+        vec3 center = (vec3){0.0f, 0.0f, 0.0f};
+        for (int i = 0; i < 8; ++i)
+            center = vec3_add(center, corners_ws[i]);
+        center = vec3_div_f(center, 8.0f);
+
+        vec3 up = R_shadow_pick_up(dir);
+        vec3 light_pos = vec3_sub(center, vec3_mul_f(dir, 200.0f));
+        mat4 V = mat4_lookat(light_pos, center, up);
+
+        vec3 bmin = (vec3){1e30f, 1e30f, 1e30f};
+        vec3 bmax = (vec3){-1e30f, -1e30f, -1e30f};
+
+        for (int i = 0; i < 8; ++i)
+        {
+            vec4 p = mat4_mul_vec4(V, vec4_make(corners_ws[i].x, corners_ws[i].y, corners_ws[i].z, 1.0f));
+            vec3 q = (vec3){p.x / p.w, p.y / p.w, p.z / p.w};
+            bmin = vec3_min(bmin, q);
+            bmax = vec3_max(bmax, q);
+        }
+
+        float pad_xy = 10.0f;
+        float pad_z = 50.0f;
+
+        bmin.x -= pad_xy;
+        bmin.y -= pad_xy;
+        bmax.x += pad_xy;
+        bmax.y += pad_xy;
+        bmin.z -= pad_z;
+        bmax.z += pad_z;
+
+        float w = bmax.x - bmin.x;
+        float h = bmax.y - bmin.y;
+        if (w < 1e-3f)
+            w = 1e-3f;
+        if (h < 1e-3f)
+            h = 1e-3f;
+
+        float texel_x = w / (float)MAX(r->shadow.size, 1);
+        float texel_y = h / (float)MAX(r->shadow.size, 1);
+
+        if (texel_x > 1e-8f && texel_y > 1e-8f)
+        {
+            bmin.x = floorf(bmin.x / texel_x) * texel_x;
+            bmin.y = floorf(bmin.y / texel_y) * texel_y;
+            bmax.x = bmin.x + w;
+            bmax.y = bmin.y + h;
+        }
+
+        // Our mat4_ortho matches the perspective conventions used elsewhere in the engine:
+        // view-space forward is -Z, with near/far provided as positive distances.
+        float zn = -bmax.z;
+        float zf = -bmin.z;
+        if (zn < 0.001f)
+            zn = 0.001f;
+        if (zf < zn + 0.001f)
+            zf = zn + 0.001f;
+
+        mat4 P = mat4_ortho(bmin.x, bmax.x, bmin.y, bmax.y, zn, zf);
+
+        r->shadow.vp[ci] = mat4_mul(P, V);
+    }
+
+    for (int ci = cascades; ci < R_SHADOW_MAX_CASCADES; ++ci)
+        r->shadow.vp[ci] = mat4_identity();
+}
+
+static void R_shadow_pass(renderer_t *r)
+{
+    if (!r || !r->cfg.shadows)
+        return;
+
+    shader_t *shadow = (r->shadow_shader_id != 0xFF) ? R_get_shader(r, r->shadow_shader_id) : NULL;
+    if (!shadow)
+        return;
+
+    R_shadow_ensure(r);
+    if (!r->shadow.tex || !r->shadow.fbo || r->shadow.cascades < 1)
+        return;
+
+    int li = R_shadow_pick_light_index(r);
+    r->shadow.light_index = li;
+    if (li < 0)
+        return;
+
+    light_t *l = (light_t *)vector_at(&r->lights, (uint32_t)li);
+    if (!l)
+        return;
+
+    R_shadow_build_cascades(r, l->direction);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, r->shadow.fbo);
+    glDrawBuffer(GL_NONE);
+    glReadBuffer(GL_NONE);
+
+    glViewport(0, 0, r->shadow.size, r->shadow.size);
+    glDisable(GL_BLEND);
+    glEnable(GL_DEPTH_TEST);
+    glDepthMask(GL_TRUE);
+    glDepthFunc(GL_LEQUAL);
+    glDisable(GL_MULTISAMPLE);
+    glDisable(GL_SAMPLE_ALPHA_TO_COVERAGE);
+    glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+
+    glEnable(GL_POLYGON_OFFSET_FILL);
+    glPolygonOffset(2.0f, 4.0f);
+
+    shader_bind(shadow);
+    shader_set_int(shadow, "u_UseInstancing", 1);
+
+    for (int ci = 0; ci < r->shadow.cascades; ++ci)
+    {
+        glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, r->shadow.tex, 0, ci);
+        glClearDepth(1.0);
+        glClear(GL_DEPTH_BUFFER_BIT);
+
+        // Decompose VP to view/proj uniforms expected by depth.vert: use View=identity and Proj=VP
+        // because depth.vert computes u_Proj*u_View*(M*pos).
+        shader_set_mat4(shadow, "u_View", mat4_identity());
+        shader_set_mat4(shadow, "u_Proj", r->shadow.vp[ci]);
+
+        for (uint32_t bi = 0; bi < r->inst_batches.size; ++bi)
+        {
+            inst_batch_t *b = (inst_batch_t *)vector_at(&r->inst_batches, bi);
+            if (!b || b->count == 0)
+                continue;
+
+            asset_material_t *mat = NULL;
+            const mesh_lod_t *lod = NULL;
+            if (!R_resolve_batch_resources(r, b, NULL, NULL, &lod, &mat))
+                continue;
+
+            int mat_cutout = 0;
+            int mat_blend = 0;
+            int mat_doublesided = 0;
+            float alpha_cutoff = 0.0f;
+            uint32_t albedo_tex = 0;
+            R_material_state(r, mat, &mat_cutout, &mat_blend, &mat_doublesided, &alpha_cutoff, &albedo_tex);
+
+            if (mat_blend)
+                continue;
+
+            if (mat_doublesided)
+            {
+                glDisable(GL_CULL_FACE);
+            }
+            else
+            {
+                glEnable(GL_CULL_FACE);
+                glCullFace(GL_BACK);
+            }
+
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, albedo_tex ? albedo_tex : r->black_tex);
+            shader_set_int(shadow, "u_AlbedoTex", 0);
+            shader_set_float(shadow, "u_AlphaCutoff", mat_cutout ? alpha_cutoff : 0.0f);
+
+            int xfade_enabled = (b->lod == 0 || b->lod == 1) ? 1 : 0;
+            int xfade_mode = (b->lod == 1) ? 1 : 0;
+            shader_set_int(shadow, "u_LodXFadeEnabled", xfade_enabled);
+            shader_set_int(shadow, "u_LodXFadeMode", xfade_mode);
+
+            instance_gpu_t *inst = (instance_gpu_t *)vector_at(&r->inst_mats, b->start);
+            if (!inst)
+                continue;
+
+            R_upload_instances(r, inst, b->count);
+            R_mesh_bind_instance_attribs(r, lod->vao);
+
+            glBindVertexArray(lod->vao);
+            glDrawElementsInstanced(GL_TRIANGLES, (GLsizei)lod->index_count, GL_UNSIGNED_INT, 0, (GLsizei)b->count);
+            glBindVertexArray(0);
+        }
+    }
+
+    shader_unbind();
+    glDisable(GL_POLYGON_OFFSET_FILL);
+
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
 static void R_fp_dispatch(renderer_t *r)
 {
     if (!r)
@@ -1620,25 +2059,9 @@ static void R_fp_dispatch(renderer_t *r)
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, r->fp.tile_list_ssbo);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, r->fp.tile_depth_ssbo);
 
-    float m22 = r->camera.proj.m[10];
-    float m32 = r->camera.proj.m[14];
-
     float nearZ = 0.1f;
     float farZ = 1000.0f;
-
-    float dn = (m22 - 1.0f);
-    float df = (m22 + 1.0f);
-
-    if (fabsf(dn) > 1e-8f && fabsf(df) > 1e-8f)
-    {
-        float n = m32 / dn;
-        float f = m32 / df;
-        if (n > 1e-6f && f > n)
-        {
-            nearZ = n;
-            farZ = f;
-        }
-    }
+    R_camera_extract_near_far(&r->camera, &nearZ, &farZ);
 
     shader_bind(init);
     glActiveTexture(GL_TEXTURE0);
@@ -1975,6 +2398,10 @@ static void R_forward_one_pass(renderer_t *r)
     glBindTexture(GL_TEXTURE_2D, brdf ? brdf : r->black_tex);
     shader_set_int(fwd, "u_BRDFLUT", 10);
 
+    glActiveTexture(GL_TEXTURE11);
+    glBindTexture(GL_TEXTURE_2D_ARRAY, r->shadow.tex ? r->shadow.tex : 0);
+    shader_set_int(fwd, "u_ShadowMap", 11);
+
     shader_set_int(fwd, "u_HasIBL", has_ibl);
     shader_set_float(fwd, "u_IBLIntensity", r->cfg.ibl_intensity);
 
@@ -1986,6 +2413,21 @@ static void R_forward_one_pass(renderer_t *r)
     shader_set_int(fwd, "u_UseInstancing", 1);
 
     R_bind_common_uniforms(r, fwd);
+
+    shader_set_int(fwd, "u_ShadowEnabled", (r->cfg.shadows && r->shadow.tex && r->shadow.light_index >= 0) ? 1 : 0);
+    shader_set_int(fwd, "u_ShadowCascadeCount", r->shadow.cascades);
+    shader_set_int(fwd, "u_ShadowMapSize", r->shadow.size);
+    shader_set_int(fwd, "u_ShadowLightIndex", r->shadow.light_index);
+    shader_set_float_array(fwd, "u_ShadowSplits", r->shadow.splits, R_SHADOW_MAX_CASCADES);
+    shader_set_float(fwd, "u_ShadowBias", r->cfg.shadow_bias);
+    shader_set_float(fwd, "u_ShadowNormalBias", r->cfg.shadow_normal_bias);
+
+    for (int i = 0; i < R_SHADOW_MAX_CASCADES; ++i)
+    {
+        char name[32];
+        snprintf(name, sizeof(name), "u_ShadowVP[%d]", i);
+        shader_set_mat4(fwd, name, r->shadow.vp[i]);
+    }
 
     int mode = r->cfg.debug_mode;
     if (mode < 0)
@@ -2050,12 +2492,19 @@ int R_init(renderer_t *r, asset_manager_t *assets)
     r->sky_shader_id = 0xFF;
     r->present_shader_id = 0xFF;
     r->depth_shader_id = 0xFF;
+    r->shadow_shader_id = 0xFF;
 
     r->fp.shader_init_id = 0xFF;
     r->fp.shader_cull_id = 0xFF;
     r->fp.shader_finalize_id = 0xFF;
 
     R_cfg_pull_from_cvars(r);
+
+    r->shadow.fbo = 0;
+    r->shadow.tex = 0;
+    r->shadow.size = 0;
+    r->shadow.cascades = 0;
+    r->shadow.light_index = -1;
 
     r->clear_color = (vec4){0.02f, 0.02f, 0.02f, 1.0f};
     r->fb_size = (vec2i){1, 1};
@@ -2101,6 +2550,14 @@ int R_init(renderer_t *r, asset_manager_t *assets)
     }
 
     r->depth_shader_id = R_add_shader(r, depth_shader);
+
+    shader_t *shadow_shader = R_new_shader_from_files("res/shaders/Forward/depth.vert", "res/shaders/Forward/shadow.frag");
+    if (!shadow_shader)
+    {
+        LOG_WARN("Failed to load shadow shader");
+    }
+
+    r->shadow_shader_id = R_add_shader(r, shadow_shader);
 
     shader_t *forward_shader = R_new_shader_from_files("res/shaders/Forward/Forward.vert", "res/shaders/Forward/Forward.frag");
     if (!forward_shader)
@@ -2158,6 +2615,15 @@ int R_init(renderer_t *r, asset_manager_t *assets)
     cvar_set_callback_name("cl_r_ssr_thickness", R_on_r_cvar_change);
     cvar_set_callback_name("cl_r_ssr_max_dist", R_on_r_cvar_change);
 
+    cvar_set_callback_name("cl_r_shadows", R_on_r_cvar_change);
+    cvar_set_callback_name("cl_r_shadow_cascades", R_on_r_cvar_change);
+    cvar_set_callback_name("cl_r_shadow_map_size", R_on_r_cvar_change);
+    cvar_set_callback_name("cl_r_shadow_max_dist", R_on_r_cvar_change);
+    cvar_set_callback_name("cl_r_shadow_split_lambda", R_on_r_cvar_change);
+    cvar_set_callback_name("cl_r_shadow_bias", R_on_r_cvar_change);
+    cvar_set_callback_name("cl_r_shadow_normal_bias", R_on_r_cvar_change);
+    cvar_set_callback_name("cl_r_shadow_pcf", R_on_r_cvar_change);
+
     cvar_set_callback_name("cl_r_wireframe", R_on_wireframe_change);
 
     return 0;
@@ -2192,6 +2658,8 @@ void R_shutdown(renderer_t *r)
     vector_free(&r->lights);
     vector_free(&r->models);
     vector_free(&r->fwd_models);
+
+    R_shadow_delete(r);
 
     R_gl_delete_targets(r);
 
@@ -2308,6 +2776,8 @@ void R_end_frame(renderer_t *r)
     ibl_ensure(r);
 
     R_build_instancing(r);
+
+    R_shadow_pass(r);
 
     R_depth_prepass(r);
 

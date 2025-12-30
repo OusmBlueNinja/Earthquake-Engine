@@ -58,8 +58,32 @@ typedef struct renderer_cfg_t
     float ssr_thickness;
     float ssr_max_dist;
 
+    bool shadows;
+    int shadow_cascades;
+    int shadow_map_size;
+    float shadow_max_dist;
+    float shadow_split_lambda;
+    float shadow_bias;
+    float shadow_normal_bias;
+    bool shadow_pcf;
+
     bool wireframe;
 } renderer_cfg_t;
+
+#define R_SHADOW_MAX_CASCADES 4
+
+typedef struct renderer_shadow_t
+{
+    uint32_t fbo;
+    uint32_t tex;
+
+    int size;
+    int cascades;
+
+    int light_index;
+    mat4 vp[R_SHADOW_MAX_CASCADES];
+    float splits[R_SHADOW_MAX_CASCADES];
+} renderer_shadow_t;
 
 typedef struct renderer_fp_t
 {
@@ -78,6 +102,7 @@ typedef struct renderer_fp_t
     int tile_count_x;
     int tile_count_y;
     int tiles;
+
 } renderer_fp_t;
 
 typedef struct renderer_t
@@ -128,6 +153,7 @@ typedef struct renderer_t
     uint8_t present_shader_id;
 
     uint8_t depth_shader_id;
+    uint8_t shadow_shader_id;
 
     uint32_t black_tex;
     uint32_t black_cube;
@@ -138,6 +164,7 @@ typedef struct renderer_t
     bloom_t bloom;
     ssr_t ssr;
 
+    renderer_shadow_t shadow;
 
     render_stats_t stats[2]; // Dubble Buff
     bool stats_write;
@@ -157,7 +184,6 @@ void R_push_light(renderer_t *r, light_t light);
 void R_push_model(renderer_t *r, const ihandle_t model, mat4 model_matrix);
 
 void R_push_hdri(renderer_t *r, ihandle_t tex);
-
 
 const render_stats_t *R_get_stats(const renderer_t *r);
 

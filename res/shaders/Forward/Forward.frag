@@ -12,6 +12,7 @@ in VS_OUT
 } v;
 
 uniform vec3 u_CameraPos;
+uniform mat4 u_View;
 
 uniform int u_HasMaterial;
 
@@ -51,6 +52,16 @@ uniform samplerCube u_IrradianceMap;
 uniform samplerCube u_PrefilterMap;
 uniform sampler2D u_BRDFLUT;
 
+uniform int u_ShadowEnabled;
+uniform int u_ShadowCascadeCount;
+uniform int u_ShadowMapSize;
+uniform int u_ShadowLightIndex;
+uniform float u_ShadowSplits[4];
+uniform float u_ShadowBias;
+uniform float u_ShadowNormalBias;
+uniform mat4 u_ShadowVP[4];
+uniform sampler2DArrayShadow u_ShadowMap;
+
 uniform int u_TileSize;
 uniform int u_TileCountX;
 uniform int u_TileCountY;
@@ -88,6 +99,46 @@ layout(std430, binding = 2) readonly buffer B_TileList
 float saturate(float x)
 {
     return clamp(x, 0.0, 1.0);
+}
+
+int shadow_pick_cascade(float viewDepth)
+{
+    int c = clamp(u_ShadowCascadeCount, 1, 4);
+    for (int i = 0; i < c; ++i)
+    {
+        if (viewDepth <= u_ShadowSplits[i])
+            return i;
+    }
+    return c - 1;
+}
+
+float shadow_sample_cascade(int ci, vec3 worldPos, float bias)
+{
+    vec4 lp = u_ShadowVP[ci] * vec4(worldPos, 1.0);
+    vec3 ndc = lp.xyz / max(lp.w, 1e-8);
+    vec3 uvw = ndc * 0.5 + 0.5;
+
+    if (uvw.x < 0.0 || uvw.x > 1.0 || uvw.y < 0.0 || uvw.y > 1.0 || uvw.z < 0.0 || uvw.z > 1.0)
+        return 1.0;
+
+    return texture(u_ShadowMap, vec4(uvw.xy, float(ci), uvw.z - bias));
+}
+
+float shadow_factor(vec3 worldPos, vec3 N, vec3 L)
+{
+    if (u_ShadowEnabled == 0)
+        return 1.0;
+    if (u_ShadowLightIndex < 0)
+        return 1.0;
+
+    vec4 vp = u_View * vec4(worldPos, 1.0);
+    float viewDepth = -vp.z;
+
+    int ci = shadow_pick_cascade(viewDepth);
+
+    float NoL = saturate(dot(N, L));
+    float bias = u_ShadowBias + u_ShadowNormalBias * (1.0 - NoL);
+    return shadow_sample_cascade(ci, worldPos, bias);
 }
 
 vec3 srgb_to_linear(vec3 c)
@@ -551,6 +602,12 @@ void main()
         vec3 kD = (vec3(1.0) - kS) * (1.0 - metallic);
 
         vec3 radiance = Ld.color.rgb * Ld.params.x * atten;
+
+        if (Ld.meta.x == 1 && int(li) == u_ShadowLightIndex)
+        {
+            float sh = shadow_factor(v.worldPos, N, L);
+            radiance *= sh;
+        }
 
         vec3 spec = (D * G * F) / max(4.0 * NoV * NoL, 1e-6);
         vec3 diff = kD * (albedo / 3.14159265);
