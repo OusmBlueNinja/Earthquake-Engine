@@ -226,19 +226,87 @@ float dither_noise(vec2 p)
     return fract(52.9829189 * fract(x));
 }
 
+void sample_mrao(vec2 uv, out float outMetal, out float outRough, out float outAO)
+{
+    outMetal = 1.0;
+    outRough = 1.0;
+    outAO = 1.0;
+
+    bool hasArmSlot = (u_MaterialTexMask & (1 << 7)) != 0;
+    bool hasM = (u_MaterialTexMask & (1 << 2)) != 0;
+    bool hasR = (u_MaterialTexMask & (1 << 3)) != 0;
+    bool hasO = (u_MaterialTexMask & (1 << 5)) != 0;
+
+    if (hasArmSlot)
+    {
+        vec3 arm = texture(u_ArmTex, uv).rgb;
+        outAO = arm.r;
+        outRough = arm.g;
+        outMetal = arm.b;
+        return;
+    }
+
+    if (hasO)
+        outAO = texture(u_OcclusionTex, uv).r;
+
+    if (hasM && hasR)
+    {
+        vec4 mTex = texture(u_MetallicTex, uv);
+        vec4 rTex = texture(u_RoughnessTex, uv);
+
+        float sameRGB =
+            step(0.0005, abs(mTex.r - rTex.r)) +
+            step(0.0005, abs(mTex.g - rTex.g)) +
+            step(0.0005, abs(mTex.b - rTex.b));
+        float isSameTex = 1.0 - step(0.5, sameRGB);
+
+        vec3 packed = 0.5 * (mTex.rgb + rTex.rgb);
+
+        float sepMetal = mTex.r;
+        float sepRough = rTex.r;
+
+        float packMetal = packed.b;
+        float packRough = packed.g;
+        float packAO = packed.r;
+
+        outMetal = mix(sepMetal, packMetal, isSameTex);
+        outRough = mix(sepRough, packRough, isSameTex);
+
+        if (!hasO)
+            outAO = mix(outAO, packAO, isSameTex);
+
+        return;
+    }
+
+    if (hasM)
+    {
+        vec3 t = texture(u_MetallicTex, uv).rgb;
+        float likelyPacked = step(0.001, t.g + t.b);
+
+        outMetal = mix(t.r, t.b, likelyPacked);
+        outRough = mix(outRough, t.g, likelyPacked);
+        if (!hasO)
+            outAO = mix(outAO, t.r, likelyPacked);
+
+        return;
+    }
+
+    if (hasR)
+    {
+        vec3 t = texture(u_RoughnessTex, uv).rgb;
+        float likelyPacked = step(0.001, t.g + t.b);
+
+        outRough = mix(t.r, t.g, likelyPacked);
+        outMetal = mix(outMetal, t.b, likelyPacked);
+        if (!hasO)
+            outAO = mix(outAO, t.r, likelyPacked);
+
+        return;
+    }
+}
+
 void main()
 {
-
-    //if (!gl_FrontFacing)
-    //{
-    //    o_Color = vec4(1,0,1,1);
-    //    return;
-    //}
-    //o_Color = vec4(0,1,0,1);
-    //return;
-    
-    
-    
     vec3 Nw = normalize(v.worldN);
     vec3 Vw = normalize(u_CameraPos - v.worldPos);
 
@@ -330,8 +398,6 @@ void main()
         N = normalize(TBN * Nts);
     }
 
-
-
     ivec2 tileXY = ivec2(int(gl_FragCoord.x) / max(u_TileSize, 1), int(gl_FragCoord.y) / max(u_TileSize, 1));
     tileXY.x = clamp(tileXY.x, 0, max(u_TileCountX - 1, 0));
     tileXY.y = clamp(tileXY.y, 0, max(u_TileCountY - 1, 0));
@@ -394,7 +460,6 @@ void main()
         return;
     }
 
-
     vec3 albedo = (u_HasMaterial != 0) ? u_Albedo : vec3(1.0);
     float roughness = (u_HasMaterial != 0) ? u_Roughness : 1.0;
     float metallic = (u_HasMaterial != 0) ? u_Metallic : 0.0;
@@ -410,23 +475,12 @@ void main()
         albedo *= a;
     }
 
-    if ((u_MaterialTexMask & (1 << 7)) != 0)
-    {
-        vec3 arm = texture(u_ArmTex, uv).rgb;
-        roughness *= arm.g;
-        metallic *= arm.b;
-    }
-    else
-    {
-        if ((u_MaterialTexMask & (1 << 3)) != 0)
-            roughness *= texture(u_RoughnessTex, uv).r;
-        if ((u_MaterialTexMask & (1 << 2)) != 0)
-            metallic *= texture(u_MetallicTex, uv).r;
-    }
+    float tM, tR, tAO;
+    sample_mrao(uv, tM, tR, tAO);
+    roughness *= tR;
+    metallic *= tM;
 
-    float ao = 1.0;
-    if ((u_MaterialTexMask & (1 << 5)) != 0)
-        ao = texture(u_OcclusionTex, uv).r;
+    float ao = tAO;
 
     if ((u_MaterialTexMask & (1 << 4)) != 0)
     {
@@ -523,14 +577,11 @@ void main()
         color += (kD * diffuseIBL * ao + specIBL) * u_IBLIntensity;
     }
 
-
     color += emissive;
 
     if (mode == 1)
         color = debug_lod_tint(color, dbg_lod_p1());
 
-    // Write HDR to the scene buffer; tone mapping happens in `res/shaders/present.frag`.
-    // For cutout/A2C, attenuate lighting by coverage to reduce edge "specular glints".
     if (u_MatAlphaBlend == 0)
         color *= clamp(coverage, 0.0, 1.0);
 
