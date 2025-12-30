@@ -107,6 +107,20 @@ typedef struct ui_ctx_t
 
     ui_array_t windows;
 
+    void (*set_cursor_state_fn)(void *user, int state);
+    void *set_cursor_state_user;
+    void (*set_cursor_shape_fn)(void *user, int shape);
+    void *set_cursor_shape_user;
+
+    // Per-frame cursor requests (applied once at ui_end).
+    uint8_t cursor_state_req_set;
+    int cursor_state_req;
+    int cursor_state_prio;
+
+    uint8_t cursor_shape_req_set;
+    int cursor_shape_req;
+    int cursor_shape_prio;
+
     ui_io_t io;
     float delta_time;
     ui_vec2_t prev_mouse;
@@ -129,15 +143,42 @@ typedef struct ui_ctx_t
     ui_vec2_t win_drag_start_mouse;
     ui_vec4_t win_drag_start_rect;
 
-    /* imgui-style helpers */
     float next_item_w;
     float next_item_h;
     float next_item_spacing;
     uint8_t next_same_line;
 } ui_ctx_t;
 
+typedef enum ui_cursor_state_t
+{
+    UI_CURSOR_NORMAL = 0,
+    UI_CURSOR_HIDDEN = 1,
+    UI_CURSOR_DISABLED = 2
+} ui_cursor_state_t;
+
+typedef enum ui_cursor_shape_t
+{
+    UI_CURSOR_ARROW = 0,
+    UI_CURSOR_IBEAM,
+    UI_CURSOR_CROSSHAIR,
+    UI_CURSOR_HAND,
+    UI_CURSOR_RESIZE_EW,
+    UI_CURSOR_RESIZE_NS,
+    UI_CURSOR_RESIZE_NESW,
+    UI_CURSOR_RESIZE_NWSE
+} ui_cursor_shape_t;
+
 void ui_init(ui_ctx_t *ui, ui_realloc_fn rfn, void *ruser);
 void ui_shutdown(ui_ctx_t *ui);
+
+void ui_set_cursor_state_callback(ui_ctx_t *ui, void (*fn)(void *user, int state), void *user);
+void ui_set_cursor_state(ui_ctx_t *ui, int state);
+void ui_set_cursor_shape_callback(ui_ctx_t *ui, void (*fn)(void *user, int shape), void *user);
+void ui_set_cursor_shape(ui_ctx_t *ui, int shape);
+
+// Priority-based cursor requests (higher priority wins within the frame).
+void ui_request_cursor_state(ui_ctx_t *ui, int state, int priority);
+void ui_request_cursor_shape(ui_ctx_t *ui, int shape, int priority);
 
 void ui_input_mouse_pos(ui_ctx_t *ui, ui_vec2_t pos);
 void ui_input_mouse_btn(ui_ctx_t *ui, int button, int down);

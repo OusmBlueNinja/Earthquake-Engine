@@ -291,9 +291,11 @@ static bool asset_image_load_from_file(const char *path, asset_any_t *out_asset)
     return true;
 }
 
-static bool asset_image_load(asset_manager_t *am, const char *path, uint32_t path_is_ptr, asset_any_t *out_asset)
+static bool asset_image_load(asset_manager_t *am, const char *path, uint32_t path_is_ptr, asset_any_t *out_asset, ihandle_t *out_handle)
 {
     (void)am;
+    if (out_handle)
+        *out_handle = ihandle_invalid();
 
     if (!out_asset || !path)
         return false;
@@ -419,6 +421,64 @@ static void asset_image_cleanup(asset_manager_t *am, asset_any_t *asset)
     img->has_smooth_alpha = 0;
 }
 
+static bool asset_image_can_load(asset_manager_t *am, const char *path, uint32_t path_is_ptr)
+{
+    (void)am;
+
+    if (!path)
+        return false;
+
+    if (path_is_ptr)
+    {
+        const asset_image_mem_desc_t *src = (const asset_image_mem_desc_t *)path;
+        if (!src || !src->bytes || src->bytes_n == 0)
+            return false;
+
+        const uint8_t *mem = (const uint8_t *)src->bytes;
+        int mem_n = (src->bytes_n > (size_t)INT32_MAX) ? INT32_MAX : (int)src->bytes_n;
+
+        return stbi_info_from_memory(mem, mem_n, 0, 0, 0) != 0;
+    }
+
+    if (!path[0])
+        return false;
+
+    if (asset_path_has_ext(path, ".hdr"))
+        return 1;
+
+    if (asset_path_has_ext(path, ".png"))
+        return 1;
+
+    if (asset_path_has_ext(path, ".jpg"))
+        return 1;
+
+    if (asset_path_has_ext(path, ".jpeg"))
+        return 1;
+
+    if (asset_path_has_ext(path, ".bmp"))
+        return 1;
+
+    if (asset_path_has_ext(path, ".tga"))
+        return 1;
+
+    if (asset_path_has_ext(path, ".psd"))
+        return 1;
+
+    if (asset_path_has_ext(path, ".gif"))
+        return 1;
+
+    if (asset_path_has_ext(path, ".pic"))
+        return 1;
+
+    if (asset_path_has_ext(path, ".pgm"))
+        return 1;
+
+    if (asset_path_has_ext(path, ".ppm"))
+        return 1;
+
+    return 0;
+}
+
 asset_module_desc_t asset_module_image(void)
 {
     asset_module_desc_t m;
@@ -429,5 +489,6 @@ asset_module_desc_t asset_module_image(void)
     m.cleanup_fn = asset_image_cleanup;
     m.save_blob_fn = NULL;
     m.blob_free_fn = NULL;
+    m.can_load_fn = asset_image_can_load;
     return m;
 }

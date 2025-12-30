@@ -16,6 +16,7 @@
 #include "ui/backends/opengl_backend.h"
 
 #include "asset_manager/asset_manager.h"
+#include "managers/window_manager.h"
 #include "vector.h"
 
 static void *ui_editor_realloc(void *user, void *ptr, uint32_t size)
@@ -27,6 +28,22 @@ static void *ui_editor_realloc(void *user, void *ptr, uint32_t size)
         return 0;
     }
     return realloc(ptr, (size_t)size);
+}
+
+static void editor_ui_set_cursor_state(void *user, int state)
+{
+    window_manager *wm = (window_manager *)user;
+    if (!wm)
+        return;
+    wm_set_cursor_state(wm, state);
+}
+
+static void editor_ui_set_cursor_shape(void *user, int shape)
+{
+    window_manager *wm = (window_manager *)user;
+    if (!wm)
+        return;
+    wm_set_cursor_shape(wm, (wm_cursor_shape_t)shape);
 }
 
 typedef struct editor_layer_data_t
@@ -410,6 +427,8 @@ void layer_init(layer_t *layer)
         return;
 
     ui_attach_backend(&d->ui, ui_gl_backend_base(&d->glui));
+    ui_set_cursor_state_callback(&d->ui, editor_ui_set_cursor_state, &get_application()->window_manager);
+    ui_set_cursor_shape_callback(&d->ui, editor_ui_set_cursor_shape, &get_application()->window_manager);
 
     d->last_fb.x = 0;
     d->last_fb.y = 0;
@@ -429,9 +448,11 @@ void layer_init(layer_t *layer)
     d->am_show_queues = 1;
 
     d->asset_slot_pick = 0;
-    d->show_ui_demo = 1;
+    d->show_ui_demo = 0;
 
     ui_gl_backend_add_font_from_ttf_file(&d->glui, 0, "res/fonts/0xProtoNerdFontPropo-Regular.ttf", 16.0f);
+
+    ui_dock_load_layout_file(&d->ui, "editor_layout.txt");
 
     d->ui.style.bg = ui_color(ui_v3(0.05f, 0.055f, 0.065f), 1.0f);
     d->ui.style.panel_bg = ui_color(ui_v3(0.075f, 0.082f, 0.095f), 1.0f);
@@ -837,6 +858,7 @@ void layer_shutdown(layer_t *layer)
 
     if (d->inited)
     {
+        ui_dock_save_layout_file(&d->ui, "editor_layout.txt");
         ui_gl_backend_shutdown(&d->glui);
         ui_shutdown(&d->ui);
     }
