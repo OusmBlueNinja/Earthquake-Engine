@@ -33,10 +33,35 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(meshoptimizer)
 
-
-
 find_package(OpenGL REQUIRED)
 find_package(GLEW REQUIRED)
+
+FetchContent_Declare(
+    imgui
+    GIT_REPOSITORY https://github.com/ocornut/imgui.git
+    GIT_TAG docking
+)
+FetchContent_MakeAvailable(imgui)
+
+set(IMGUI_SRC
+    ${imgui_SOURCE_DIR}/imgui.cpp
+    ${imgui_SOURCE_DIR}/imgui_draw.cpp
+    ${imgui_SOURCE_DIR}/imgui_tables.cpp
+    ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+    ${imgui_SOURCE_DIR}/imgui_demo.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
+)
+
+add_library(imgui STATIC ${IMGUI_SRC})
+target_include_directories(imgui PUBLIC
+    ${imgui_SOURCE_DIR}
+    ${imgui_SOURCE_DIR}/backends
+)
+target_link_libraries(imgui PUBLIC
+    glfw
+    OpenGL::GL
+)
 
 file(GLOB_RECURSE CORE_SRC CONFIGURE_DEPENDS
     "${CMAKE_SOURCE_DIR}/core/*.c"
@@ -68,6 +93,9 @@ target_link_libraries(core PUBLIC
 )
 
 file(GLOB_RECURSE EDITOR_SRC CONFIGURE_DEPENDS
+    "${CMAKE_SOURCE_DIR}/editor/*.cpp"
+    "${CMAKE_SOURCE_DIR}/editor/*.cc"
+    "${CMAKE_SOURCE_DIR}/editor/*.cxx"
     "${CMAKE_SOURCE_DIR}/editor/*.c"
 )
 
@@ -78,13 +106,19 @@ target_include_directories(editor PUBLIC
     "${CMAKE_SOURCE_DIR}"
     "${CMAKE_SOURCE_DIR}/editor"
     "${CMAKE_SOURCE_DIR}/editor/include"
+    ${imgui_SOURCE_DIR}
+    ${imgui_SOURCE_DIR}/backends
 )
 
 target_link_libraries(editor PUBLIC
     core
+    imgui
 )
 
 file(GLOB_RECURSE APP_SRC CONFIGURE_DEPENDS
+    "${CMAKE_SOURCE_DIR}/app/*.cpp"
+    "${CMAKE_SOURCE_DIR}/app/*.cc"
+    "${CMAKE_SOURCE_DIR}/app/*.cxx"
     "${CMAKE_SOURCE_DIR}/app/*.c"
 )
 
