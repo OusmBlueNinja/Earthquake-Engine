@@ -1007,8 +1007,15 @@ static void mdl_free_mtl_entries(vector_t *entries)
     vector_impl_free(entries);
 }
 
-static bool asset_model_load(asset_manager_t *am, const char *path, uint32_t path_is_ptr, asset_any_t *out_asset)
+static bool asset_model_load(asset_manager_t *am, const char *path, uint32_t path_is_ptr, asset_any_t *out_asset, ihandle_t *out_handle)
 {
+    (void)am;
+    if (out_handle)
+        *out_handle = ihandle_invalid();
+
+    if (!out_asset)
+        return false;
+
     if (path_is_ptr)
         return false;
 

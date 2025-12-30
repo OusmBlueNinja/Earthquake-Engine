@@ -10,6 +10,9 @@
 #include "asset_model_3mf.h"
 #include "asset_model_fbx.h"
 
+#include "asset_image_itex.h"
+#include "asset_model_imesh.h"
+
 #define REGISTER_ASSET_MODULE(am, module_fn)                                                           \
     do                                                                                                 \
     {                                                                                                  \
@@ -31,4 +34,6 @@ static inline void register_asset_modules(asset_manager_t *am)
     REGISTER_ASSET_MODULE(am, asset_module_model_3mf);
     REGISTER_ASSET_MODULE(am, asset_module_model_stl);
     REGISTER_ASSET_MODULE(am, asset_module_model_fbx);
+    REGISTER_ASSET_MODULE(am, asset_module_image_itex);
+    REGISTER_ASSET_MODULE(am, asset_module_model_imesh);
 }

@@ -4,12 +4,17 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <time.h>
 
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <direct.h>
 #else
 #include <pthread.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <errno.h>
 #endif
 
 #if defined(_WIN32)
@@ -287,6 +292,38 @@ static uint32_t asset_manager_find_first_module_index(const asset_manager_t *am,
     return 0xFFFFFFFFu;
 }
 
+static uint32_t asset_manager_find_first_save_module_index(const asset_manager_t *am, asset_type_t type)
+{
+    if (!am)
+        return 0xFFFFFFFFu;
+
+    if ((unsigned)type >= (unsigned)ASSET_MAX)
+        return 0xFFFFFFFFu;
+
+    if (!am->asset_type_has_save[type])
+        return 0xFFFFFFFFu;
+
+    for (uint32_t i = 0; i < am->modules.size; ++i)
+    {
+        const asset_module_desc_t *m = (const asset_module_desc_t *)vector_impl_at((vector_t *)&am->modules, i);
+        if (!m)
+            continue;
+
+        if (m->type != type)
+            continue;
+
+        if (!m->save_blob_fn)
+            continue;
+
+        if (!m->blob_free_fn)
+            continue;
+
+        return i;
+    }
+
+    return 0xFFFFFFFFu;
+}
+
 static const asset_module_desc_t *find_module_const(const asset_manager_t *am, asset_type_t type)
 {
     for (uint32_t i = 0; i < am->modules.size; ++i)
@@ -330,6 +367,7 @@ static void slot_cleanup(asset_manager_t *am, asset_slot_t *s)
         return;
     asset_cleanup_by_module(am, &s->asset, s->module_index);
     s->module_index = 0xFFFFu;
+    s->persistent = ihandle_invalid();
 }
 
 static bool slot_valid_locked(asset_manager_t *am, ihandle_t h, asset_slot_t **out_slot)
@@ -354,6 +392,31 @@ static bool slot_valid_locked(asset_manager_t *am, ihandle_t h, asset_slot_t **o
     if (out_slot)
         *out_slot = s;
     return true;
+}
+
+static uint64_t prng_next_u64(asset_manager_t *am)
+{
+    uint64_t x = am->prng_state;
+    if (x == 0)
+        x = 0x9E3779B97F4A7C15ull;
+    x ^= x >> 12;
+    x ^= x << 25;
+    x ^= x >> 27;
+    am->prng_state = x;
+    return x * 2685821657736338717ull;
+}
+
+static ihandle_t make_persistent_handle(asset_manager_t *am, asset_type_t type)
+{
+    uint64_t r = prng_next_u64(am);
+    uint32_t v = (uint32_t)(r ^ (r >> 32) ^ (uint32_t)type);
+    if (v == 0)
+        v = 1u;
+    ihandle_t h;
+    h.value = v;
+    h.type = (ihandle_type_t)type;
+    h.meta = 0;
+    return h;
 }
 
 static void jobq_init(job_queue_t *q, uint32_t cap)
@@ -504,11 +567,9 @@ static const char *asset_path_ext(const char *path)
     return dot;
 }
 
-
-
-static bool asset_try_load_any(asset_manager_t *am, asset_type_t type, const char *path, uint32_t path_is_ptr, asset_any_t *out_asset, uint16_t *out_module_index)
+static bool asset_try_load_any(asset_manager_t *am, asset_type_t type, const char *path, uint32_t path_is_ptr, asset_any_t *out_asset, uint16_t *out_module_index, ihandle_t *out_persistent)
 {
-    if (!am || !out_asset || !out_module_index)
+    if (!am || !out_asset || !out_module_index || !out_persistent)
         return false;
     if (!path)
         return false;
@@ -525,6 +586,7 @@ static bool asset_try_load_any(asset_manager_t *am, asset_type_t type, const cha
     }
 
     *out_module_index = 0xFFFFu;
+    *out_persistent = ihandle_invalid();
     asset_zero(out_asset);
 
     uint8_t have_can = 0;
@@ -599,10 +661,12 @@ static bool asset_try_load_any(asset_manager_t *am, asset_type_t type, const cha
         asset_any_t tmp;
         asset_zero(&tmp);
 
-        if (m->load_fn(am, path, path_is_ptr, &tmp))
+        ihandle_t hid = ihandle_invalid();
+        if (m->load_fn(am, path, path_is_ptr, &tmp, &hid))
         {
             *out_asset = tmp;
             *out_module_index = i;
+            *out_persistent = hid;
             return true;
         }
     }
@@ -620,10 +684,12 @@ static bool asset_try_load_any(asset_manager_t *am, asset_type_t type, const cha
             asset_any_t tmp;
             asset_zero(&tmp);
 
-            if (m->load_fn(am, path, path_is_ptr, &tmp))
+            ihandle_t hid = ihandle_invalid();
+            if (m->load_fn(am, path, path_is_ptr, &tmp, &hid))
             {
                 *out_asset = tmp;
                 *out_module_index = (uint16_t)i;
+                *out_persistent = hid;
                 return true;
             }
         }
@@ -651,10 +717,12 @@ static bool asset_try_load_any(asset_manager_t *am, asset_type_t type, const cha
         asset_any_t tmp;
         asset_zero(&tmp);
 
-        if (m->load_fn(am, path, path_is_ptr, &tmp))
+        ihandle_t hid = ihandle_invalid();
+        if (m->load_fn(am, path, path_is_ptr, &tmp, &hid))
         {
             *out_asset = tmp;
             *out_module_index = i;
+            *out_persistent = hid;
             return true;
         }
     }
@@ -669,9 +737,6 @@ static bool asset_try_load_any(asset_manager_t *am, asset_type_t type, const cha
 
     return false;
 }
-
-
-
 
 static void worker_main(void *p)
 {
@@ -698,21 +763,22 @@ static void worker_main(void *p)
         asset_done_t d;
         memset(&d, 0, sizeof(d));
         d.handle = j.handle;
+        d.persistent = ihandle_invalid();
         d.ok = false;
         d.module_index = 0xFFFFu;
         asset_zero(&d.asset);
 
         asset_any_t out;
         uint16_t midx = 0xFFFFu;
+        ihandle_t ph = ihandle_invalid();
 
-        bool ok = asset_try_load_any(am, j.type, j.path, j.path_is_ptr, &out, &midx);
+        bool ok = asset_try_load_any(am, j.type, j.path, j.path_is_ptr, &out, &midx, &ph);
         d.ok = ok;
         d.module_index = midx;
+        d.persistent = ph;
 
         if (ok)
-        {
             d.asset = out;
-        }
 
         if (!j.path_is_ptr)
             free(j.path);
@@ -724,10 +790,53 @@ static void worker_main(void *p)
 
 bool asset_manager_register_module(asset_manager_t *am, asset_module_desc_t module)
 {
+    if (!am)
+    {
+        LOG_ERROR("asset_manager_register_module: am is NULL");
+        return false;
+    }
+
     if (module.type == ASSET_NONE)
+    {
+        LOG_ERROR("asset_manager_register_module: invalid module type (ASSET_NONE)");
         return false;
-    if (!module.load_fn && !module.init_fn && !module.cleanup_fn && !module.save_blob_fn)
+    }
+
+    if (!module.name || !module.name[0])
+    {
+        LOG_ERROR("asset_manager_register_module: module name is NULL/empty (type=%s)",
+                  ASSET_TYPE_TO_STRING(module.type));
         return false;
+    }
+
+    if (!module.load_fn &&
+        !module.init_fn &&
+        !module.cleanup_fn &&
+        !module.save_blob_fn &&
+        !module.blob_free_fn &&
+        !module.can_load_fn)
+    {
+        LOG_ERROR("asset_manager_register_module: all module functions are NULL (type=%s, name=%s)",
+                  ASSET_TYPE_TO_STRING(module.type), module.name);
+        return false;
+    }
+
+    if (module.save_blob_fn && !module.blob_free_fn)
+    {
+        LOG_ERROR("asset_manager_register_module: save_blob_fn provided but blob_free_fn is NULL (type=%s, name=%s)",
+                  ASSET_TYPE_TO_STRING(module.type), module.name);
+        return false;
+    }
+
+    if ((unsigned)module.type < (unsigned)ASSET_MAX)
+    {
+        if (module.save_blob_fn)
+        {
+            if (am->asset_type_has_save[module.type])
+                LOG_WARN("%s already has a save function, overwriting.", ASSET_TYPE_TO_STRING(module.type));
+            am->asset_type_has_save[module.type] = 1;
+        }
+    }
 
     vector_impl_push_back(&am->modules, &module);
     return true;
@@ -761,6 +870,7 @@ static asset_slot_t *alloc_slot_locked(asset_manager_t *am, asset_type_t type, i
     memset(&s, 0, sizeof(s));
     s.generation = 1;
     s.module_index = 0xFFFFu;
+    s.persistent = ihandle_invalid();
     asset_zero(&s.asset);
     s.asset.type = type;
     s.asset.state = ASSET_STATE_LOADING;
@@ -779,7 +889,7 @@ static asset_slot_t *alloc_slot_locked(asset_manager_t *am, asset_type_t type, i
 bool asset_manager_init(asset_manager_t *am, const asset_manager_desc_t *desc)
 {
     memset(am, 0, sizeof(*am));
-
+    memset(am->asset_type_has_save, 0, sizeof(am->asset_type_has_save));
     uint32_t wc = 4;
     uint32_t cap = 1024;
     ihandle_type_t ht = 1;
@@ -804,6 +914,10 @@ bool asset_manager_init(asset_manager_t *am, const asset_manager_desc_t *desc)
 
     mutex_init_impl(&am->state_m);
     am->shutting_down = 0;
+
+    am->prng_state = ((uint64_t)(uintptr_t)am << 1) ^ ((uint64_t)time(NULL) * 0x9E3779B97F4A7C15ull) ^ 0xD1B54A32D192ED03ull;
+    if (am->prng_state == 0)
+        am->prng_state = 0xA0761D6478BD642Full;
 
     register_asset_modules(am);
 
@@ -1033,6 +1147,7 @@ ihandle_t asset_manager_submit_raw(asset_manager_t *am, asset_type_t type, const
     a.state = ASSET_STATE_READY;
     slot->asset = a;
     slot->module_index = (uint16_t)midx32;
+    slot->persistent = make_persistent_handle(am, type);
     mutex_unlock_impl(&am->state_m);
 
     return h;
@@ -1116,10 +1231,18 @@ void asset_manager_pump(asset_manager_t *am)
         {
             old = slot->asset;
             slot_cleanup(am, slot);
+
+            ihandle_t ph = d.persistent;
+            if (!ihandle_is_valid(ph))
+                ph = make_persistent_handle(am, d.asset.type);
+
             d.asset.state = ASSET_STATE_READY;
             slot->asset = d.asset;
             slot->module_index = d.module_index;
+            slot->persistent = ph;
+
             asset_zero(&d.asset);
+            d.persistent = ihandle_invalid();
         }
         mutex_unlock_impl(&am->state_m);
 
@@ -1220,16 +1343,118 @@ static bool buf_align(buf_t *b, uint32_t align)
     return true;
 }
 
-static void handle_hex_triplet(char out[64], ihandle_t h)
-{
-    snprintf(out, 64, "%08X:%04X:%04X", (unsigned)h.value, (unsigned)h.type, (unsigned)h.meta);
-}
 
-bool asset_manager_build_pack(asset_manager_t *am, uint8_t **out_data, uint32_t *out_size)
+
+static bool write_file_all(const char *path, const void *data, uint32_t size)
 {
-    if (!am || !out_data || !out_size)
+    FILE *f = fopen(path, "wb");
+    if (!f)
         return false;
 
+    bool ok = true;
+    if (size)
+    {
+        size_t w = fwrite(data, 1, (size_t)size, f);
+        ok = (w == (size_t)size);
+    }
+
+    fclose(f);
+    return ok;
+}
+
+static bool ensure_directory(const char *path)
+{
+    if (!path || !path[0])
+        return true;
+
+#if defined(_WIN32)
+    int r = _mkdir(path);
+    if (r == 0)
+        return true;
+    DWORD e = GetLastError();
+    return e == ERROR_ALREADY_EXISTS;
+#else
+    int r = mkdir(path, 0755);
+    if (r == 0)
+        return true;
+    return errno == EEXIST;
+#endif
+}
+
+static bool asset_save_blob(asset_manager_t *am, const asset_module_desc_t *m, ihandle_t persistent, const asset_any_t *a, asset_blob_t *out_blob)
+{
+    if (!out_blob)
+    {
+        LOG_ERROR("out_blob was NULL");
+        return false;
+    }
+
+    memset(out_blob, 0, sizeof(*out_blob));
+    out_blob->align = 64;
+
+    char hb[64];
+    handle_hex_triplet_filesafe(hb, persistent);
+
+    const char *mod_name = (m && m->name) ? m->name : "<null>";
+    const char *type_str = (a) ? ASSET_TYPE_TO_STRING(a->type) : "<null>";
+
+    if (!m)
+    {
+        LOG_ERROR("module was NULL (type=%s handle=%s)", type_str, hb);
+        return false;
+    }
+
+    if (!m->save_blob_fn)
+    {
+        LOG_ERROR("module has no save_blob_fn (type=%s handle=%s module=%s)", type_str, hb, mod_name);
+        return false;
+    }
+
+    if (!a)
+    {
+        LOG_ERROR("asset pointer was NULL (handle=%s module=%s)", hb, mod_name);
+        return false;
+    }
+
+    if (!m->save_blob_fn(am, persistent, a, out_blob))
+    {
+        LOG_ERROR("save_blob_fn returned false (type=%s handle=%s module=%s)", type_str, hb, mod_name);
+        return false;
+    }
+
+    if (!out_blob->data)
+    {
+        LOG_ERROR("module returned NULL blob.data (type=%s handle=%s module=%s size=%u)",
+                  type_str, hb, mod_name, (unsigned)out_blob->size);
+        return false;
+    }
+
+    if (out_blob->size == 0)
+    {
+        LOG_ERROR("module returned blob.size=0 (type=%s handle=%s module=%s data=%p)",
+                  type_str, hb, mod_name, out_blob->data);
+        return false;
+    }
+
+    return true;
+}
+
+
+static void asset_free_blob(asset_manager_t *am, const asset_module_desc_t *m, asset_blob_t *blob)
+{
+    if (!blob)
+        return;
+
+    if (m && m->blob_free_fn)
+        m->blob_free_fn(am, blob);
+    else
+        free(blob->data);
+
+    memset(blob, 0, sizeof(*blob));
+}
+
+static bool asset_manager_build_pack_locked(asset_manager_t *am, uint8_t **out_data, uint32_t *out_size)
+{
     *out_data = NULL;
     *out_size = 0;
 
@@ -1243,12 +1468,14 @@ bool asset_manager_build_pack(asset_manager_t *am, uint8_t **out_data, uint32_t 
     hdr.magic = 0x4B434150u;
     hdr.version = 1;
 
-    if (!buf_push_bytes(&data, &hdr, (uint32_t)sizeof(hdr)))
-        goto fail;
+    bool ok = true;
 
-    mutex_lock_impl(&am->state_m);
+    if (!buf_push_bytes(&data, &hdr, (uint32_t)sizeof(hdr)))
+        ok = false;
+
     uint32_t slot_count = (uint32_t)am->slots.size;
-    for (uint32_t i = 0; i < slot_count; ++i)
+
+    for (uint32_t i = 0; ok && i < slot_count; ++i)
     {
         asset_slot_t *s = (asset_slot_t *)vector_impl_at(&am->slots, i);
         if (!s)
@@ -1257,76 +1484,72 @@ bool asset_manager_build_pack(asset_manager_t *am, uint8_t **out_data, uint32_t 
         if (s->asset.state != ASSET_STATE_READY)
             continue;
 
-        ihandle_t h = ihandle_make(am->handle_type, (uint16_t)(i + 1), s->generation);
+        if ((unsigned)s->asset.type >= (unsigned)ASSET_MAX)
+            continue;
 
-        uint32_t midx32 = asset_manager_find_first_module_index(am, s->asset.type);
+        if (!am->asset_type_has_save[s->asset.type])
+        {
+            char hb[64];
+            ihandle_t persistent0 = s->persistent;
+            if (!ihandle_is_valid(persistent0))
+                persistent0 = make_persistent_handle(am, s->asset.type);
+            handle_hex_triplet(hb, persistent0);
+            LOG_ERROR("Asset has no save function registered: type=%s handle=%s", ASSET_TYPE_TO_STRING(s->asset.type), hb);
+            continue;
+        }
+
+        ihandle_t persistent = s->persistent;
+        if (!ihandle_is_valid(persistent))
+            persistent = make_persistent_handle(am, s->asset.type);
+
+        uint32_t midx32 = asset_manager_find_first_save_module_index(am, s->asset.type);
         if (midx32 == 0xFFFFFFFFu)
         {
             char hb[64];
-            handle_hex_triplet(hb, h);
-            LOG_ERROR("Asset has no module for save: type=%s handle=%s", asset_type_name(am, s->asset.type), hb);
+            handle_hex_triplet(hb, persistent);
+            LOG_ERROR("Asset has no save module: type=%s handle=%s", ASSET_TYPE_TO_STRING(s->asset.type), hb);
             continue;
         }
 
         const asset_module_desc_t *m = asset_manager_get_module_by_index(am, midx32);
-        if (!m || !m->save_blob_fn)
+        if (!m || !m->save_blob_fn || !m->blob_free_fn)
         {
             char hb[64];
-            handle_hex_triplet(hb, h);
-            LOG_ERROR("Asset has no save thingamabob: type=%s handle=%s", asset_type_name(am, s->asset.type), hb);
+            handle_hex_triplet(hb, persistent);
+            LOG_ERROR("Asset save module invalid: type=%s handle=%s", ASSET_TYPE_TO_STRING( s->asset.type), hb);
             continue;
         }
 
         asset_blob_t blob;
         memset(&blob, 0, sizeof(blob));
-        blob.align = 64;
 
-        if (!m->save_blob_fn(am, h, &s->asset, &blob))
+        if (!asset_save_blob(am, m, persistent, &s->asset, &blob))
         {
             char hb[64];
-            handle_hex_triplet(hb, h);
-            LOG_ERROR("Asset save thingamabob failed: type=%s handle=%s", asset_type_name(am, s->asset.type), hb);
-            if (m->blob_free_fn)
-                m->blob_free_fn(am, &blob);
-            else
-                free(blob.data);
-            continue;
-        }
-
-        if (!blob.data || blob.size == 0)
-        {
-            char hb[64];
-            handle_hex_triplet(hb, h);
-            LOG_ERROR("Asset save thingamabob returned empty blob: type=%s handle=%s", asset_type_name(am, s->asset.type), hb);
-            if (m->blob_free_fn)
-                m->blob_free_fn(am, &blob);
-            else
-                free(blob.data);
+            handle_hex_triplet(hb, persistent);
+            LOG_ERROR("Asset save failed: type=%s handle=%s", ASSET_TYPE_TO_STRING( s->asset.type), hb);
+            asset_free_blob(am, m, &blob);
             continue;
         }
 
         if (!buf_align(&data, blob.align ? blob.align : 64u))
         {
-            if (m->blob_free_fn)
-                m->blob_free_fn(am, &blob);
-            else
-                free(blob.data);
-            goto fail_locked;
+            ok = false;
+            asset_free_blob(am, m, &blob);
+            break;
         }
 
         uint32_t off = data.size;
         if (!buf_push_bytes(&data, blob.data, blob.size))
         {
-            if (m->blob_free_fn)
-                m->blob_free_fn(am, &blob);
-            else
-                free(blob.data);
-            goto fail_locked;
+            ok = false;
+            asset_free_blob(am, m, &blob);
+            break;
         }
 
         pack_toc_t e;
         memset(&e, 0, sizeof(e));
-        e.key = ((uint64_t)((uint16_t)s->asset.type) << 48) | (uint64_t)h.value;
+        e.key = ((uint64_t)((uint16_t)s->asset.type) << 48) | (uint64_t)persistent.value;
         e.type = (uint16_t)s->asset.type;
         e.variant = 0;
         e.flags = (uint32_t)blob.flags;
@@ -1337,47 +1560,180 @@ bool asset_manager_build_pack(asset_manager_t *am, uint8_t **out_data, uint32_t 
 
         vector_impl_push_back(&tocs, &e);
 
-        if (m->blob_free_fn)
-            m->blob_free_fn(am, &blob);
-        else
-            free(blob.data);
+        asset_free_blob(am, m, &blob);
     }
-    mutex_unlock_impl(&am->state_m);
 
-    hdr.toc_count = (uint32_t)tocs.size;
-    hdr.toc_offset = data.size;
-    hdr.data_offset = (uint32_t)sizeof(pack_hdr_t);
+    if (ok)
+    {
+        hdr.toc_count = (uint32_t)tocs.size;
+        hdr.toc_offset = data.size;
+        hdr.data_offset = (uint32_t)sizeof(pack_hdr_t);
 
-    if (!buf_align(&data, 16))
-        goto fail;
+        if (!buf_align(&data, 16))
+            ok = false;
+    }
 
-    for (uint32_t i = 0; i < tocs.size; ++i)
+    for (uint32_t i = 0; ok && i < tocs.size; ++i)
     {
         pack_toc_t *e = (pack_toc_t *)vector_impl_at(&tocs, i);
         if (!buf_push_bytes(&data, e, (uint32_t)sizeof(*e)))
-            goto fail;
+            ok = false;
     }
 
-    hdr.file_size = data.size;
-    memcpy(data.p, &hdr, sizeof(hdr));
+    if (ok)
+    {
+        hdr.file_size = data.size;
+        memcpy(data.p, &hdr, sizeof(hdr));
+        *out_data = data.p;
+        *out_size = data.size;
+    }
+    else
+    {
+        free(data.p);
+        *out_data = NULL;
+        *out_size = 0;
+    }
 
     vector_impl_free(&tocs);
+    return ok;
+}
 
-    *out_data = data.p;
-    *out_size = data.size;
+static bool asset_manager_save_separate_assets_locked(asset_manager_t *am, const char *base_path)
+{
+    const char *dir = (base_path && base_path[0]) ? base_path : ".";
+    if (strcmp(dir, ".") != 0)
+    {
+        if (!ensure_directory(dir))
+            return false;
+    }
+
+    uint32_t slot_count = (uint32_t)am->slots.size;
+
+    for (uint32_t i = 0; i < slot_count; ++i)
+    {
+        asset_slot_t *s = (asset_slot_t *)vector_impl_at(&am->slots, i);
+        if (!s)
+            continue;
+
+        if (s->asset.state != ASSET_STATE_READY)
+            continue;
+
+        if ((unsigned)s->asset.type >= (unsigned)ASSET_MAX)
+            continue;
+
+        if (!am->asset_type_has_save[s->asset.type])
+        {
+            ihandle_t persistent0 = s->persistent;
+            if (!ihandle_is_valid(persistent0))
+                persistent0 = make_persistent_handle(am, s->asset.type);
+            char hb0[64];
+            handle_hex_triplet_filesafe(hb0, persistent0);
+            LOG_ERROR("Asset has no save function registered: type=%s handle=%s", ASSET_TYPE_TO_STRING( s->asset.type), hb0);
+            continue;
+        }
+
+        ihandle_t persistent = s->persistent;
+        if (!ihandle_is_valid(persistent))
+            persistent = make_persistent_handle(am, s->asset.type);
+
+        uint32_t midx32 = asset_manager_find_first_save_module_index(am, s->asset.type);
+        if (midx32 == 0xFFFFFFFFu)
+        {
+            char hb[64];
+            handle_hex_triplet_filesafe(hb, persistent);
+            LOG_ERROR("Asset has no save module: type=%s handle=%s", ASSET_TYPE_TO_STRING( s->asset.type), hb);
+            continue;
+        }
+
+        const asset_module_desc_t *m = asset_manager_get_module_by_index(am, midx32);
+        if (!m || !m->save_blob_fn || !m->blob_free_fn)
+        {
+            char hb[64];
+            handle_hex_triplet_filesafe(hb, persistent);
+            LOG_ERROR("Asset save module invalid: type=%s handle=%s", ASSET_TYPE_TO_STRING( s->asset.type), hb);
+            continue;
+        }
+
+        asset_blob_t blob;
+        memset(&blob, 0, sizeof(blob));
+
+        if (!asset_save_blob(am, m, persistent, &s->asset, &blob))
+        {
+            char hb[64];
+            handle_hex_triplet_filesafe(hb, persistent);
+            LOG_ERROR("Asset save failed: type=%s handle=%s", ASSET_TYPE_TO_STRING( s->asset.type), hb);
+            asset_free_blob(am, m, &blob);
+            continue;
+        }
+
+        char hb[64];
+        handle_hex_triplet_filesafe(hb, persistent);
+
+        char path[512];
+#if defined(_WIN32)
+        snprintf(path, sizeof(path), "%s\\%s_%s.iasset", dir, ASSET_TYPE_TO_STRING(s->asset.type), hb);
+#else
+        snprintf(path, sizeof(path), "%s/%s_%s.iasset", dir, ASSET_TYPE_TO_STRING(s->asset.type), hb);
+#endif
+
+        if (!write_file_all(path, blob.data, blob.size))
+            LOG_ERROR("Failed to write asset file: %s", path);
+
+        asset_free_blob(am, m, &blob);
+    }
+
     return true;
+}
 
-fail_locked:
-    mutex_unlock_impl(&am->state_m);
-fail:
-    vector_impl_free(&tocs);
-    free(data.p);
+bool asset_manager_build_pack(asset_manager_t *am, uint8_t **out_data, uint32_t *out_size)
+{
+    return asset_manager_build_pack_ex(am, out_data, out_size, SAVE_FLAG_NONE, NULL);
+}
+
+bool asset_manager_build_pack_ex(asset_manager_t *am, uint8_t **out_data, uint32_t *out_size, uint32_t flags, const char *base_path)
+{
+    if (!am || !out_data || !out_size)
+        return false;
+
     *out_data = NULL;
     *out_size = 0;
-    return false;
+
+    bool ok = false;
+
+    mutex_lock_impl(&am->state_m);
+    if (flags & SAVE_FLAG_SEPARATE_ASSETS)
+        ok = asset_manager_save_separate_assets_locked(am, base_path);
+    else
+        ok = asset_manager_build_pack_locked(am, out_data, out_size);
+    mutex_unlock_impl(&am->state_m);
+
+    return ok;
 }
 
 void asset_manager_free_pack(uint8_t *data)
 {
     free(data);
+}
+
+int all_loaded(asset_manager_t *am)
+{
+    int done = 1;
+
+    mutex_lock_impl(&am->state_m);
+    uint32_t n = (uint32_t)am->slots.size;
+    for (uint32_t i = 0; i < n; i++)
+    {
+        asset_slot_t *s = (asset_slot_t *)vector_at(&am->slots, i);
+        if (!s)
+            continue;
+
+        if (s->asset.state == ASSET_STATE_LOADING)
+        {
+            done = 0;
+            break;
+        }
+    }
+    mutex_unlock_impl(&am->state_m);
+
+    return done;
 }

@@ -658,8 +658,11 @@ static void stl_free_raw(model_raw_t *raw)
     model_raw_destroy(raw);
 }
 
-bool asset_model_stl_load(asset_manager_t *am, const char *path, uint32_t path_is_ptr, asset_any_t *out_asset)
+bool asset_model_stl_load(asset_manager_t *am, const char *path, uint32_t path_is_ptr, asset_any_t *out_asset, ihandle_t *out_handle)
 {
+    if (out_handle)
+        *out_handle = ihandle_invalid();
+
     if (!am || !out_asset || !path)
         return false;
     if (path_is_ptr)

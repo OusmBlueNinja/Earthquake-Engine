@@ -197,7 +197,7 @@ void loop_application(void)
                 layer->update(layer, (float)dt);
         }
 
-        asset_manager_pump(&g_application.asset_manager);
+                asset_manager_pump(&g_application.asset_manager);
 
         // R_resize(&g_application.renderer, wm_get_framebuffer_size(&g_application.window_manager));
 
@@ -226,6 +226,13 @@ void loop_application(void)
         wm_begin_frame(&g_application.window_manager);
         // wm_bind_framebuffer(&g_application.window_manager, R_get_final_fbo(&g_application.renderer), g_application.renderer.fb_size);
         wm_end_frame(&g_application.window_manager);
+
+        if (!g_application.running)
+        {
+            LOG_WARN("Application stopped running unexpectedly.");
+
+            break;
+        }
     }
 
     sv_stop();

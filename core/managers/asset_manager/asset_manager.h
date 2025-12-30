@@ -1,3 +1,4 @@
+/* core/managers/asset_manager/asset_manager.h */
 #pragma once
 #include <stdint.h>
 #include <stdbool.h>
@@ -8,6 +9,9 @@
 #include "asset_types.h"
 
 #define iHANDLE_TYPE_ASSET 1
+
+#define SAVE_FLAG_NONE 0u
+#define SAVE_FLAG_SEPARATE_ASSETS (1u << 0)
 
 typedef struct mutex_t
 {
@@ -26,6 +30,7 @@ typedef struct asset_slot_t
 {
     uint16_t generation;
     uint16_t module_index;
+    ihandle_t persistent;
     asset_any_t asset;
 } asset_slot_t;
 
@@ -40,6 +45,7 @@ typedef struct asset_job_t
 typedef struct asset_done_t
 {
     ihandle_t handle;
+    ihandle_t persistent;
     bool ok;
     uint16_t module_index;
     asset_any_t asset;
@@ -80,11 +86,13 @@ typedef struct asset_blob_t
 struct asset_manager_t;
 typedef struct asset_manager_t asset_manager_t;
 
-typedef bool (*asset_load_fn_t)(asset_manager_t *am, const char *path, uint32_t path_is_ptr, asset_any_t *out_asset);
+typedef bool (*asset_load_fn_t)(asset_manager_t *am, const char *path, uint32_t path_is_ptr, asset_any_t *out, ihandle_t *out_handle);
+
 typedef bool (*asset_init_fn_t)(asset_manager_t *am, asset_any_t *asset);
 typedef void (*asset_cleanup_fn_t)(asset_manager_t *am, asset_any_t *asset);
 
-typedef bool (*asset_save_blob_fn_t)(asset_manager_t *am, ihandle_t h, const asset_any_t *asset, asset_blob_t *out_blob);
+typedef bool (*asset_save_blob_fn_t)(asset_manager_t *am, ihandle_t h, const asset_any_t *a, asset_blob_t *out);
+
 typedef void (*asset_blob_free_fn_t)(asset_manager_t *am, asset_blob_t *blob);
 typedef bool (*asset_can_load_fn_t)(asset_manager_t *am, const char *path, uint32_t path_is_ptr);
 
@@ -122,6 +130,10 @@ typedef struct asset_manager_t
 
     uint32_t shutting_down;
     mutex_t state_m;
+
+    uint64_t prng_state;
+
+    uint8_t asset_type_has_save[ASSET_MAX];
 } asset_manager_t;
 
 bool asset_manager_init(asset_manager_t *am, const asset_manager_desc_t *desc);
@@ -138,7 +150,10 @@ void asset_manager_pump(asset_manager_t *am);
 const asset_any_t *asset_manager_get_any(const asset_manager_t *am, ihandle_t h);
 
 bool asset_manager_build_pack(asset_manager_t *am, uint8_t **out_data, uint32_t *out_size);
+bool asset_manager_build_pack_ex(asset_manager_t *am, uint8_t **out_data, uint32_t *out_size, uint32_t flags, const char *base_path);
 void asset_manager_free_pack(uint8_t *data);
+
+int all_loaded(asset_manager_t *am);
 
 static inline const asset_image_t *asset_manager_get_image(const asset_manager_t *am, ihandle_t h)
 {

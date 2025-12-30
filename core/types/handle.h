@@ -29,4 +29,7 @@ ihandle_t ihandle_with_meta(ihandle_t h, uint16_t meta);
 
 uint32_t ihandle_hash(ihandle_t h);
 
+void handle_hex_triplet(char out[64], ihandle_t h);
+void handle_hex_triplet_filesafe(char out[64], ihandle_t h);
+
 #endif

@@ -842,8 +842,11 @@ static int fbx_emit_node(asset_manager_t *am, const char *path, vector_t *mat_ma
     return 1;
 }
 
-bool asset_model_fbx_load(asset_manager_t *am, const char *path, uint32_t path_is_ptr, asset_any_t *out_asset)
+bool asset_model_fbx_load(asset_manager_t *am, const char *path, uint32_t path_is_ptr, asset_any_t *out_asset, ihandle_t *out_handle)
 {
+    if (out_handle)
+        *out_handle = ihandle_invalid();
+
     if (!am || !out_asset || !path)
         return false;
     if (path_is_ptr)
