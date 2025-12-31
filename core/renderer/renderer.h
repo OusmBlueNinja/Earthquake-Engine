@@ -177,6 +177,8 @@ typedef struct renderer_t
 {
     asset_manager_t *assets;
 
+    struct frame_graph_t *fg;
+
     vec2i fb_size;
     vec2i fb_size_last;
     vec4 clear_color;
