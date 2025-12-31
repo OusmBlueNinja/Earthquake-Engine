@@ -175,6 +175,63 @@ static vec3 demo_cam_forward(float yaw, float pitch)
     return demo_vec3_norm((vec3){cp * cy, sp, cp * sy});
 }
 
+void debug_draw_asset_model_aabbs_overlay(renderer_t *r, const asset_model_t *m, mat4 model_matrix)
+{
+    if (!r || !m)
+        return;
+
+    vec4 color = (vec4){0.15f, 1.0f, 0.25f, 0.85f};
+    line3d_flags_t flags = (line3d_flags_t)(LINE3D_ON_TOP | LINE3D_TRANSLUCENT);
+
+    uint32_t mesh_count = (uint32_t)m->meshes.size;
+    for (uint32_t i = 0; i < mesh_count; ++i)
+    {
+        mesh_t *mesh = (mesh_t *)vector_impl_at((vector_t *)&m->meshes, i);
+        if (!mesh)
+            continue;
+        if (!(mesh->flags & MESH_FLAG_HAS_AABB))
+            continue;
+
+        const aabb_t *b = &mesh->local_aabb;
+
+        float x0 = b->min.x, y0 = b->min.y, z0 = b->min.z;
+        float x1 = b->max.x, y1 = b->max.y, z1 = b->max.z;
+
+        vec4 v0 = mat4_mul_vec4(model_matrix, (vec4){x0, y0, z0, 1.0f});
+        vec4 v1 = mat4_mul_vec4(model_matrix, (vec4){x1, y0, z0, 1.0f});
+        vec4 v2 = mat4_mul_vec4(model_matrix, (vec4){x1, y1, z0, 1.0f});
+        vec4 v3 = mat4_mul_vec4(model_matrix, (vec4){x0, y1, z0, 1.0f});
+        vec4 v4 = mat4_mul_vec4(model_matrix, (vec4){x0, y0, z1, 1.0f});
+        vec4 v5 = mat4_mul_vec4(model_matrix, (vec4){x1, y0, z1, 1.0f});
+        vec4 v6 = mat4_mul_vec4(model_matrix, (vec4){x1, y1, z1, 1.0f});
+        vec4 v7 = mat4_mul_vec4(model_matrix, (vec4){x0, y1, z1, 1.0f});
+
+        vec3 p0 = (vec3){v0.x, v0.y, v0.z};
+        vec3 p1 = (vec3){v1.x, v1.y, v1.z};
+        vec3 p2 = (vec3){v2.x, v2.y, v2.z};
+        vec3 p3 = (vec3){v3.x, v3.y, v3.z};
+        vec3 p4 = (vec3){v4.x, v4.y, v4.z};
+        vec3 p5 = (vec3){v5.x, v5.y, v5.z};
+        vec3 p6 = (vec3){v6.x, v6.y, v6.z};
+        vec3 p7 = (vec3){v7.x, v7.y, v7.z};
+
+        R_push_line3d(r, (line3d_t){p0, p1, color, flags});
+        R_push_line3d(r, (line3d_t){p1, p2, color, flags});
+        R_push_line3d(r, (line3d_t){p2, p3, color, flags});
+        R_push_line3d(r, (line3d_t){p3, p0, color, flags});
+
+        R_push_line3d(r, (line3d_t){p4, p5, color, flags});
+        R_push_line3d(r, (line3d_t){p5, p6, color, flags});
+        R_push_line3d(r, (line3d_t){p6, p7, color, flags});
+        R_push_line3d(r, (line3d_t){p7, p4, color, flags});
+
+        R_push_line3d(r, (line3d_t){p0, p4, color, flags});
+        R_push_line3d(r, (line3d_t){p1, p5, color, flags});
+        R_push_line3d(r, (line3d_t){p2, p6, color, flags});
+        R_push_line3d(r, (line3d_t){p3, p7, color, flags});
+    }
+}
+
 static void demo_layer_apply_camera(demo_layer_state_t *s, renderer_t *r)
 {
     float aspect = (r->fb_size.y != 0) ? ((float)r->fb_size.x / (float)r->fb_size.y) : 1.0f;
@@ -558,6 +615,8 @@ static void demo_layer_draw(layer_t *layer)
         if (!e)
             continue;
         R_push_model(r, e->model, e->model_matrix);
+        asset_model_t model = asset_manager_get_any(&layer->app->asset_manager, e->model)->as.model;
+        debug_draw_asset_model_aabbs_overlay(r, &model, e->model_matrix);
     }
 }
 

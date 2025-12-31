@@ -32,6 +32,8 @@
 #define R_SHADOW_PAD_XY 10.0f
 #define R_SHADOW_PAD_Z 50.0f
 
+static void R_bind_common_uniforms(renderer_t *r, const shader_t *s);
+
 renderer_scene_settings_t R_scene_settings_default(void)
 {
     renderer_scene_settings_t s;
@@ -124,8 +126,17 @@ typedef struct instance_gpu_t
     float pad2;
 } instance_gpu_t;
 
+typedef struct line3d_vertex_t
+{
+    float pos[3];
+    float color[4];
+} line3d_vertex_t;
+
 static inst_item_t *g_inst_item_scratch = NULL;
 static uint32_t g_inst_item_scratch_cap = 0;
+
+static line3d_vertex_t *g_line3d_vert_scratch = NULL;
+static uint32_t g_line3d_vert_scratch_cap = 0;
 
 static inst_item_t *R_inst_item_scratch(uint32_t need)
 {
@@ -154,10 +165,24 @@ static uint32_t u32_next_pow2(uint32_t x)
     return x + 1u;
 }
 
+static line3d_vertex_t *R_line3d_vert_scratch(uint32_t need)
+{
+    if (need <= g_line3d_vert_scratch_cap && g_line3d_vert_scratch)
+        return g_line3d_vert_scratch;
+
+    line3d_vertex_t *p = (line3d_vertex_t *)realloc(g_line3d_vert_scratch, sizeof(line3d_vertex_t) * (size_t)need);
+    if (!p)
+        return NULL;
+
+    g_line3d_vert_scratch = p;
+    g_line3d_vert_scratch_cap = need;
+    return g_line3d_vert_scratch;
+}
+
 typedef struct u32_set_t
 {
-    uint32_t *keys; // 0 = empty
-    uint32_t cap;   // power-of-two
+    uint32_t *keys;
+    uint32_t cap;  
     uint32_t size;
 } u32_set_t;
 
@@ -257,7 +282,6 @@ static const model_bounds_entry_t *model_bounds_get_or_build(ihandle_t model_h, 
     if (g_model_bounds[idx].key == key)
         return &g_model_bounds[idx];
 
-    // Build bounds by merging mesh AABBs.
     aabb_t a;
     a.min = (vec3){1e30f, 1e30f, 1e30f};
     a.max = (vec3){-1e30f, -1e30f, -1e30f};
@@ -413,6 +437,12 @@ static inline render_stats_t *R_stats_write(renderer_t *r)
     return &r->stats[r->stats_write ? 0u : 1u];
 }
 
+static void R_stats_add_draw_arrays(renderer_t *r)
+{
+    render_stats_t *s = R_stats_write(r);
+    s->draw_calls += 1;
+}
+
 static void R_stats_begin_frame(renderer_t *r)
 {
     r->stats_write = !r->stats_write;
@@ -478,6 +508,210 @@ static void R_make_black_cube(renderer_t *r)
     glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
 }
 
+static void R_line3d_ensure_gpu(renderer_t *r)
+{
+    if (!r)
+        return;
+
+    if (!r->line3d_vao)
+        glGenVertexArrays(1, &r->line3d_vao);
+    if (!r->line3d_vbo)
+        glGenBuffers(1, &r->line3d_vbo);
+
+    glBindVertexArray(r->line3d_vao);
+
+    glBindBuffer(GL_ARRAY_BUFFER, r->line3d_vbo);
+
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, (GLsizei)sizeof(line3d_vertex_t), (const void *)0);
+
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, (GLsizei)sizeof(line3d_vertex_t), (const void *)(uintptr_t)(sizeof(float) * 3u));
+
+    glBindVertexArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+}
+
+static void R_line3d_ensure_vbo_capacity(renderer_t *r, uint32_t vertex_count)
+{
+    if (!r || !r->line3d_vbo)
+        return;
+    if (vertex_count <= r->line3d_vbo_cap_vertices)
+        return;
+
+    uint32_t new_cap = u32_next_pow2(vertex_count);
+    if (new_cap < 256u)
+        new_cap = 256u;
+
+    glBindBuffer(GL_ARRAY_BUFFER, r->line3d_vbo);
+    glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)((size_t)new_cap * sizeof(line3d_vertex_t)), NULL, GL_DYNAMIC_DRAW);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+    r->line3d_vbo_cap_vertices = new_cap;
+}
+
+static void R_line3d_draw_batch(renderer_t *r,
+                                shader_t *s,
+                                uint32_t first_vertex,
+                                uint32_t vertex_count,
+                                bool depth_test,
+                                bool translucent)
+{
+    if (!r || !s)
+        return;
+    if (!vertex_count)
+        return;
+
+    glLineWidth(1.0f);
+
+    if (depth_test)
+        glEnable(GL_DEPTH_TEST);
+    else
+        glDisable(GL_DEPTH_TEST);
+
+    if (translucent)
+    {
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+        glDepthMask(GL_FALSE);
+    }
+    else
+    {
+        glDisable(GL_BLEND);
+        glDepthMask(GL_TRUE);
+    }
+
+    if (!depth_test)
+        glDepthMask(GL_FALSE);
+
+    shader_bind(s);
+    R_bind_common_uniforms(r, s);
+
+    glBindVertexArray(r->line3d_vao);
+    glDrawArrays(GL_LINES, (GLint)first_vertex, (GLsizei)vertex_count);
+    glBindVertexArray(0);
+
+    R_stats_add_draw_arrays(r);
+}
+
+static void R_line3d_render(renderer_t *r)
+{
+    if (!r || r->lines3d.size == 0)
+        return;
+
+    shader_t *s = (r->line3d_shader_id != 0xFF) ? R_get_shader(r, r->line3d_shader_id) : NULL;
+    if (!s)
+        return;
+
+    uint32_t line_count = r->lines3d.size;
+    uint32_t total_vertices = line_count * 2u;
+
+    line3d_vertex_t *verts = R_line3d_vert_scratch(total_vertices);
+    if (!verts)
+        return;
+
+    enum
+    {
+        LINE_BATCH_DEPTH_OPAQUE = 0,
+        LINE_BATCH_DEPTH_TRANSLUCENT = 1,
+        LINE_BATCH_ONTOP_OPAQUE = 2,
+        LINE_BATCH_ONTOP_TRANSLUCENT = 3,
+        LINE_BATCH_COUNT = 4
+    };
+
+    uint32_t batch_counts[LINE_BATCH_COUNT] = {0, 0, 0, 0};
+    for (uint32_t i = 0; i < line_count; ++i)
+    {
+        const line3d_t *ln = (const line3d_t *)vector_at((vector_t *)&r->lines3d, i);
+        if (!ln)
+            continue;
+
+        uint32_t batch = 0;
+        bool on_top = (ln->flags & LINE3D_ON_TOP) != 0u;
+        bool translucent = (ln->flags & LINE3D_TRANSLUCENT) != 0u;
+        if (on_top && translucent)
+            batch = LINE_BATCH_ONTOP_TRANSLUCENT;
+        else if (on_top)
+            batch = LINE_BATCH_ONTOP_OPAQUE;
+        else if (translucent)
+            batch = LINE_BATCH_DEPTH_TRANSLUCENT;
+        else
+            batch = LINE_BATCH_DEPTH_OPAQUE;
+
+        batch_counts[batch] += 2u;
+    }
+
+    uint32_t batch_first[LINE_BATCH_COUNT] = {0, 0, 0, 0};
+    uint32_t sum = 0;
+    for (uint32_t b = 0; b < LINE_BATCH_COUNT; ++b)
+    {
+        batch_first[b] = sum;
+        sum += batch_counts[b];
+    }
+    if (sum == 0)
+        return;
+
+    uint32_t batch_write[LINE_BATCH_COUNT];
+    for (uint32_t b = 0; b < LINE_BATCH_COUNT; ++b)
+        batch_write[b] = batch_first[b];
+
+    for (uint32_t i = 0; i < line_count; ++i)
+    {
+        const line3d_t *ln = (const line3d_t *)vector_at((vector_t *)&r->lines3d, i);
+        if (!ln)
+            continue;
+
+        uint32_t batch = 0;
+        bool on_top = (ln->flags & LINE3D_ON_TOP) != 0u;
+        bool translucent = (ln->flags & LINE3D_TRANSLUCENT) != 0u;
+        if (on_top && translucent)
+            batch = LINE_BATCH_ONTOP_TRANSLUCENT;
+        else if (on_top)
+            batch = LINE_BATCH_ONTOP_OPAQUE;
+        else if (translucent)
+            batch = LINE_BATCH_DEPTH_TRANSLUCENT;
+        else
+            batch = LINE_BATCH_DEPTH_OPAQUE;
+
+        uint32_t w = batch_write[batch];
+        if (w + 1u >= sum)
+            continue;
+
+        verts[w + 0u] = (line3d_vertex_t){
+            {ln->a.x, ln->a.y, ln->a.z},
+            {ln->color.x, ln->color.y, ln->color.z, ln->color.w}};
+        verts[w + 1u] = (line3d_vertex_t){
+            {ln->b.x, ln->b.y, ln->b.z},
+            {ln->color.x, ln->color.y, ln->color.z, ln->color.w}};
+
+        batch_write[batch] = w + 2u;
+    }
+
+    R_line3d_ensure_gpu(r);
+    R_line3d_ensure_vbo_capacity(r, sum);
+
+    glBindBuffer(GL_ARRAY_BUFFER, r->line3d_vbo);
+    glBufferData(GL_ARRAY_BUFFER,
+                 (GLsizeiptr)((size_t)r->line3d_vbo_cap_vertices * sizeof(line3d_vertex_t)),
+                 NULL,
+                 GL_DYNAMIC_DRAW);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)((size_t)sum * sizeof(line3d_vertex_t)), verts);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LEQUAL);
+
+    R_line3d_draw_batch(r, s, batch_first[LINE_BATCH_DEPTH_OPAQUE], batch_counts[LINE_BATCH_DEPTH_OPAQUE], true, false);
+    R_line3d_draw_batch(r, s, batch_first[LINE_BATCH_DEPTH_TRANSLUCENT], batch_counts[LINE_BATCH_DEPTH_TRANSLUCENT], true, true);
+    R_line3d_draw_batch(r, s, batch_first[LINE_BATCH_ONTOP_OPAQUE], batch_counts[LINE_BATCH_ONTOP_OPAQUE], false, false);
+    R_line3d_draw_batch(r, s, batch_first[LINE_BATCH_ONTOP_TRANSLUCENT], batch_counts[LINE_BATCH_ONTOP_TRANSLUCENT], false, true);
+
+    glDisable(GL_BLEND);
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LEQUAL);
+    glDepthMask(GL_TRUE);
+}
+
 static void R_user_cfg_pull_from_cvars(renderer_t *r)
 {
     r->cfg.bloom = cvar_get_bool_name("cl_bloom");
@@ -533,7 +767,6 @@ static void R_gpu_timers_resolve(renderer_t *r)
 
     for (int p = 0; p < (int)R_GPU_PHASE_COUNT; ++p)
     {
-        // Try the newest completed query in the ring; avoids "stuck" values when the driver queues more than 2 frames.
         for (uint32_t i = 1; i < 16u; ++i)
         {
             uint32_t idx = (r->gpu_query_index - i) & 15u;
@@ -1157,7 +1390,6 @@ static void R_create_targets(renderer_t *r)
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-    // Optional MSAA scene buffer (resolved into light_fbo targets)
     r->msaa_fbo = 0;
     r->msaa_color_rb = 0;
     r->msaa_depth_rb = 0;
@@ -2757,8 +2989,6 @@ static void R_shadow_build_cascades(renderer_t *r, vec3 light_dir)
             bmax.y = bmin.y + h;
         }
 
-        // Our mat4_ortho matches the perspective conventions used elsewhere in the engine:
-        // view-space forward is -Z, with near/far provided as positive distances.
         float zn = -bmax.z;
         float zf = -bmin.z;
         if (zn < 0.001f)
@@ -2813,7 +3043,6 @@ static void R_shadow_pass(renderer_t *r)
     glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
 
     glEnable(GL_POLYGON_OFFSET_FILL);
-    // Keep this conservative; too much polygon offset kills self-shadowing/punch-through on detailed meshes.
     glPolygonOffset(1.0f, 1.0f);
 
     shader_bind(shadow);
@@ -2831,8 +3060,6 @@ static void R_shadow_pass(renderer_t *r)
         glClearDepth(1.0);
         glClear(GL_DEPTH_BUFFER_BIT);
 
-        // Decompose VP to view/proj uniforms expected by depth.vert: use View=identity and Proj=VP
-        // because depth.vert computes u_Proj*u_View*(M*pos).
         shader_set_mat4(shadow, "u_Proj", r->shadow.vp[ci]);
 
         for (uint32_t bi = 0; bi < r->shadow_inst_batches.size; ++bi)
@@ -2915,7 +3142,6 @@ static void R_fp_dispatch(renderer_t *r)
         return;
 
     uint32_t light_count = r->lights.size;
-    // Always upload light data for the forward pass; tiles are optional.
     uint32_t non_dir = 0u;
     for (uint32_t i = 0; i < light_count; ++i)
     {
@@ -2929,7 +3155,6 @@ static void R_fp_dispatch(renderer_t *r)
     R_fp_ensure_lights_capacity(r, light_count ? light_count : 1u);
     (void)R_fp_upload_lights(r);
 
-    // Skip tiled light lists when there are no non-directional lights (or few enough to brute-force in the fragment shader).
     if (non_dir == 0u || non_dir <= 16u)
         return;
 
@@ -3148,9 +3373,6 @@ static void R_forward_draw_filtered(renderer_t *r, shader_t *fwd, int draw_blend
         int xfade_mode = (b->lod == 1) ? 1 : 0;
         shader_set_int(fwd, "u_LodXFadeEnabled", xfade_enabled);
         shader_set_int(fwd, "u_LodXFadeMode", xfade_mode);
-        // IMPORTANT:
-        // LOD cross-fade should not turn the whole mesh translucent under MSAA.
-        // We only use alpha-to-coverage for alpha-cutout materials to smooth cutout edges.
         if (r->cfg.msaa && r->msaa_samples > 1 && mat_cutout)
             glEnable(GL_SAMPLE_ALPHA_TO_COVERAGE);
         else
@@ -3231,8 +3453,6 @@ static void R_forward_draw_filtered(renderer_t *r, shader_t *fwd, int draw_blend
 
             if (mat_doublesided)
             {
-                // Alpha-blended + double-sided needs a deterministic within-mesh order.
-                // Draw backfaces first, then frontfaces
 
                 glEnable(GL_CULL_FACE);
 
@@ -3316,7 +3536,6 @@ static void R_forward_one_pass(renderer_t *r)
 
     shader_bind(fwd);
 
-    // Directional lights affect all tiles; don't put them in the tile list.
     int dir_indices[4] = {-1, -1, -1, -1};
     int dir_count = 0;
     int non_dir_indices[16];
@@ -3347,7 +3566,6 @@ static void R_forward_one_pass(renderer_t *r)
     shader_set_int(fwd, "u_NonDirLightCount", non_dir_count);
     shader_set_int_array(fwd, "u_NonDirLightIndices", non_dir_indices, 16);
 
-    // Use tiles only if there are more non-directional lights than the brute-force budget.
     shader_set_int(fwd, "u_UseLightTiles", non_dir_total > 16 ? 1 : 0);
 
     glActiveTexture(GL_TEXTURE8);
@@ -3465,6 +3683,7 @@ int R_init(renderer_t *r, asset_manager_t *assets)
     r->present_shader_id = 0xFF;
     r->depth_shader_id = 0xFF;
     r->shadow_shader_id = 0xFF;
+    r->line3d_shader_id = 0xFF;
 
     r->fp.shader_init_id = 0xFF;
     r->fp.shader_cull_id = 0xFF;
@@ -3521,6 +3740,7 @@ int R_init(renderer_t *r, asset_manager_t *assets)
     r->models = create_vector(pushed_model_t);
     r->fwd_models = create_vector(pushed_model_t);
     r->shaders = create_vector(shader_t *);
+    r->lines3d = create_vector(line3d_t);
 
     R_instance_stream_init(r);
 
@@ -3571,6 +3791,16 @@ int R_init(renderer_t *r, asset_manager_t *assets)
         return 1;
     r->present_shader_id = R_add_shader(r, present_shader);
 
+    shader_t *line3d_shader = R_new_shader_from_files("res/shaders/line3d.vert", "res/shaders/line3d.frag");
+    if (!line3d_shader)
+    {
+        LOG_WARN("Failed to load line3d shader");
+    }
+    else
+    {
+        r->line3d_shader_id = R_add_shader(r, line3d_shader);
+    }
+
     if (!ibl_init(r))
         LOG_ERROR("IBL init failed");
 
@@ -3620,6 +3850,16 @@ void R_shutdown(renderer_t *r)
     vector_free(&r->lights);
     vector_free(&r->models);
     vector_free(&r->fwd_models);
+    vector_free(&r->lines3d);
+
+    if (r->line3d_vao)
+        glDeleteVertexArrays(1, &r->line3d_vao);
+    r->line3d_vao = 0;
+
+    if (r->line3d_vbo)
+        glDeleteBuffers(1, &r->line3d_vbo);
+    r->line3d_vbo = 0;
+    r->line3d_vbo_cap_vertices = 0;
 
     R_shadow_delete(r);
 
@@ -3650,6 +3890,10 @@ void R_shutdown(renderer_t *r)
     free(g_blend_scratch);
     g_blend_scratch = NULL;
     g_blend_scratch_cap = 0;
+
+    free(g_line3d_vert_scratch);
+    g_line3d_vert_scratch = NULL;
+    g_line3d_vert_scratch_cap = 0;
 
     u32_set_free(&g_instanced_vao_set);
     model_bounds_free();
@@ -3714,13 +3958,12 @@ void R_begin_frame(renderer_t *r)
 
     R_update_resize(r);
 
-    // Scene settings are expected to be built and pushed every frame by the app.
-    // Reset to defaults here to avoid stale settings carrying across scenes.
     r->scene = R_scene_settings_default();
 
     vector_clear(&r->lights);
     vector_clear(&r->models);
     vector_clear(&r->fwd_models);
+    vector_clear(&r->lines3d);
 
     if (cvar_get_bool_name("cl_r_restore_gl_state"))
     {
@@ -3822,7 +4065,6 @@ void R_end_frame(renderer_t *r)
         r->cpu_timings.valid = 1;
     }
 
-    // Resolve depth early so compute passes can sample it (tile cull, sky, etc).
     {
         double t0 = R_time_now_ms();
         R_gpu_timer_begin(r, R_GPU_RESOLVE_DEPTH);
@@ -3859,7 +4101,8 @@ void R_end_frame(renderer_t *r)
         r->cpu_timings.valid = 1;
     }
 
-    // Resolve color (and depth) for post-processing/tonemap.
+    R_line3d_render(r);
+
     {
         double t0 = R_time_now_ms();
         R_gpu_timer_begin(r, R_GPU_RESOLVE_COLOR);
@@ -3937,6 +4180,13 @@ void R_push_model(renderer_t *r, const ihandle_t model, mat4 model_matrix)
     pm.model_matrix = model_matrix;
 
     vector_push_back(&r->models, &pm);
+}
+
+void R_push_line3d(renderer_t *r, line3d_t line)
+{
+    if (!r)
+        return;
+    vector_push_back(&r->lines3d, &line);
 }
 
 void R_push_hdri(renderer_t *r, ihandle_t tex)
