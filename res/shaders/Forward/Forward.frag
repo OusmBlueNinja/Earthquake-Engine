@@ -11,8 +11,26 @@ in VS_OUT
     float lodFade01;
 } v;
 
-uniform vec3 u_CameraPos;
-uniform mat4 u_View;
+layout(std140, binding = 0) uniform PerFrame
+{
+    mat4 u_View;
+    mat4 u_Proj;
+    vec4 u_CameraPos;
+    int u_HeightInvert;
+    int u_ManualSRGB;
+    int u_ShadowEnabled;
+    int u_ShadowCascadeCount;
+    int u_ShadowMapSize;
+    int u_ShadowLightIndex;
+    int u_ShadowPCF;
+    int _pad0;
+    vec4 u_ShadowSplits;
+    float u_ShadowBias;
+    float u_ShadowNormalBias;
+    float u_IBLIntensity;
+    float _pad1;
+    mat4 u_ShadowVP[4];
+};
 
 uniform int u_HasMaterial;
 
@@ -37,30 +55,18 @@ uniform sampler2D u_OcclusionTex;
 uniform sampler2D u_HeightTex;
 uniform sampler2D u_ArmTex;
 
-uniform int u_HeightInvert;
 uniform int u_AlphaTest;
 uniform float u_AlphaCutoff;
-uniform int u_ManualSRGB;
 
 uniform int u_MatAlphaCutout;
 uniform int u_MatAlphaBlend;
 uniform int u_MatDoubleSided;
 
 uniform int u_HasIBL;
-uniform float u_IBLIntensity;
 uniform samplerCube u_IrradianceMap;
 uniform samplerCube u_PrefilterMap;
 uniform sampler2D u_BRDFLUT;
 
-uniform int u_ShadowEnabled;
-uniform int u_ShadowCascadeCount;
-uniform int u_ShadowMapSize;
-uniform int u_ShadowLightIndex;
-uniform int u_ShadowPCF;
-uniform float u_ShadowSplits[4];
-uniform float u_ShadowBias;
-uniform float u_ShadowNormalBias;
-uniform mat4 u_ShadowVP[4];
 uniform sampler2DArrayShadow u_ShadowMap;
 
 uniform int u_TileSize;
@@ -467,7 +473,7 @@ vec3 ibl_ambient(vec3 N, vec3 V, float roughness, vec3 albedo, float metallic, f
 void main()
 {
     vec3 Nw = normalize(v.worldN);
-    vec3 Vw = normalize(u_CameraPos - v.worldPos);
+    vec3 Vw = normalize(u_CameraPos.xyz - v.worldPos);
 
     vec4 tangent = v.tangent;
     if (u_MatDoubleSided != 0 && !gl_FrontFacing)

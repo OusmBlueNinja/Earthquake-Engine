@@ -397,9 +397,9 @@ void bloom_run(renderer_t *r, uint32_t src_tex, uint32_t black_tex)
     if (!b->ready || b->mips == 0)
         return;
 
-    glDisable(GL_DEPTH_TEST);
-    glDisable(GL_CULL_FACE);
-    glDisable(GL_BLEND);
+    gl_state_disable(&r->gl, GL_DEPTH_TEST);
+    gl_state_disable(&r->gl, GL_CULL_FACE);
+    gl_state_disable(&r->gl, GL_BLEND);
 
     bloom_prefilter(r, src_tex);
     bloom_downsample_chain(r);
@@ -432,9 +432,9 @@ void bloom_composite_to_final(renderer_t *r, uint32_t scene_tex, uint32_t bloom_
     glBindFramebuffer(GL_FRAMEBUFFER, r->final_fbo);
     glViewport(0, 0, r->fb_size.x, r->fb_size.y);
 
-    glDisable(GL_DEPTH_TEST);
-    glDisable(GL_CULL_FACE);
-    glDisable(GL_BLEND);
+    gl_state_disable(&r->gl, GL_DEPTH_TEST);
+    gl_state_disable(&r->gl, GL_CULL_FACE);
+    gl_state_disable(&r->gl, GL_BLEND);
 
     shader_bind(s);
 

@@ -10,15 +10,24 @@ static inline uint8_t *gl_state_cap_ptr(gl_state_cache_t *st, uint32_t cap)
 {
     switch ((GLenum)cap)
     {
-    case GL_BLEND: return &st->cap_blend;
-    case GL_DEPTH_TEST: return &st->cap_depth_test;
-    case GL_CULL_FACE: return &st->cap_cull_face;
-    case GL_SCISSOR_TEST: return &st->cap_scissor_test;
-    case GL_MULTISAMPLE: return &st->cap_multisample;
-    case GL_SAMPLE_ALPHA_TO_COVERAGE: return &st->cap_sample_alpha_to_coverage;
-    case GL_POLYGON_OFFSET_FILL: return &st->cap_polygon_offset_fill;
-    case GL_TEXTURE_CUBE_MAP_SEAMLESS: return &st->cap_cube_map_seamless;
-    default: return NULL;
+    case GL_BLEND:
+        return &st->cap_blend;
+    case GL_DEPTH_TEST:
+        return &st->cap_depth_test;
+    case GL_CULL_FACE:
+        return &st->cap_cull_face;
+    case GL_SCISSOR_TEST:
+        return &st->cap_scissor_test;
+    case GL_MULTISAMPLE:
+        return &st->cap_multisample;
+    case GL_SAMPLE_ALPHA_TO_COVERAGE:
+        return &st->cap_sample_alpha_to_coverage;
+    case GL_POLYGON_OFFSET_FILL:
+        return &st->cap_polygon_offset_fill;
+    case GL_TEXTURE_CUBE_MAP_SEAMLESS:
+        return &st->cap_cube_map_seamless;
+    default:
+        return NULL;
     }
 }
 
@@ -34,7 +43,8 @@ void gl_state_enable(gl_state_cache_t *st, uint32_t cap)
     uint8_t *v = gl_state_cap_ptr(st, cap);
     if (v)
     {
-        if (*v) return;
+        if (*v)
+            return;
         glEnable((GLenum)cap);
         *v = 1;
         return;
@@ -48,7 +58,8 @@ void gl_state_disable(gl_state_cache_t *st, uint32_t cap)
     uint8_t *v = gl_state_cap_ptr(st, cap);
     if (v)
     {
-        if (!*v) return;
+        if (!*v)
+            return;
         glDisable((GLenum)cap);
         *v = 0;
         return;

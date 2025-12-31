@@ -12,6 +12,7 @@
 #include "renderer/bloom.h"
 #include "renderer/ibl.h"
 #include "renderer/ssr.h"
+#include "renderer/gl_state_cache.h"
 #include "shader.h"
 
 typedef struct pushed_model_t
@@ -178,6 +179,7 @@ typedef struct renderer_t
     asset_manager_t *assets;
 
     struct frame_graph_t *fg;
+    gl_state_cache_t gl;
 
     vec2i fb_size;
     vec2i fb_size_last;
@@ -191,6 +193,14 @@ typedef struct renderer_t
     uint32_t exposure_pbo[2];
     uint8_t exposure_pbo_index;
     uint8_t exposure_pbo_valid;
+
+    uint32_t per_frame_ubo;
+    uint8_t per_frame_ubo_valid;
+
+    uint8_t exposure_reduce_tex_shader_id;
+    uint8_t exposure_reduce_buf_shader_id;
+    uint32_t exposure_reduce_ssbo[2];
+    uint32_t exposure_reduce_cap_vec4; // elements
 
     camera_t camera;
 

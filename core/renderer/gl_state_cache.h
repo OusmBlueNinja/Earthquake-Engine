@@ -1,5 +1,6 @@
 #pragma once
 #include <stdint.h>
+#include "utils/macros.h"
 
 typedef struct gl_state_cache_t
 {
@@ -36,4 +37,3 @@ void gl_state_blend_func_separate(gl_state_cache_t *st, uint32_t src_rgb, uint32
 
 void gl_state_depth_mask(gl_state_cache_t *st, uint8_t enabled);
 void gl_state_depth_func(gl_state_cache_t *st, uint32_t func);
-

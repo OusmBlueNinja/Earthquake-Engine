@@ -113,9 +113,9 @@ void ssr_run(renderer_t *r, uint32_t scene_tex)
     glBindFramebuffer(GL_FRAMEBUFFER, r->ssr.fbo);
     glViewport(0, 0, r->fb_size.x, r->fb_size.y);
 
-    glDisable(GL_BLEND);
-    glDisable(GL_CULL_FACE);
-    glDisable(GL_DEPTH_TEST);
+    gl_state_disable(&r->gl, GL_BLEND);
+    gl_state_disable(&r->gl, GL_CULL_FACE);
+    gl_state_disable(&r->gl, GL_DEPTH_TEST);
 
     shader_bind(s);
 

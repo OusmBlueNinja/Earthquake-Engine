@@ -8,6 +8,7 @@
 #include "cvar.h"
 #include "core.h"
 #include "renderer/frame_graph.h"
+#include "renderer/gl_state_cache.h"
 #include <string.h>
 #include <stdlib.h>
 #include <math.h>
@@ -107,6 +108,16 @@ typedef struct inst_batch_t
     uint32_t lod;
     uint32_t start;
     uint32_t count;
+
+    const mesh_lod_t *lod_ptr;
+    const asset_material_t *mat_ptr;
+
+    uint8_t mat_cutout;
+    uint8_t mat_blend;
+    uint8_t mat_doublesided;
+    uint8_t pad0;
+    float alpha_cutoff;
+    uint32_t albedo_tex;
 } inst_batch_t;
 
 typedef struct inst_item_t
@@ -116,6 +127,16 @@ typedef struct inst_item_t
     uint32_t lod;
     float fade01;
     mat4 m;
+
+    const mesh_lod_t *lod_ptr;
+    const asset_material_t *mat_ptr;
+
+    uint8_t mat_cutout;
+    uint8_t mat_blend;
+    uint8_t mat_doublesided;
+    uint8_t pad0;
+    float alpha_cutoff;
+    uint32_t albedo_tex;
 } inst_item_t;
 
 typedef struct instance_gpu_t
@@ -566,24 +587,24 @@ static void R_line3d_draw_batch(renderer_t *r,
     glLineWidth(1.0f);
 
     if (depth_test)
-        glEnable(GL_DEPTH_TEST);
+        gl_state_enable(&r->gl, GL_DEPTH_TEST);
     else
-        glDisable(GL_DEPTH_TEST);
+        gl_state_disable(&r->gl, GL_DEPTH_TEST);
 
     if (translucent)
     {
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-        glDepthMask(GL_FALSE);
+        gl_state_enable(&r->gl, GL_BLEND);
+        gl_state_blend_func(&r->gl, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+        gl_state_depth_mask(&r->gl, 0);
     }
     else
     {
-        glDisable(GL_BLEND);
-        glDepthMask(GL_TRUE);
+        gl_state_disable(&r->gl, GL_BLEND);
+        gl_state_depth_mask(&r->gl, 1);
     }
 
     if (!depth_test)
-        glDepthMask(GL_FALSE);
+        gl_state_depth_mask(&r->gl, 0);
 
     shader_bind(s);
     R_bind_common_uniforms(r, s);
@@ -699,18 +720,18 @@ static void R_line3d_render(renderer_t *r)
     glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)((size_t)sum * sizeof(line3d_vertex_t)), verts);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 
-    glEnable(GL_DEPTH_TEST);
-    glDepthFunc(GL_LEQUAL);
+    gl_state_enable(&r->gl, GL_DEPTH_TEST);
+    gl_state_depth_func(&r->gl, GL_LEQUAL);
 
     R_line3d_draw_batch(r, s, batch_first[LINE_BATCH_DEPTH_OPAQUE], batch_counts[LINE_BATCH_DEPTH_OPAQUE], true, false);
     R_line3d_draw_batch(r, s, batch_first[LINE_BATCH_DEPTH_TRANSLUCENT], batch_counts[LINE_BATCH_DEPTH_TRANSLUCENT], true, true);
     R_line3d_draw_batch(r, s, batch_first[LINE_BATCH_ONTOP_OPAQUE], batch_counts[LINE_BATCH_ONTOP_OPAQUE], false, false);
     R_line3d_draw_batch(r, s, batch_first[LINE_BATCH_ONTOP_TRANSLUCENT], batch_counts[LINE_BATCH_ONTOP_TRANSLUCENT], false, true);
 
-    glDisable(GL_BLEND);
-    glEnable(GL_DEPTH_TEST);
-    glDepthFunc(GL_LEQUAL);
-    glDepthMask(GL_TRUE);
+    gl_state_disable(&r->gl, GL_BLEND);
+    gl_state_enable(&r->gl, GL_DEPTH_TEST);
+    gl_state_depth_func(&r->gl, GL_LEQUAL);
+    gl_state_depth_mask(&r->gl, 1);
 }
 
 static void R_user_cfg_pull_from_cvars(renderer_t *r)
@@ -808,6 +829,88 @@ static int R_mip_count_2d(int w, int h);
 static uint32_t R_scene_draw_fbo(const renderer_t *r);
 static void R_msaa_resolve(renderer_t *r, GLbitfield mask);
 
+static void R_exposure_reduce_ensure(renderer_t *r, uint32_t need_vec4);
+static int R_exposure_reduce_avg_color(renderer_t *r, vec3 *out_avg);
+
+typedef struct R_per_frame_ubo_t
+{
+    mat4 u_View;
+    mat4 u_Proj;
+    vec4 u_CameraPos; // xyz, w unused
+    int32_t u_HeightInvert;
+    int32_t u_ManualSRGB;
+    int32_t u_ShadowEnabled;
+    int32_t u_ShadowCascadeCount;
+    int32_t u_ShadowMapSize;
+    int32_t u_ShadowLightIndex;
+    int32_t u_ShadowPCF;
+    int32_t _pad0;
+    vec4 u_ShadowSplits;
+    float u_ShadowBias;
+    float u_ShadowNormalBias;
+    float u_IBLIntensity;
+    float _pad1;
+    mat4 u_ShadowVP[4];
+} R_per_frame_ubo_t;
+
+static void R_per_frame_ubo_ensure(renderer_t *r)
+{
+    if (!r)
+        return;
+    if (r->per_frame_ubo == 0)
+        glGenBuffers(1, &r->per_frame_ubo);
+    if (r->per_frame_ubo == 0)
+        return;
+
+    glBindBuffer(GL_UNIFORM_BUFFER, r->per_frame_ubo);
+    if (!r->per_frame_ubo_valid)
+        glBufferData(GL_UNIFORM_BUFFER, (GLsizeiptr)sizeof(R_per_frame_ubo_t), NULL, GL_DYNAMIC_DRAW);
+    glBindBuffer(GL_UNIFORM_BUFFER, 0);
+    r->per_frame_ubo_valid = 1;
+}
+
+static void R_per_frame_ubo_update(renderer_t *r)
+{
+    if (!r)
+        return;
+    R_per_frame_ubo_ensure(r);
+    if (!r->per_frame_ubo)
+        return;
+
+    R_per_frame_ubo_t u;
+    memset(&u, 0, sizeof(u));
+
+    u.u_View = r->camera.view;
+    u.u_Proj = r->camera.proj;
+    u.u_CameraPos = (vec4){r->camera.position.x, r->camera.position.y, r->camera.position.z, 1.0f};
+
+    u.u_HeightInvert = r->scene.height_invert ? 1 : 0;
+    u.u_ManualSRGB = r->scene.manual_srgb ? 1 : 0;
+
+    u.u_ShadowEnabled = (r->cfg.shadows && r->shadow.tex && r->shadow.light_index >= 0) ? 1 : 0;
+    u.u_ShadowCascadeCount = r->shadow.cascades;
+    u.u_ShadowMapSize = r->shadow.size;
+    u.u_ShadowLightIndex = r->shadow.light_index;
+    u.u_ShadowPCF = r->scene.shadow_pcf ? 1 : 0;
+    u.u_ShadowSplits = (vec4){r->shadow.splits[0], r->shadow.splits[1], r->shadow.splits[2], r->shadow.splits[3]};
+    u.u_ShadowBias = r->scene.shadow_bias;
+    u.u_ShadowNormalBias = r->scene.shadow_normal_bias;
+    u.u_IBLIntensity = r->scene.ibl_intensity;
+    for (int i = 0; i < 4; ++i)
+        u.u_ShadowVP[i] = r->shadow.vp[i];
+
+    glBindBuffer(GL_UNIFORM_BUFFER, r->per_frame_ubo);
+    glBufferSubData(GL_UNIFORM_BUFFER, 0, (GLsizeiptr)sizeof(u), &u);
+    glBindBuffer(GL_UNIFORM_BUFFER, 0);
+}
+
+static void R_per_frame_ubo_bind(renderer_t *r)
+{
+    if (!r || !r->per_frame_ubo)
+        return;
+    glBindBufferBase(GL_UNIFORM_BUFFER, 0, r->per_frame_ubo);
+}
+
 static float R_luminance(vec3 c)
 {
     return c.x * 0.2126f + c.y * 0.7152f + c.z * 0.0722f;
@@ -850,6 +953,122 @@ static void R_msaa_resolve(renderer_t *r, GLbitfield mask)
                       m, GL_NEAREST);
 }
 
+static void R_exposure_reduce_ensure(renderer_t *r, uint32_t need_vec4)
+{
+    if (!r)
+        return;
+
+    if (need_vec4 < 1u)
+        need_vec4 = 1u;
+
+    if (r->exposure_reduce_ssbo[0] == 0 && r->exposure_reduce_ssbo[1] == 0)
+        glGenBuffers(2, r->exposure_reduce_ssbo);
+
+    if (r->exposure_reduce_cap_vec4 >= need_vec4)
+        return;
+
+    uint32_t new_cap = u32_next_pow2(need_vec4);
+    if (new_cap < 256u)
+        new_cap = 256u;
+
+    GLsizeiptr bytes = (GLsizeiptr)((size_t)new_cap * sizeof(float) * 4u);
+    for (int i = 0; i < 2; ++i)
+    {
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, r->exposure_reduce_ssbo[i]);
+        glBufferData(GL_SHADER_STORAGE_BUFFER, bytes, NULL, GL_DYNAMIC_DRAW);
+    }
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+
+    r->exposure_reduce_cap_vec4 = new_cap;
+}
+
+static int R_exposure_reduce_avg_color(renderer_t *r, vec3 *out_avg)
+{
+    if (!r || !out_avg)
+        return 0;
+    if (!r->light_color_tex)
+        return 0;
+    if (r->exposure_reduce_tex_shader_id == 0xFF || r->exposure_reduce_buf_shader_id == 0xFF)
+        return 0;
+
+    shader_t *s_tex = R_get_shader(r, r->exposure_reduce_tex_shader_id);
+    shader_t *s_buf = R_get_shader(r, r->exposure_reduce_buf_shader_id);
+    if (!s_tex || !s_buf)
+        return 0;
+
+    int w = r->fb_size.x;
+    int h = r->fb_size.y;
+    if (w < 1)
+        w = 1;
+    if (h < 1)
+        h = 1;
+
+    uint32_t gx = (uint32_t)((w + 15) / 16);
+    uint32_t gy = (uint32_t)((h + 15) / 16);
+    uint32_t n = gx * gy;
+    if (!n)
+        n = 1u;
+
+    R_exposure_reduce_ensure(r, n);
+
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, r->exposure_reduce_ssbo[0]);
+
+    shader_bind(s_tex);
+    shader_set_int(s_tex, "u_Width", w);
+    shader_set_int(s_tex, "u_Height", h);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, r->light_color_tex);
+    shader_set_int(s_tex, "u_Src", 0);
+
+    shader_dispatch_compute(s_tex, gx, gy, 1);
+    shader_memory_barrier(GL_SHADER_STORAGE_BARRIER_BIT);
+
+    int ping = 0;
+    while (n > 1u)
+    {
+        uint32_t groups = (n + 255u) / 256u;
+        if (groups < 1u)
+            groups = 1u;
+
+        R_exposure_reduce_ensure(r, groups);
+
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, r->exposure_reduce_ssbo[ping]);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, r->exposure_reduce_ssbo[ping ^ 1]);
+
+        shader_bind(s_buf);
+        shader_set_int(s_buf, "u_Count", (int)n);
+        shader_dispatch_compute(s_buf, groups, 1, 1);
+        shader_memory_barrier(GL_SHADER_STORAGE_BARRIER_BIT);
+
+        ping ^= 1;
+        n = groups;
+    }
+
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, r->exposure_reduce_ssbo[ping]);
+    float *v = (float *)glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, (GLsizeiptr)(sizeof(float) * 4u), GL_MAP_READ_BIT);
+    if (!v)
+    {
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+        return 0;
+    }
+
+    float sum_r = v[0];
+    float sum_g = v[1];
+    float sum_b = v[2];
+    float count = v[3];
+
+    glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+
+    if (count < 1.0f)
+        count = 1.0f;
+
+    out_avg->x = sum_r / count;
+    out_avg->y = sum_g / count;
+    out_avg->z = sum_b / count;
+    return 1;
+}
+
 static void R_auto_exposure_update(renderer_t *r)
 {
     if (!r)
@@ -881,56 +1100,10 @@ static void R_auto_exposure_update(renderer_t *r)
         return;
     r->exposure_readback_accum = 0.0f;
 
-    glBindTexture(GL_TEXTURE_2D, r->light_color_tex);
-    glGenerateMipmap(GL_TEXTURE_2D);
-
-    int levels = R_mip_count_2d(r->fb_size.x, r->fb_size.y);
-    int lod = levels - 1;
-    if (lod < 0)
-        lod = 0;
-
-    const GLsizeiptr pack_sz = (GLsizeiptr)(sizeof(float) * 4u);
-
-    if (r->exposure_pbo[0] == 0 && r->exposure_pbo[1] == 0)
-        glGenBuffers(2, r->exposure_pbo);
-
-    const uint8_t write_i = r->exposure_pbo_index & 1u;
-    const uint8_t read_i = (uint8_t)(write_i ^ 1u);
-
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, r->exposure_pbo[write_i]);
-    glBufferData(GL_PIXEL_PACK_BUFFER, pack_sz, NULL, GL_STREAM_READ);
-    glGetTexImage(GL_TEXTURE_2D, lod, GL_RGBA, GL_FLOAT, 0);
-
-    float px_local[4] = {0};
-
-    if (!r->exposure_pbo_valid)
-    {
-        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-        r->exposure_pbo_index = read_i;
-        r->exposure_pbo_valid = 1;
+    vec3 avg = (vec3){0, 0, 0};
+    if (!R_exposure_reduce_avg_color(r, &avg))
         return;
-    }
 
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, r->exposure_pbo[read_i]);
-    float *px = (float *)glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, pack_sz, GL_MAP_READ_BIT);
-    if (!px)
-    {
-        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-        r->exposure_pbo_index = read_i;
-        return;
-    }
-
-    px_local[0] = px[0];
-    px_local[1] = px[1];
-    px_local[2] = px[2];
-    px_local[3] = px[3];
-
-    glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-
-    r->exposure_pbo_index = read_i;
-
-    vec3 avg = (vec3){px_local[0], px_local[1], px_local[2]};
     float avgLum = R_luminance(avg);
     if (avgLum < 1e-6f)
         avgLum = 1e-6f;
@@ -2166,29 +2339,9 @@ static int R_inst_item_sort(const void *a, const void *b)
     return 0;
 }
 
-static int R_inst_item_is_alpha_blend(const renderer_t *r, const inst_item_t *it)
+static int R_inst_item_is_alpha_blend(const inst_item_t *it)
 {
-    if (!r || !it)
-        return 0;
-
-    asset_model_t *mdl = R_resolve_model(r, it->model);
-    if (!mdl)
-        return 0;
-
-    mesh_t *mesh = (mesh_t *)vector_at((vector_t *)&mdl->meshes, it->mesh_index);
-    if (!mesh)
-        return 0;
-
-    asset_material_t *mat = R_resolve_material(r, mesh->material);
-
-    int mat_cutout = 0;
-    int mat_blend = 0;
-    int mat_doublesided = 0;
-    float alpha_cutoff = 0.0f;
-    uint32_t albedo_tex = 0;
-    R_material_state(r, mat, &mat_cutout, &mat_blend, &mat_doublesided, &alpha_cutoff, &albedo_tex);
-
-    return mat_blend ? 1 : 0;
+    return it ? (it->mat_blend ? 1 : 0) : 0;
 }
 
 static void R_emit_batches_from_items(renderer_t *r, inst_item_t *items, uint32_t n, vector_t *batches, vector_t *mats)
@@ -2207,7 +2360,7 @@ static void R_emit_batches_from_items(renderer_t *r, inst_item_t *items, uint32_
 
     for (uint32_t i = 0; i < n; ++i)
     {
-        int item_blend = R_inst_item_is_alpha_blend(r, &items[i]);
+        int item_blend = R_inst_item_is_alpha_blend(&items[i]);
 
         if (!have_cur)
         {
@@ -2217,6 +2370,13 @@ static void R_emit_batches_from_items(renderer_t *r, inst_item_t *items, uint32_
             cur.lod = items[i].lod;
             cur.start = cur_start;
             cur.count = 0;
+            cur.lod_ptr = items[i].lod_ptr;
+            cur.mat_ptr = items[i].mat_ptr;
+            cur.mat_cutout = items[i].mat_cutout;
+            cur.mat_blend = items[i].mat_blend;
+            cur.mat_doublesided = items[i].mat_doublesided;
+            cur.alpha_cutoff = items[i].alpha_cutoff;
+            cur.albedo_tex = items[i].albedo_tex;
             have_cur = 1;
             cur_blend = item_blend;
         }
@@ -2239,6 +2399,13 @@ static void R_emit_batches_from_items(renderer_t *r, inst_item_t *items, uint32_
                 cur.lod = items[i].lod;
                 cur.start = cur_start;
                 cur.count = 0;
+                cur.lod_ptr = items[i].lod_ptr;
+                cur.mat_ptr = items[i].mat_ptr;
+                cur.mat_cutout = items[i].mat_cutout;
+                cur.mat_blend = items[i].mat_blend;
+                cur.mat_doublesided = items[i].mat_doublesided;
+                cur.alpha_cutoff = items[i].alpha_cutoff;
+                cur.albedo_tex = items[i].albedo_tex;
                 cur_blend = item_blend;
             }
         }
@@ -2363,6 +2530,14 @@ static void R_build_instancing(renderer_t *r)
             if (!R_mesh_visible_frustum(&fr, mesh, &pm->model_matrix, max_scale))
                 continue;
 
+            asset_material_t *mat = R_resolve_material(r, mesh->material);
+            int mat_cutout = 0;
+            int mat_blend = 0;
+            int mat_doublesided = 0;
+            float alpha_cutoff = 0.0f;
+            uint32_t albedo_tex = 0;
+            R_material_state(r, mat, &mat_cutout, &mat_blend, &mat_doublesided, &alpha_cutoff, &albedo_tex);
+
             float fade01 = 0.0f;
             int xfade01 = 0;
             uint32_t lod = R_pick_lod_level_for_mesh_fade01(r, mesh, &pm->model_matrix, max_scale, pm->model, mi, &fade01, &xfade01);
@@ -2374,6 +2549,13 @@ static void R_build_instancing(renderer_t *r)
                 items[n].lod = 0;
                 items[n].fade01 = fade01;
                 items[n].m = pm->model_matrix;
+                items[n].lod_ptr = (const mesh_lod_t *)vector_at((vector_t *)&mesh->lods, 0);
+                items[n].mat_ptr = mat;
+                items[n].mat_cutout = (uint8_t)(mat_cutout ? 1 : 0);
+                items[n].mat_blend = (uint8_t)(mat_blend ? 1 : 0);
+                items[n].mat_doublesided = (uint8_t)(mat_doublesided ? 1 : 0);
+                items[n].alpha_cutoff = alpha_cutoff;
+                items[n].albedo_tex = albedo_tex;
                 n++;
 
                 items[n].model = pm->model;
@@ -2381,6 +2563,13 @@ static void R_build_instancing(renderer_t *r)
                 items[n].lod = 1;
                 items[n].fade01 = fade01;
                 items[n].m = pm->model_matrix;
+                items[n].lod_ptr = (const mesh_lod_t *)vector_at((vector_t *)&mesh->lods, 1);
+                items[n].mat_ptr = mat;
+                items[n].mat_cutout = (uint8_t)(mat_cutout ? 1 : 0);
+                items[n].mat_blend = (uint8_t)(mat_blend ? 1 : 0);
+                items[n].mat_doublesided = (uint8_t)(mat_doublesided ? 1 : 0);
+                items[n].alpha_cutoff = alpha_cutoff;
+                items[n].albedo_tex = albedo_tex;
                 n++;
             }
             else
@@ -2394,6 +2583,13 @@ static void R_build_instancing(renderer_t *r)
                 items[n].lod = lod;
                 items[n].fade01 = f;
                 items[n].m = pm->model_matrix;
+                items[n].lod_ptr = (const mesh_lod_t *)vector_at((vector_t *)&mesh->lods, lod);
+                items[n].mat_ptr = mat;
+                items[n].mat_cutout = (uint8_t)(mat_cutout ? 1 : 0);
+                items[n].mat_blend = (uint8_t)(mat_blend ? 1 : 0);
+                items[n].mat_doublesided = (uint8_t)(mat_doublesided ? 1 : 0);
+                items[n].alpha_cutoff = alpha_cutoff;
+                items[n].albedo_tex = albedo_tex;
                 n++;
             }
         }
@@ -2428,6 +2624,14 @@ static void R_build_instancing(renderer_t *r)
             if (!R_mesh_visible_frustum(&fr, mesh, &pm->model_matrix, max_scale))
                 continue;
 
+            asset_material_t *mat = R_resolve_material(r, mesh->material);
+            int mat_cutout = 0;
+            int mat_blend = 0;
+            int mat_doublesided = 0;
+            float alpha_cutoff = 0.0f;
+            uint32_t albedo_tex = 0;
+            R_material_state(r, mat, &mat_cutout, &mat_blend, &mat_doublesided, &alpha_cutoff, &albedo_tex);
+
             float fade01 = 0.0f;
             int xfade01 = 0;
             uint32_t lod = R_pick_lod_level_for_mesh_fade01(r, mesh, &pm->model_matrix, max_scale, pm->model, mi, &fade01, &xfade01);
@@ -2439,6 +2643,13 @@ static void R_build_instancing(renderer_t *r)
                 items[n].lod = 0;
                 items[n].fade01 = fade01;
                 items[n].m = pm->model_matrix;
+                items[n].lod_ptr = (const mesh_lod_t *)vector_at((vector_t *)&mesh->lods, 0);
+                items[n].mat_ptr = mat;
+                items[n].mat_cutout = (uint8_t)(mat_cutout ? 1 : 0);
+                items[n].mat_blend = (uint8_t)(mat_blend ? 1 : 0);
+                items[n].mat_doublesided = (uint8_t)(mat_doublesided ? 1 : 0);
+                items[n].alpha_cutoff = alpha_cutoff;
+                items[n].albedo_tex = albedo_tex;
                 n++;
 
                 items[n].model = pm->model;
@@ -2446,6 +2657,13 @@ static void R_build_instancing(renderer_t *r)
                 items[n].lod = 1;
                 items[n].fade01 = fade01;
                 items[n].m = pm->model_matrix;
+                items[n].lod_ptr = (const mesh_lod_t *)vector_at((vector_t *)&mesh->lods, 1);
+                items[n].mat_ptr = mat;
+                items[n].mat_cutout = (uint8_t)(mat_cutout ? 1 : 0);
+                items[n].mat_blend = (uint8_t)(mat_blend ? 1 : 0);
+                items[n].mat_doublesided = (uint8_t)(mat_doublesided ? 1 : 0);
+                items[n].alpha_cutoff = alpha_cutoff;
+                items[n].albedo_tex = albedo_tex;
                 n++;
             }
             else
@@ -2459,6 +2677,13 @@ static void R_build_instancing(renderer_t *r)
                 items[n].lod = lod;
                 items[n].fade01 = f;
                 items[n].m = pm->model_matrix;
+                items[n].lod_ptr = (const mesh_lod_t *)vector_at((vector_t *)&mesh->lods, lod);
+                items[n].mat_ptr = mat;
+                items[n].mat_cutout = (uint8_t)(mat_cutout ? 1 : 0);
+                items[n].mat_blend = (uint8_t)(mat_blend ? 1 : 0);
+                items[n].mat_doublesided = (uint8_t)(mat_doublesided ? 1 : 0);
+                items[n].alpha_cutoff = alpha_cutoff;
+                items[n].albedo_tex = albedo_tex;
                 n++;
             }
         }
@@ -2527,6 +2752,14 @@ static void R_build_shadow_instancing(renderer_t *r)
             if (!mesh)
                 continue;
 
+            asset_material_t *mat = R_resolve_material(r, mesh->material);
+            int mat_cutout = 0;
+            int mat_blend = 0;
+            int mat_doublesided = 0;
+            float alpha_cutoff = 0.0f;
+            uint32_t albedo_tex = 0;
+            R_material_state(r, mat, &mat_cutout, &mat_blend, &mat_doublesided, &alpha_cutoff, &albedo_tex);
+
             float fade01 = 0.0f;
             int xfade01 = 0;
             uint32_t lod = R_pick_lod_level_for_mesh_fade01(r, mesh, &pm->model_matrix, max_scale, pm->model, mi, &fade01, &xfade01);
@@ -2538,6 +2771,13 @@ static void R_build_shadow_instancing(renderer_t *r)
                 items[n].lod = 0;
                 items[n].fade01 = fade01;
                 items[n].m = pm->model_matrix;
+                items[n].lod_ptr = (const mesh_lod_t *)vector_at((vector_t *)&mesh->lods, 0);
+                items[n].mat_ptr = mat;
+                items[n].mat_cutout = (uint8_t)(mat_cutout ? 1 : 0);
+                items[n].mat_blend = (uint8_t)(mat_blend ? 1 : 0);
+                items[n].mat_doublesided = (uint8_t)(mat_doublesided ? 1 : 0);
+                items[n].alpha_cutoff = alpha_cutoff;
+                items[n].albedo_tex = albedo_tex;
                 n++;
 
                 items[n].model = pm->model;
@@ -2545,6 +2785,13 @@ static void R_build_shadow_instancing(renderer_t *r)
                 items[n].lod = 1;
                 items[n].fade01 = fade01;
                 items[n].m = pm->model_matrix;
+                items[n].lod_ptr = (const mesh_lod_t *)vector_at((vector_t *)&mesh->lods, 1);
+                items[n].mat_ptr = mat;
+                items[n].mat_cutout = (uint8_t)(mat_cutout ? 1 : 0);
+                items[n].mat_blend = (uint8_t)(mat_blend ? 1 : 0);
+                items[n].mat_doublesided = (uint8_t)(mat_doublesided ? 1 : 0);
+                items[n].alpha_cutoff = alpha_cutoff;
+                items[n].albedo_tex = albedo_tex;
                 n++;
             }
             else
@@ -2558,6 +2805,13 @@ static void R_build_shadow_instancing(renderer_t *r)
                 items[n].lod = lod;
                 items[n].fade01 = f;
                 items[n].m = pm->model_matrix;
+                items[n].lod_ptr = (const mesh_lod_t *)vector_at((vector_t *)&mesh->lods, lod);
+                items[n].mat_ptr = mat;
+                items[n].mat_cutout = (uint8_t)(mat_cutout ? 1 : 0);
+                items[n].mat_blend = (uint8_t)(mat_blend ? 1 : 0);
+                items[n].mat_doublesided = (uint8_t)(mat_doublesided ? 1 : 0);
+                items[n].alpha_cutoff = alpha_cutoff;
+                items[n].albedo_tex = albedo_tex;
                 n++;
             }
         }
@@ -2581,6 +2835,14 @@ static void R_build_shadow_instancing(renderer_t *r)
             if (!mesh)
                 continue;
 
+            asset_material_t *mat = R_resolve_material(r, mesh->material);
+            int mat_cutout = 0;
+            int mat_blend = 0;
+            int mat_doublesided = 0;
+            float alpha_cutoff = 0.0f;
+            uint32_t albedo_tex = 0;
+            R_material_state(r, mat, &mat_cutout, &mat_blend, &mat_doublesided, &alpha_cutoff, &albedo_tex);
+
             float fade01 = 0.0f;
             int xfade01 = 0;
             uint32_t lod = R_pick_lod_level_for_mesh_fade01(r, mesh, &pm->model_matrix, max_scale, pm->model, mi, &fade01, &xfade01);
@@ -2592,6 +2854,13 @@ static void R_build_shadow_instancing(renderer_t *r)
                 items[n].lod = 0;
                 items[n].fade01 = fade01;
                 items[n].m = pm->model_matrix;
+                items[n].lod_ptr = (const mesh_lod_t *)vector_at((vector_t *)&mesh->lods, 0);
+                items[n].mat_ptr = mat;
+                items[n].mat_cutout = (uint8_t)(mat_cutout ? 1 : 0);
+                items[n].mat_blend = (uint8_t)(mat_blend ? 1 : 0);
+                items[n].mat_doublesided = (uint8_t)(mat_doublesided ? 1 : 0);
+                items[n].alpha_cutoff = alpha_cutoff;
+                items[n].albedo_tex = albedo_tex;
                 n++;
 
                 items[n].model = pm->model;
@@ -2599,6 +2868,13 @@ static void R_build_shadow_instancing(renderer_t *r)
                 items[n].lod = 1;
                 items[n].fade01 = fade01;
                 items[n].m = pm->model_matrix;
+                items[n].lod_ptr = (const mesh_lod_t *)vector_at((vector_t *)&mesh->lods, 1);
+                items[n].mat_ptr = mat;
+                items[n].mat_cutout = (uint8_t)(mat_cutout ? 1 : 0);
+                items[n].mat_blend = (uint8_t)(mat_blend ? 1 : 0);
+                items[n].mat_doublesided = (uint8_t)(mat_doublesided ? 1 : 0);
+                items[n].alpha_cutoff = alpha_cutoff;
+                items[n].albedo_tex = albedo_tex;
                 n++;
             }
             else
@@ -2612,6 +2888,13 @@ static void R_build_shadow_instancing(renderer_t *r)
                 items[n].lod = lod;
                 items[n].fade01 = f;
                 items[n].m = pm->model_matrix;
+                items[n].lod_ptr = (const mesh_lod_t *)vector_at((vector_t *)&mesh->lods, lod);
+                items[n].mat_ptr = mat;
+                items[n].mat_cutout = (uint8_t)(mat_cutout ? 1 : 0);
+                items[n].mat_blend = (uint8_t)(mat_blend ? 1 : 0);
+                items[n].mat_doublesided = (uint8_t)(mat_doublesided ? 1 : 0);
+                items[n].alpha_cutoff = alpha_cutoff;
+                items[n].albedo_tex = albedo_tex;
                 n++;
             }
         }
@@ -2698,12 +2981,12 @@ static void R_depth_prepass(renderer_t *r)
     glBindFramebuffer(GL_FRAMEBUFFER, R_scene_draw_fbo(r));
     glViewport(0, 0, r->fb_size.x, r->fb_size.y);
 
-    glDisable(GL_BLEND);
-    glEnable(GL_DEPTH_TEST);
-    glDepthMask(GL_TRUE);
-    glDepthFunc(GL_LEQUAL);
-    glEnable(GL_MULTISAMPLE);
-    glDisable(GL_SAMPLE_ALPHA_TO_COVERAGE);
+    gl_state_disable(&r->gl, GL_BLEND);
+    gl_state_enable(&r->gl, GL_DEPTH_TEST);
+    gl_state_depth_mask(&r->gl, 1);
+    gl_state_depth_func(&r->gl, GL_LEQUAL);
+    gl_state_enable(&r->gl, GL_MULTISAMPLE);
+    gl_state_disable(&r->gl, GL_SAMPLE_ALPHA_TO_COVERAGE);
 
     glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
 
@@ -2723,44 +3006,40 @@ static void R_depth_prepass(renderer_t *r)
         if (!b || b->count == 0)
             continue;
 
-        asset_material_t *mat = NULL;
-        const mesh_lod_t *lod = NULL;
-        if (!R_resolve_batch_resources(r, b, NULL, NULL, &lod, &mat))
-            continue;
-
-        int mat_cutout = 0;
-        int mat_blend = 0;
-        int mat_doublesided = 0;
-        float alpha_cutoff = 0.0f;
-        uint32_t albedo_tex = 0;
-        R_material_state(r, mat, &mat_cutout, &mat_blend, &mat_doublesided, &alpha_cutoff, &albedo_tex);
-
-        if (mat_blend)
-            continue;
-
-        if (mat_doublesided)
+        const mesh_lod_t *lod = b->lod_ptr;
+        if (!lod)
         {
-            glDisable(GL_CULL_FACE);
+            asset_material_t *mat = NULL;
+            if (!R_resolve_batch_resources(r, b, NULL, NULL, &lod, &mat))
+                continue;
+        }
+
+        if (b->mat_blend)
+            continue;
+
+        if (b->mat_doublesided)
+        {
+            gl_state_disable(&r->gl, GL_CULL_FACE);
         }
         else
         {
-            glEnable(GL_CULL_FACE);
+            gl_state_enable(&r->gl, GL_CULL_FACE);
             glCullFace(GL_BACK);
         }
 
         glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, albedo_tex ? albedo_tex : r->black_tex);
+        glBindTexture(GL_TEXTURE_2D, b->albedo_tex ? b->albedo_tex : r->black_tex);
         shader_set_int(depth, "u_AlbedoTex", 0);
-        shader_set_float(depth, "u_AlphaCutoff", mat_cutout ? alpha_cutoff : 0.0f);
+        shader_set_float(depth, "u_AlphaCutoff", b->mat_cutout ? b->alpha_cutoff : 0.0f);
 
         int xfade_enabled = (b->lod == 0 || b->lod == 1) ? 1 : 0;
         int xfade_mode = (b->lod == 1) ? 1 : 0;
         shader_set_int(depth, "u_LodXFadeEnabled", xfade_enabled);
         shader_set_int(depth, "u_LodXFadeMode", xfade_mode);
         if (xfade_enabled)
-            glEnable(GL_SAMPLE_ALPHA_TO_COVERAGE);
+            gl_state_enable(&r->gl, GL_SAMPLE_ALPHA_TO_COVERAGE);
         else
-            glDisable(GL_SAMPLE_ALPHA_TO_COVERAGE);
+            gl_state_disable(&r->gl, GL_SAMPLE_ALPHA_TO_COVERAGE);
 
         R_mesh_ensure_instance_attribs(r, lod->vao);
 
@@ -2782,7 +3061,7 @@ static void R_depth_prepass(renderer_t *r)
 
     shader_unbind();
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-    glDisable(GL_SAMPLE_ALPHA_TO_COVERAGE);
+    gl_state_disable(&r->gl, GL_SAMPLE_ALPHA_TO_COVERAGE);
 
     shader_memory_barrier(GL_TEXTURE_FETCH_BARRIER_BIT | GL_FRAMEBUFFER_BARRIER_BIT);
 }
@@ -3035,15 +3314,15 @@ static void R_shadow_pass(renderer_t *r)
     glReadBuffer(GL_NONE);
 
     glViewport(0, 0, r->shadow.size, r->shadow.size);
-    glDisable(GL_BLEND);
-    glEnable(GL_DEPTH_TEST);
-    glDepthMask(GL_TRUE);
-    glDepthFunc(GL_LEQUAL);
-    glDisable(GL_MULTISAMPLE);
-    glDisable(GL_SAMPLE_ALPHA_TO_COVERAGE);
+    gl_state_disable(&r->gl, GL_BLEND);
+    gl_state_enable(&r->gl, GL_DEPTH_TEST);
+    gl_state_depth_mask(&r->gl, 1);
+    gl_state_depth_func(&r->gl, GL_LEQUAL);
+    gl_state_disable(&r->gl, GL_MULTISAMPLE);
+    gl_state_disable(&r->gl, GL_SAMPLE_ALPHA_TO_COVERAGE);
     glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
 
-    glEnable(GL_POLYGON_OFFSET_FILL);
+    gl_state_enable(&r->gl, GL_POLYGON_OFFSET_FILL);
     glPolygonOffset(1.0f, 1.0f);
 
     shader_bind(shadow);
@@ -3069,35 +3348,31 @@ static void R_shadow_pass(renderer_t *r)
             if (!b || b->count == 0)
                 continue;
 
-            asset_material_t *mat = NULL;
-            const mesh_lod_t *lod = NULL;
-            if (!R_resolve_batch_resources(r, b, NULL, NULL, &lod, &mat))
-                continue;
-
-            int mat_cutout = 0;
-            int mat_blend = 0;
-            int mat_doublesided = 0;
-            float alpha_cutoff = 0.0f;
-            uint32_t albedo_tex = 0;
-            R_material_state(r, mat, &mat_cutout, &mat_blend, &mat_doublesided, &alpha_cutoff, &albedo_tex);
-
-            if (mat_blend)
-                continue;
-
-            if (mat_doublesided)
+            const mesh_lod_t *lod = b->lod_ptr;
+            if (!lod)
             {
-                glDisable(GL_CULL_FACE);
+                asset_material_t *mat = NULL;
+                if (!R_resolve_batch_resources(r, b, NULL, NULL, &lod, &mat))
+                    continue;
+            }
+
+            if (b->mat_blend)
+                continue;
+
+            if (b->mat_doublesided)
+            {
+                gl_state_disable(&r->gl, GL_CULL_FACE);
             }
             else
             {
-                glEnable(GL_CULL_FACE);
+                gl_state_enable(&r->gl, GL_CULL_FACE);
                 glCullFace(GL_BACK);
             }
 
             glActiveTexture(GL_TEXTURE0);
-            glBindTexture(GL_TEXTURE_2D, albedo_tex ? albedo_tex : r->black_tex);
+            glBindTexture(GL_TEXTURE_2D, b->albedo_tex ? b->albedo_tex : r->black_tex);
             shader_set_int(shadow, "u_AlbedoTex", 0);
-            shader_set_float(shadow, "u_AlphaCutoff", mat_cutout ? alpha_cutoff : 0.0f);
+            shader_set_float(shadow, "u_AlphaCutoff", b->mat_cutout ? b->alpha_cutoff : 0.0f);
 
             int xfade_enabled = (b->lod == 0 || b->lod == 1) ? 1 : 0;
             int xfade_mode = (b->lod == 1) ? 1 : 0;
@@ -3124,7 +3399,7 @@ static void R_shadow_pass(renderer_t *r)
     }
 
     shader_unbind();
-    glDisable(GL_POLYGON_OFFSET_FILL);
+    gl_state_disable(&r->gl, GL_POLYGON_OFFSET_FILL);
 
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -3236,12 +3511,12 @@ static void R_sky_pass(renderer_t *r)
     glBindFramebuffer(GL_FRAMEBUFFER, R_scene_draw_fbo(r));
     glViewport(0, 0, r->fb_size.x, r->fb_size.y);
 
-    glDisable(GL_CULL_FACE);
-    glDisable(GL_BLEND);
+    gl_state_disable(&r->gl, GL_CULL_FACE);
+    gl_state_disable(&r->gl, GL_BLEND);
 
-    glEnable(GL_DEPTH_TEST);
-    glDepthMask(GL_FALSE);
-    glDepthFunc(GL_ALWAYS);
+    gl_state_enable(&r->gl, GL_DEPTH_TEST);
+    gl_state_depth_mask(&r->gl, 0);
+    gl_state_depth_func(&r->gl, GL_ALWAYS);
 
     shader_bind(sky);
 
@@ -3261,8 +3536,8 @@ static void R_sky_pass(renderer_t *r)
 
     R_draw_fs_tri(r);
 
-    glDepthMask(GL_TRUE);
-    glDepthFunc(GL_LEQUAL);
+    gl_state_depth_mask(&r->gl, 1);
+    gl_state_depth_func(&r->gl, GL_LEQUAL);
 }
 
 typedef struct blend_batch_ref_t
@@ -3320,25 +3595,16 @@ static void R_forward_draw_filtered(renderer_t *r, shader_t *fwd, int draw_blend
         if (!b || b->count == 0)
             continue;
 
-        asset_material_t *mat = NULL;
-        mesh_t *mesh = NULL;
-        const mesh_lod_t *lod = NULL;
-        if (!R_resolve_batch_resources(r, b, NULL, &mesh, &lod, &mat))
-            continue;
-
-        int mat_cutout = 0;
-        int mat_blend = 0;
-        int mat_doublesided = 0;
-        float alpha_cutoff = 0.0f;
-        uint32_t albedo_tex = 0;
-        R_material_state(r, mat, &mat_cutout, &mat_blend, &mat_doublesided, &alpha_cutoff, &albedo_tex);
-
         if (draw_blend)
         {
-            if (!mat_blend)
+            if (!b->mat_blend)
                 continue;
             if (blend_list && blend_count < r->inst_batches.size)
             {
+                asset_model_t *mdl = R_resolve_model(r, b->model);
+                mesh_t *mesh = (mdl && b->mesh_index < mdl->meshes.size) ? (mesh_t *)vector_at((vector_t *)&mdl->meshes, b->mesh_index) : NULL;
+                if (!mesh)
+                    continue;
                 blend_list[blend_count].b = b;
                 blend_list[blend_count].depth2 = R_batch_view_z(r, b, mesh);
                 blend_count++;
@@ -3346,25 +3612,36 @@ static void R_forward_draw_filtered(renderer_t *r, shader_t *fwd, int draw_blend
             continue;
         }
 
-        if (mat_blend)
+        const mesh_lod_t *lod = b->lod_ptr;
+        const asset_material_t *mat = b->mat_ptr;
+        if (!lod || !mat)
+        {
+            asset_material_t *mat_mut = NULL;
+            mesh_t *mesh = NULL;
+            if (!R_resolve_batch_resources(r, b, NULL, &mesh, &lod, &mat_mut))
+                continue;
+            mat = mat_mut;
+        }
+
+        if (b->mat_blend)
             continue;
 
-        glDisable(GL_BLEND);
-        glDepthMask(GL_TRUE);
-        glEnable(GL_MULTISAMPLE);
+        gl_state_disable(&r->gl, GL_BLEND);
+        gl_state_depth_mask(&r->gl, 1);
+        gl_state_enable(&r->gl, GL_MULTISAMPLE);
 
-        if (mat_doublesided)
+        if (b->mat_doublesided)
         {
-            glDisable(GL_CULL_FACE);
+            gl_state_disable(&r->gl, GL_CULL_FACE);
         }
         else
         {
-            glEnable(GL_CULL_FACE);
+            gl_state_enable(&r->gl, GL_CULL_FACE);
             glCullFace(GL_BACK);
         }
 
         glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, albedo_tex ? albedo_tex : r->black_tex);
+        glBindTexture(GL_TEXTURE_2D, b->albedo_tex ? b->albedo_tex : r->black_tex);
 
         int lodp1 = (debug_mode == 1) ? (int)(b->lod + 1u) : 0;
         int packed = (debug_mode & 255) | ((lodp1 & 255) << 8);
@@ -3374,17 +3651,17 @@ static void R_forward_draw_filtered(renderer_t *r, shader_t *fwd, int draw_blend
         int xfade_mode = (b->lod == 1) ? 1 : 0;
         shader_set_int(fwd, "u_LodXFadeEnabled", xfade_enabled);
         shader_set_int(fwd, "u_LodXFadeMode", xfade_mode);
-        if (r->cfg.msaa && r->msaa_samples > 1 && mat_cutout)
-            glEnable(GL_SAMPLE_ALPHA_TO_COVERAGE);
+        if (r->cfg.msaa && r->msaa_samples > 1 && b->mat_cutout)
+            gl_state_enable(&r->gl, GL_SAMPLE_ALPHA_TO_COVERAGE);
         else
-            glDisable(GL_SAMPLE_ALPHA_TO_COVERAGE);
+            gl_state_disable(&r->gl, GL_SAMPLE_ALPHA_TO_COVERAGE);
 
         R_mesh_ensure_instance_attribs(r, lod->vao);
-        R_apply_material_or_default(r, fwd, mat);
-        shader_set_int(fwd, "u_MatAlphaBlend", mat_blend ? 1 : 0);
-        shader_set_int(fwd, "u_MatAlphaCutout", mat_cutout ? 1 : 0);
-        shader_set_int(fwd, "u_AlphaTest", mat_cutout ? 1 : 0);
-        shader_set_float(fwd, "u_AlphaCutoff", mat_cutout ? alpha_cutoff : 0.0f);
+        R_apply_material_or_default(r, fwd, (asset_material_t *)mat);
+        shader_set_int(fwd, "u_MatAlphaBlend", b->mat_blend ? 1 : 0);
+        shader_set_int(fwd, "u_MatAlphaCutout", b->mat_cutout ? 1 : 0);
+        shader_set_int(fwd, "u_AlphaTest", b->mat_cutout ? 1 : 0);
+        shader_set_float(fwd, "u_AlphaCutoff", b->mat_cutout ? b->alpha_cutoff : 0.0f);
 
         glBindVertexArray(lod->vao);
         R_stats_add_draw_instanced(r, lod->index_count, b->count);
@@ -3405,10 +3682,10 @@ static void R_forward_draw_filtered(renderer_t *r, shader_t *fwd, int draw_blend
     {
         qsort(blend_list, blend_count, sizeof(blend_batch_ref_t), R_blend_sort_back_to_front);
 
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-        glDepthMask(GL_FALSE);
-        glDisable(GL_SAMPLE_ALPHA_TO_COVERAGE);
+        gl_state_enable(&r->gl, GL_BLEND);
+        gl_state_blend_func(&r->gl, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+        gl_state_depth_mask(&r->gl, 0);
+        gl_state_disable(&r->gl, GL_SAMPLE_ALPHA_TO_COVERAGE);
 
         for (uint32_t i = 0; i < blend_count; ++i)
         {
@@ -3416,23 +3693,21 @@ static void R_forward_draw_filtered(renderer_t *r, shader_t *fwd, int draw_blend
             if (!b)
                 continue;
 
-            asset_material_t *mat = NULL;
-            const mesh_lod_t *lod = NULL;
-            if (!R_resolve_batch_resources(r, b, NULL, NULL, &lod, &mat))
-                continue;
+            const mesh_lod_t *lod = b->lod_ptr;
+            const asset_material_t *mat = b->mat_ptr;
+            if (!lod || !mat)
+            {
+                asset_material_t *mat_mut = NULL;
+                if (!R_resolve_batch_resources(r, b, NULL, NULL, &lod, &mat_mut))
+                    continue;
+                mat = mat_mut;
+            }
 
-            int mat_cutout = 0;
-            int mat_blend = 0;
-            int mat_doublesided = 0;
-            float alpha_cutoff = 0.0f;
-            uint32_t albedo_tex = 0;
-            R_material_state(r, mat, &mat_cutout, &mat_blend, &mat_doublesided, &alpha_cutoff, &albedo_tex);
-
-            if (!mat_blend)
+            if (!b->mat_blend)
                 continue;
 
             glActiveTexture(GL_TEXTURE0);
-            glBindTexture(GL_TEXTURE_2D, albedo_tex ? albedo_tex : r->black_tex);
+            glBindTexture(GL_TEXTURE_2D, b->albedo_tex ? b->albedo_tex : r->black_tex);
 
             int lodp1 = (debug_mode == 1) ? (int)(b->lod + 1u) : 0;
             int packed = (debug_mode & 255) | ((lodp1 & 255) << 8);
@@ -3444,18 +3719,18 @@ static void R_forward_draw_filtered(renderer_t *r, shader_t *fwd, int draw_blend
             shader_set_int(fwd, "u_LodXFadeMode", xfade_mode);
 
             R_mesh_ensure_instance_attribs(r, lod->vao);
-            R_apply_material_or_default(r, fwd, mat);
-            shader_set_int(fwd, "u_MatAlphaBlend", mat_blend ? 1 : 0);
-            shader_set_int(fwd, "u_MatAlphaCutout", mat_cutout ? 1 : 0);
-            shader_set_int(fwd, "u_AlphaTest", mat_cutout ? 1 : 0);
-            shader_set_float(fwd, "u_AlphaCutoff", mat_cutout ? alpha_cutoff : 0.0f);
+            R_apply_material_or_default(r, fwd, (asset_material_t *)mat);
+            shader_set_int(fwd, "u_MatAlphaBlend", b->mat_blend ? 1 : 0);
+            shader_set_int(fwd, "u_MatAlphaCutout", b->mat_cutout ? 1 : 0);
+            shader_set_int(fwd, "u_AlphaTest", b->mat_cutout ? 1 : 0);
+            shader_set_float(fwd, "u_AlphaCutoff", b->mat_cutout ? b->alpha_cutoff : 0.0f);
 
             glBindVertexArray(lod->vao);
 
-            if (mat_doublesided)
+            if (b->mat_doublesided)
             {
 
-                glEnable(GL_CULL_FACE);
+                gl_state_enable(&r->gl, GL_CULL_FACE);
 
                 glCullFace(GL_FRONT);
                 R_stats_add_draw_instanced(r, lod->index_count, b->count);
@@ -3485,7 +3760,7 @@ static void R_forward_draw_filtered(renderer_t *r, shader_t *fwd, int draw_blend
             }
             else
             {
-                glEnable(GL_CULL_FACE);
+                gl_state_enable(&r->gl, GL_CULL_FACE);
                 glCullFace(GL_BACK);
                 R_stats_add_draw_instanced(r, lod->index_count, b->count);
 #if !defined(__APPLE__) && (defined(GLEW_ARB_base_instance) || defined(GLEW_VERSION_4_2))
@@ -3514,6 +3789,8 @@ static void R_forward_one_pass(renderer_t *r)
         return;
 
     ibl_ensure(r);
+    R_per_frame_ubo_update(r);
+    R_per_frame_ubo_bind(r);
 
     uint32_t irr = ibl_get_irradiance(r);
     uint32_t pre = ibl_get_prefilter(r);
@@ -3523,8 +3800,8 @@ static void R_forward_one_pass(renderer_t *r)
     glBindFramebuffer(GL_FRAMEBUFFER, R_scene_draw_fbo(r));
     glViewport(0, 0, r->fb_size.x, r->fb_size.y);
 
-    glEnable(GL_DEPTH_TEST);
-    glDepthFunc(GL_LEQUAL);
+    gl_state_enable(&r->gl, GL_DEPTH_TEST);
+    gl_state_depth_func(&r->gl, GL_LEQUAL);
 
     glFrontFace(GL_CCW);
 
@@ -3586,7 +3863,7 @@ static void R_forward_one_pass(renderer_t *r)
     shader_set_int(fwd, "u_ShadowMap", 11);
 
     shader_set_int(fwd, "u_HasIBL", has_ibl);
-    shader_set_float(fwd, "u_IBLIntensity", r->scene.ibl_intensity);
+    // u_IBLIntensity is in PerFrame UBO.
 
     shader_set_int(fwd, "u_TileSize", FP_TILE_SIZE);
     shader_set_int(fwd, "u_TileCountX", r->fp.tile_count_x);
@@ -3594,24 +3871,7 @@ static void R_forward_one_pass(renderer_t *r)
     shader_set_int(fwd, "u_TileMax", (int)r->fp.tile_max);
 
     shader_set_int(fwd, "u_UseInstancing", 1);
-
-    R_bind_common_uniforms(r, fwd);
-
-    shader_set_int(fwd, "u_ShadowEnabled", (r->cfg.shadows && r->shadow.tex && r->shadow.light_index >= 0) ? 1 : 0);
-    shader_set_int(fwd, "u_ShadowCascadeCount", r->shadow.cascades);
-    shader_set_int(fwd, "u_ShadowMapSize", r->shadow.size);
-    shader_set_int(fwd, "u_ShadowLightIndex", r->shadow.light_index);
-    shader_set_int(fwd, "u_ShadowPCF", r->scene.shadow_pcf ? 1 : 0);
-    shader_set_float_array(fwd, "u_ShadowSplits", r->shadow.splits, R_SHADOW_MAX_CASCADES);
-    shader_set_float(fwd, "u_ShadowBias", r->scene.shadow_bias);
-    shader_set_float(fwd, "u_ShadowNormalBias", r->scene.shadow_normal_bias);
-
-    for (int i = 0; i < R_SHADOW_MAX_CASCADES; ++i)
-    {
-        char name[32];
-        snprintf(name, sizeof(name), "u_ShadowVP[%d]", i);
-        shader_set_mat4(fwd, name, r->shadow.vp[i]);
-    }
+    // Per-frame uniforms (view/proj/camera + shadow arrays) come from the PerFrame UBO.
 
     int mode = r->cfg.debug_mode;
     if (mode < 0)
@@ -3622,13 +3882,13 @@ static void R_forward_one_pass(renderer_t *r)
     R_forward_draw_filtered(r, fwd, 0, mode);
     R_forward_draw_filtered(r, fwd, 1, mode);
 
-    glDisable(GL_BLEND);
-    glDepthMask(GL_TRUE);
+    gl_state_disable(&r->gl, GL_BLEND);
+    gl_state_depth_mask(&r->gl, 1);
 
     if (r->cfg.wireframe)
         glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 
-    glEnable(GL_CULL_FACE);
+    gl_state_enable(&r->gl, GL_CULL_FACE);
     glCullFace(GL_BACK);
 }
 
@@ -3693,6 +3953,8 @@ int R_init(renderer_t *r, asset_manager_t *assets)
     r->fp.shader_init_id = 0xFF;
     r->fp.shader_cull_id = 0xFF;
     r->fp.shader_finalize_id = 0xFF;
+    r->exposure_reduce_tex_shader_id = 0xFF;
+    r->exposure_reduce_buf_shader_id = 0xFF;
 
     r->scene = R_scene_settings_default();
     r->exposure_adapted = r->scene.exposure;
@@ -3702,6 +3964,11 @@ int R_init(renderer_t *r, asset_manager_t *assets)
     r->exposure_pbo[1] = 0;
     r->exposure_pbo_index = 0;
     r->exposure_pbo_valid = 0;
+    r->per_frame_ubo = 0;
+    r->per_frame_ubo_valid = 0;
+    r->exposure_reduce_ssbo[0] = 0;
+    r->exposure_reduce_ssbo[1] = 0;
+    r->exposure_reduce_cap_vec4 = 0;
     R_user_cfg_pull_from_cvars(r);
 
     r->shadow.fbo = 0;
@@ -3715,9 +3982,10 @@ int R_init(renderer_t *r, asset_manager_t *assets)
 
     r->hdri_tex = ihandle_invalid();
 
-    glEnable(GL_DEPTH_TEST);
-    glDepthFunc(GL_LEQUAL);
-    glDisable(GL_BLEND);
+    gl_state_reset(&r->gl);
+    gl_state_enable(&r->gl, GL_DEPTH_TEST);
+    gl_state_depth_func(&r->gl, GL_LEQUAL);
+    gl_state_disable(&r->gl, GL_BLEND);
 
     glGenVertexArrays(1, &r->fs_vao);
 
@@ -3784,6 +4052,7 @@ int R_init(renderer_t *r, asset_manager_t *assets)
     shader_t *forward_shader = R_new_shader_from_files("res/shaders/Forward/Forward.vert", "res/shaders/Forward/Forward.frag");
     if (!forward_shader)
         return 1;
+    shader_bind_uniform_block(forward_shader, "PerFrame", 0);
     r->default_shader_id = R_add_shader(r, forward_shader);
 
     shader_t *sky_shader = R_new_shader_from_files("res/shaders/sky.vert", "res/shaders/sky.frag");
@@ -3795,6 +4064,18 @@ int R_init(renderer_t *r, asset_manager_t *assets)
     if (!present_shader)
         return 1;
     r->present_shader_id = R_add_shader(r, present_shader);
+
+    shader_t *ae_tex = R_new_compute_shader_from_file("res/shaders/auto_exposure_reduce_tex.comp");
+    shader_t *ae_buf = R_new_compute_shader_from_file("res/shaders/auto_exposure_reduce_buf.comp");
+    if (!ae_tex || !ae_buf)
+    {
+        LOG_WARN("Failed to load auto exposure reduction shaders");
+    }
+    else
+    {
+        r->exposure_reduce_tex_shader_id = R_add_shader(r, ae_tex);
+        r->exposure_reduce_buf_shader_id = R_add_shader(r, ae_buf);
+    }
 
     shader_t *line3d_shader = R_new_shader_from_files("res/shaders/line3d.vert", "res/shaders/line3d.frag");
     if (!line3d_shader)
@@ -3882,11 +4163,22 @@ void R_shutdown(renderer_t *r)
 
     R_fp_delete_buffers(r);
 
+    if (r->per_frame_ubo)
+        glDeleteBuffers(1, &r->per_frame_ubo);
+    r->per_frame_ubo = 0;
+    r->per_frame_ubo_valid = 0;
+
     if (r->exposure_pbo[0] || r->exposure_pbo[1])
         glDeleteBuffers(2, r->exposure_pbo);
     r->exposure_pbo[0] = 0;
     r->exposure_pbo[1] = 0;
     r->exposure_pbo_valid = 0;
+
+    if (r->exposure_reduce_ssbo[0] || r->exposure_reduce_ssbo[1])
+        glDeleteBuffers(2, r->exposure_reduce_ssbo);
+    r->exposure_reduce_ssbo[0] = 0;
+    r->exposure_reduce_ssbo[1] = 0;
+    r->exposure_reduce_cap_vec4 = 0;
 
     free(g_inst_item_scratch);
     g_inst_item_scratch = NULL;
@@ -3963,6 +4255,9 @@ void R_begin_frame(renderer_t *r)
 {
     if (!r)
         return;
+
+    // External callers may mutate GL state between frames; treat it as unknown at frame start.
+    gl_state_reset(&r->gl);
 
     R_update_resize(r);
 

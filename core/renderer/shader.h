@@ -70,6 +70,7 @@ bool shader_load_compute_from_file(shader_t *shader, const char *compute_path);
 void shader_bind(const shader_t *shader);
 void shader_unbind(void);
 unsigned int shader_get_program(const shader_t *shader);
+bool shader_bind_uniform_block(const shader_t *shader, const char *block_name, unsigned int binding);
 
 void shader_dispatch_compute(const shader_t *shader,
                              unsigned int groups_x,
