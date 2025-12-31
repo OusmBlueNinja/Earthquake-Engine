@@ -7,6 +7,7 @@
 #include "utils/macros.h"
 #include "cvar.h"
 #include "core.h"
+#include "renderer/frame_graph.h"
 #include <string.h>
 #include <stdlib.h>
 #include <math.h>
@@ -3676,6 +3677,10 @@ int R_init(renderer_t *r, asset_manager_t *assets)
     memset(r, 0, sizeof(*r));
     r->assets = assets;
 
+    r->fg = fg_create();
+    if (!r->fg)
+        return 1;
+
     r->gbuf_shader_id = 0xFF;
     r->light_shader_id = 0xFF;
     r->default_shader_id = 0xFF;
@@ -3909,6 +3914,9 @@ void R_shutdown(renderer_t *r)
         }
         r->gpu_timings.valid = 0;
     }
+
+    fg_destroy(r->fg);
+    r->fg = NULL;
 }
 
 void R_resize(renderer_t *r, vec2i size)
@@ -4024,29 +4032,8 @@ void R_begin_frame(renderer_t *r)
     R_stats_begin_frame(r);
 }
 
-void R_end_frame(renderer_t *r)
+static void R_end_frame_legacy(renderer_t *r)
 {
-    if (!r)
-        return;
-
-    R_gpu_timers_resolve(r);
-
-    ibl_ensure(r);
-
-    {
-        double t0 = R_time_now_ms();
-        R_build_instancing(r);
-        r->cpu_timings.ms[R_CPU_BUILD_INSTANCING] = R_time_now_ms() - t0;
-        r->cpu_timings.valid = 1;
-    }
-
-    {
-        double t0 = R_time_now_ms();
-        R_build_shadow_instancing(r);
-        r->cpu_timings.ms[R_CPU_BUILD_SHADOW_INSTANCING] = R_time_now_ms() - t0;
-        r->cpu_timings.valid = 1;
-    }
-
     {
         double t0 = R_time_now_ms();
         R_gpu_timer_begin(r, R_GPU_SHADOW);
@@ -4140,6 +4127,221 @@ void R_end_frame(renderer_t *r)
         R_gpu_timer_end(r);
         r->cpu_timings.ms[R_CPU_COMPOSITE] = R_time_now_ms() - t0;
         r->cpu_timings.valid = 1;
+    }
+}
+
+static void R_fg_shadow_exec(void *user)
+{
+    renderer_t *r = (renderer_t *)user;
+    double t0 = R_time_now_ms();
+    R_gpu_timer_begin(r, R_GPU_SHADOW);
+    R_shadow_pass(r);
+    R_gpu_timer_end(r);
+    r->cpu_timings.ms[R_CPU_SHADOW] = R_time_now_ms() - t0;
+    r->cpu_timings.valid = 1;
+}
+
+static void R_fg_depth_prepass_exec(void *user)
+{
+    renderer_t *r = (renderer_t *)user;
+    double t0 = R_time_now_ms();
+    R_gpu_timer_begin(r, R_GPU_DEPTH_PREPASS);
+    R_depth_prepass(r);
+    R_gpu_timer_end(r);
+    r->cpu_timings.ms[R_CPU_DEPTH_PREPASS] = R_time_now_ms() - t0;
+    r->cpu_timings.valid = 1;
+}
+
+static void R_fg_resolve_depth_exec(void *user)
+{
+    renderer_t *r = (renderer_t *)user;
+    double t0 = R_time_now_ms();
+    R_gpu_timer_begin(r, R_GPU_RESOLVE_DEPTH);
+    R_msaa_resolve(r, GL_DEPTH_BUFFER_BIT);
+    R_gpu_timer_end(r);
+    r->cpu_timings.ms[R_CPU_RESOLVE_DEPTH] = R_time_now_ms() - t0;
+    r->cpu_timings.valid = 1;
+}
+
+static void R_fg_fp_cull_exec(void *user)
+{
+    renderer_t *r = (renderer_t *)user;
+    double t0 = R_time_now_ms();
+    R_gpu_timer_begin(r, R_GPU_FP_CULL);
+    R_fp_dispatch(r);
+    R_gpu_timer_end(r);
+    r->cpu_timings.ms[R_CPU_FP_CULL] = R_time_now_ms() - t0;
+    r->cpu_timings.valid = 1;
+}
+
+static void R_fg_sky_exec(void *user)
+{
+    renderer_t *r = (renderer_t *)user;
+    double t0 = R_time_now_ms();
+    R_gpu_timer_begin(r, R_GPU_SKY);
+    R_sky_pass(r);
+    R_gpu_timer_end(r);
+    r->cpu_timings.ms[R_CPU_SKY] = R_time_now_ms() - t0;
+    r->cpu_timings.valid = 1;
+}
+
+static void R_fg_forward_exec(void *user)
+{
+    renderer_t *r = (renderer_t *)user;
+    double t0 = R_time_now_ms();
+    R_gpu_timer_begin(r, R_GPU_FORWARD);
+    R_forward_one_pass(r);
+    R_gpu_timer_end(r);
+    r->cpu_timings.ms[R_CPU_FORWARD] = R_time_now_ms() - t0;
+    r->cpu_timings.valid = 1;
+}
+
+static void R_fg_lines_exec(void *user)
+{
+    renderer_t *r = (renderer_t *)user;
+    R_line3d_render(r);
+}
+
+static void R_fg_resolve_color_exec(void *user)
+{
+    renderer_t *r = (renderer_t *)user;
+    double t0 = R_time_now_ms();
+    R_gpu_timer_begin(r, R_GPU_RESOLVE_COLOR);
+    R_msaa_resolve(r, GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    R_gpu_timer_end(r);
+    r->cpu_timings.ms[R_CPU_RESOLVE_COLOR] = R_time_now_ms() - t0;
+    r->cpu_timings.valid = 1;
+}
+
+static void R_fg_auto_exposure_exec(void *user)
+{
+    renderer_t *r = (renderer_t *)user;
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    double t0 = R_time_now_ms();
+    R_gpu_timer_begin(r, R_GPU_AUTO_EXPOSURE);
+    R_auto_exposure_update(r);
+    R_gpu_timer_end(r);
+    r->cpu_timings.ms[R_CPU_AUTO_EXPOSURE] = R_time_now_ms() - t0;
+    r->cpu_timings.valid = 1;
+}
+
+static void R_fg_bloom_exec(void *user)
+{
+    renderer_t *r = (renderer_t *)user;
+    double t0 = R_time_now_ms();
+    R_gpu_timer_begin(r, R_GPU_BLOOM);
+    bloom_run(r, r->light_color_tex, r->black_tex);
+    R_gpu_timer_end(r);
+    r->cpu_timings.ms[R_CPU_BLOOM] = R_time_now_ms() - t0;
+    r->cpu_timings.valid = 1;
+}
+
+static void R_fg_composite_exec(void *user)
+{
+    renderer_t *r = (renderer_t *)user;
+    uint32_t bloom_tex = (r->cfg.bloom && r->bloom.mips) ? r->bloom.tex_up[0] : 0;
+    double t0 = R_time_now_ms();
+    R_gpu_timer_begin(r, R_GPU_COMPOSITE);
+    bloom_composite_to_final(r, r->light_color_tex, bloom_tex, r->gbuf_depth, r->black_tex);
+    R_gpu_timer_end(r);
+    r->cpu_timings.ms[R_CPU_COMPOSITE] = R_time_now_ms() - t0;
+    r->cpu_timings.valid = 1;
+}
+
+void R_end_frame(renderer_t *r)
+{
+    if (!r)
+        return;
+
+    R_gpu_timers_resolve(r);
+
+    ibl_ensure(r);
+
+    {
+        double t0 = R_time_now_ms();
+        R_build_instancing(r);
+        r->cpu_timings.ms[R_CPU_BUILD_INSTANCING] = R_time_now_ms() - t0;
+        r->cpu_timings.valid = 1;
+    }
+
+    {
+        double t0 = R_time_now_ms();
+        R_build_shadow_instancing(r);
+        r->cpu_timings.ms[R_CPU_BUILD_SHADOW_INSTANCING] = R_time_now_ms() - t0;
+        r->cpu_timings.valid = 1;
+    }
+
+    int used_frame_graph = 0;
+    if (r->fg)
+    {
+        fg_begin(r->fg);
+
+        fg_handle_t res_shadow = fg_import_texture2d_array(r->fg, "shadow_map", r->shadow.tex);
+        fg_handle_t res_depth_msaa = fg_create_virtual(r->fg, "depth_msaa");
+        fg_handle_t res_color_msaa = fg_create_virtual(r->fg, "color_msaa");
+        fg_handle_t res_depth_resolved = fg_import_texture2d(r->fg, "depth_resolved", r->gbuf_depth);
+        fg_handle_t res_color_resolved = fg_import_texture2d(r->fg, "color_resolved", r->light_color_tex);
+        fg_handle_t res_bloom = fg_create_virtual(r->fg, "bloom");
+        fg_handle_t res_final = fg_import_texture2d(r->fg, "final_color", r->final_color_tex);
+        fg_handle_t res_fp = fg_create_virtual(r->fg, "fp_tiles");
+
+        uint16_t p_shadow = fg_add_pass(r->fg, "shadow", R_fg_shadow_exec, r);
+        fg_pass_use(r->fg, p_shadow, res_shadow, FG_ACCESS_WRITE);
+
+        uint16_t p_depth = fg_add_pass(r->fg, "depth_prepass", R_fg_depth_prepass_exec, r);
+        fg_pass_use(r->fg, p_depth, res_depth_msaa, FG_ACCESS_WRITE);
+
+        uint16_t p_res_depth = fg_add_pass(r->fg, "resolve_depth", R_fg_resolve_depth_exec, r);
+        fg_pass_use(r->fg, p_res_depth, res_depth_msaa, FG_ACCESS_READ);
+        fg_pass_use(r->fg, p_res_depth, res_depth_resolved, FG_ACCESS_WRITE);
+
+        uint16_t p_fp = fg_add_pass(r->fg, "fp_cull", R_fg_fp_cull_exec, r);
+        fg_pass_use(r->fg, p_fp, res_depth_resolved, FG_ACCESS_READ);
+        fg_pass_use(r->fg, p_fp, res_fp, FG_ACCESS_WRITE);
+
+        uint16_t p_sky = fg_add_pass(r->fg, "sky", R_fg_sky_exec, r);
+        fg_pass_use(r->fg, p_sky, res_depth_resolved, FG_ACCESS_READ);
+        fg_pass_use(r->fg, p_sky, res_color_msaa, FG_ACCESS_WRITE);
+
+        uint16_t p_forward = fg_add_pass(r->fg, "forward", R_fg_forward_exec, r);
+        fg_pass_use(r->fg, p_forward, res_shadow, FG_ACCESS_READ);
+        fg_pass_use(r->fg, p_forward, res_depth_resolved, FG_ACCESS_READ);
+        fg_pass_use(r->fg, p_forward, res_fp, FG_ACCESS_READ);
+        fg_pass_use(r->fg, p_forward, res_color_msaa, FG_ACCESS_WRITE);
+
+        uint16_t p_lines = fg_add_pass(r->fg, "lines3d", R_fg_lines_exec, r);
+        fg_pass_use(r->fg, p_lines, res_depth_resolved, FG_ACCESS_READ);
+        fg_pass_use(r->fg, p_lines, res_color_msaa, FG_ACCESS_WRITE);
+
+        uint16_t p_res_color = fg_add_pass(r->fg, "resolve_color", R_fg_resolve_color_exec, r);
+        fg_pass_use(r->fg, p_res_color, res_color_msaa, FG_ACCESS_READ);
+        fg_pass_use(r->fg, p_res_color, res_depth_msaa, FG_ACCESS_READ);
+        fg_pass_use(r->fg, p_res_color, res_color_resolved, FG_ACCESS_WRITE);
+        fg_pass_use(r->fg, p_res_color, res_depth_resolved, FG_ACCESS_WRITE);
+
+        uint16_t p_exposure = fg_add_pass(r->fg, "auto_exposure", R_fg_auto_exposure_exec, r);
+        fg_pass_use(r->fg, p_exposure, res_color_resolved, FG_ACCESS_READ);
+
+        uint16_t p_bloom = fg_add_pass(r->fg, "bloom", R_fg_bloom_exec, r);
+        fg_pass_use(r->fg, p_bloom, res_color_resolved, FG_ACCESS_READ);
+        fg_pass_use(r->fg, p_bloom, res_bloom, FG_ACCESS_WRITE);
+
+        uint16_t p_comp = fg_add_pass(r->fg, "composite", R_fg_composite_exec, r);
+        fg_pass_use(r->fg, p_comp, res_color_resolved, FG_ACCESS_READ);
+        fg_pass_use(r->fg, p_comp, res_depth_resolved, FG_ACCESS_READ);
+        fg_pass_use(r->fg, p_comp, res_bloom, FG_ACCESS_READ);
+        fg_pass_use(r->fg, p_comp, res_final, FG_ACCESS_WRITE);
+
+        if (fg_compile(r->fg) && fg_execute(r->fg))
+        {
+            used_frame_graph = 1;
+        }
+    }
+
+    if (!used_frame_graph)
+    {
+        LOG_WARN("Frame graph failed; using legacy render order");
+        R_end_frame_legacy(r);
     }
 
     r->gpu_query_index = (r->gpu_query_index + 1u) & 15u;
