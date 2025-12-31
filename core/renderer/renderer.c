@@ -206,7 +206,7 @@ static line3d_vertex_t *R_line3d_vert_scratch(uint32_t need)
 typedef struct u32_set_t
 {
     uint32_t *keys;
-    uint32_t cap;  
+    uint32_t cap;
     uint32_t size;
 } u32_set_t;
 
@@ -4385,104 +4385,6 @@ void R_begin_frame(renderer_t *r)
     R_stats_begin_frame(r);
 }
 
-static void R_end_frame_legacy(renderer_t *r)
-{
-    {
-        double t0 = R_time_now_ms();
-        R_gpu_timer_begin(r, R_GPU_SHADOW);
-        R_shadow_pass(r);
-        R_gpu_timer_end(r);
-        r->cpu_timings.ms[R_CPU_SHADOW] = R_time_now_ms() - t0;
-        r->cpu_timings.valid = 1;
-    }
-
-    {
-        double t0 = R_time_now_ms();
-        R_gpu_timer_begin(r, R_GPU_DEPTH_PREPASS);
-        R_depth_prepass(r);
-        R_gpu_timer_end(r);
-        r->cpu_timings.ms[R_CPU_DEPTH_PREPASS] = R_time_now_ms() - t0;
-        r->cpu_timings.valid = 1;
-    }
-
-    {
-        double t0 = R_time_now_ms();
-        R_gpu_timer_begin(r, R_GPU_RESOLVE_DEPTH);
-        R_msaa_resolve(r, GL_DEPTH_BUFFER_BIT);
-        R_gpu_timer_end(r);
-        r->cpu_timings.ms[R_CPU_RESOLVE_DEPTH] = R_time_now_ms() - t0;
-        r->cpu_timings.valid = 1;
-    }
-
-    {
-        double t0 = R_time_now_ms();
-        R_gpu_timer_begin(r, R_GPU_FP_CULL);
-        R_fp_dispatch(r);
-        R_gpu_timer_end(r);
-        r->cpu_timings.ms[R_CPU_FP_CULL] = R_time_now_ms() - t0;
-        r->cpu_timings.valid = 1;
-    }
-
-    {
-        double t0 = R_time_now_ms();
-        R_gpu_timer_begin(r, R_GPU_SKY);
-        R_sky_pass(r);
-        R_gpu_timer_end(r);
-        r->cpu_timings.ms[R_CPU_SKY] = R_time_now_ms() - t0;
-        r->cpu_timings.valid = 1;
-    }
-
-    {
-        double t0 = R_time_now_ms();
-        R_gpu_timer_begin(r, R_GPU_FORWARD);
-        R_forward_one_pass(r);
-        R_gpu_timer_end(r);
-        r->cpu_timings.ms[R_CPU_FORWARD] = R_time_now_ms() - t0;
-        r->cpu_timings.valid = 1;
-    }
-
-    R_line3d_render(r);
-
-    {
-        double t0 = R_time_now_ms();
-        R_gpu_timer_begin(r, R_GPU_RESOLVE_COLOR);
-        R_msaa_resolve(r, GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-        R_gpu_timer_end(r);
-        r->cpu_timings.ms[R_CPU_RESOLVE_COLOR] = R_time_now_ms() - t0;
-        r->cpu_timings.valid = 1;
-    }
-
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-
-    {
-        double t0 = R_time_now_ms();
-        R_gpu_timer_begin(r, R_GPU_AUTO_EXPOSURE);
-        R_auto_exposure_update(r);
-        R_gpu_timer_end(r);
-        r->cpu_timings.ms[R_CPU_AUTO_EXPOSURE] = R_time_now_ms() - t0;
-        r->cpu_timings.valid = 1;
-    }
-
-    {
-        double t0 = R_time_now_ms();
-        R_gpu_timer_begin(r, R_GPU_BLOOM);
-        bloom_run(r, r->light_color_tex, r->black_tex);
-        R_gpu_timer_end(r);
-        r->cpu_timings.ms[R_CPU_BLOOM] = R_time_now_ms() - t0;
-        r->cpu_timings.valid = 1;
-    }
-
-    uint32_t bloom_tex = (r->cfg.bloom && r->bloom.mips) ? r->bloom.tex_up[0] : 0;
-    {
-        double t0 = R_time_now_ms();
-        R_gpu_timer_begin(r, R_GPU_COMPOSITE);
-        bloom_composite_to_final(r, r->light_color_tex, bloom_tex, r->gbuf_depth, r->black_tex);
-        R_gpu_timer_end(r);
-        r->cpu_timings.ms[R_CPU_COMPOSITE] = R_time_now_ms() - t0;
-        r->cpu_timings.valid = 1;
-    }
-}
-
 static void R_fg_shadow_exec(void *user)
 {
     renderer_t *r = (renderer_t *)user;
@@ -4694,7 +4596,6 @@ void R_end_frame(renderer_t *r)
     if (!used_frame_graph)
     {
         LOG_WARN("Frame graph failed; using legacy render order");
-        R_end_frame_legacy(r);
     }
 
     r->gpu_query_index = (r->gpu_query_index + 1u) & 15u;

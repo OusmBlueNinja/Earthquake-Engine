@@ -68,6 +68,9 @@ static cvar_entry_t g_cvars[SV_CVAR_COUNT] = {
     [CL_AM_STREAMING] = {.name = "cl_am_streaming", .type = CVAR_BOOL, .def.b = false, .flags = CVAR_FLAG_NONE},
     [CL_AM_VRAM_BUDGET_MB] = {.name = "cl_am_vram_budget_mb", .type = CVAR_INT, .def.i = 512, .flags = CVAR_FLAG_NONE},
     [CL_AM_STREAM_UNUSED_FRAMES] = {.name = "cl_am_stream_unused_frames", .type = CVAR_INT, .def.i = 240, .flags = CVAR_FLAG_NONE},
+    [CL_AM_STREAM_UNUSED_MS] = {.name = "cl_am_stream_unused_ms", .type = CVAR_INT, .def.i = 120000, .flags = CVAR_FLAG_NONE},
+    [CL_AM_PUMP_PER_FRAME] = {.name = "cl_am_pump_per_frame", .type = CVAR_INT, .def.i = 2, .flags = CVAR_FLAG_NONE},
+    [CL_AM_UPLOAD_BUDGET_MB] = {.name = "cl_am_upload_budget_mb", .type = CVAR_INT, .def.i = 32, .flags = CVAR_FLAG_NONE},
 };
 
 void cvar_set_cheats_permission(bool allowed)

@@ -98,6 +98,7 @@ void init_application(Application *app)
     desc.worker_count = cvar_get_int_name("cl_cpu_threads");
     desc.max_inflight_jobs = g_application.specification->am_max_inflight_jobs;
     desc.handle_type = iHANDLE_TYPE_ASSET;
+    
 
     {
         int vram_budget_mb = cvar_get_int_name("cl_am_vram_budget_mb");
@@ -112,9 +113,21 @@ void init_application(Application *app)
             unused_frames = 0;
         desc.stream_unused_frames = (uint32_t)unused_frames;
 
+        int unused_ms = cvar_get_int_name("cl_am_stream_unused_ms");
+        if (unused_ms < 0)
+            unused_ms = 0;
+        desc.stream_unused_ms = (uint32_t)unused_ms;
+
     }
 
     asset_manager_init(&g_application.asset_manager, &desc);
+
+    {
+        int upload_mb = cvar_get_int_name("cl_am_upload_budget_mb");
+        if (upload_mb < 0)
+            upload_mb = 0;
+        asset_manager_set_upload_budget(&g_application.asset_manager, (uint64_t)upload_mb * 1024ull * 1024ull);
+    }
 
     {
         // Init Layers
@@ -226,9 +239,17 @@ void loop_application(void)
                                        cvar_get_bool_name("cl_am_streaming") ? 1u : 0u,
                                        budget_bytes,
                                        (uint32_t)unused_frames);
+
+            int upload_mb = cvar_get_int_name("cl_am_upload_budget_mb");
+            if (upload_mb < 0)
+                upload_mb = 0;
+            asset_manager_set_upload_budget(&g_application.asset_manager, (uint64_t)upload_mb * 1024ull * 1024ull);
         }
 
-        asset_manager_pump(&g_application.asset_manager, /* How many assets to load each frame*/ 8);
+        uint32_t pump = (uint32_t)cvar_get_int_name("cl_am_pump_per_frame");
+        if (pump == 0)
+            pump = 1;
+        asset_manager_pump(&g_application.asset_manager, pump);
 
         // R_resize(&g_application.renderer, wm_get_framebuffer_size(&g_application.window_manager));
 

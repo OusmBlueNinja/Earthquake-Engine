@@ -615,8 +615,8 @@ static void demo_layer_draw(layer_t *layer)
         if (!e)
             continue;
         R_push_model(r, e->model, e->model_matrix);
-        asset_model_t model = asset_manager_get_any(&layer->app->asset_manager, e->model)->as.model;
-        debug_draw_asset_model_aabbs_overlay(r, &model, e->model_matrix);
+        //asset_model_t model = asset_manager_get_any(&layer->app->asset_manager, e->model)->as.model;
+        //debug_draw_asset_model_aabbs_overlay(r, &model, e->model_matrix);
     }
 }
 
