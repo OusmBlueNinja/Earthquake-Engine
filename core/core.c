@@ -99,6 +99,21 @@ void init_application(Application *app)
     desc.max_inflight_jobs = g_application.specification->am_max_inflight_jobs;
     desc.handle_type = iHANDLE_TYPE_ASSET;
 
+    {
+        int vram_budget_mb = cvar_get_int_name("cl_am_vram_budget_mb");
+        if (vram_budget_mb < 0)
+            vram_budget_mb = 0;
+        desc.vram_budget_bytes = (uint64_t)vram_budget_mb * 1024ull * 1024ull;
+
+        desc.streaming_enabled = cvar_get_bool_name("cl_am_streaming") ? 1u : 0u;
+
+        int unused_frames = cvar_get_int_name("cl_am_stream_unused_frames");
+        if (unused_frames < 0)
+            unused_frames = 0;
+        desc.stream_unused_frames = (uint32_t)unused_frames;
+
+    }
+
     asset_manager_init(&g_application.asset_manager, &desc);
 
     {
@@ -197,6 +212,22 @@ void loop_application(void)
                 layer->update(layer, (float)dt);
         }
 
+        {
+            int vram_budget_mb = cvar_get_int_name("cl_am_vram_budget_mb");
+            if (vram_budget_mb < 0)
+                vram_budget_mb = 0;
+            uint64_t budget_bytes = (uint64_t)vram_budget_mb * 1024ull * 1024ull;
+
+            int unused_frames = cvar_get_int_name("cl_am_stream_unused_frames");
+            if (unused_frames < 0)
+                unused_frames = 0;
+
+            asset_manager_set_streaming(&g_application.asset_manager,
+                                       cvar_get_bool_name("cl_am_streaming") ? 1u : 0u,
+                                       budget_bytes,
+                                       (uint32_t)unused_frames);
+        }
+
         asset_manager_pump(&g_application.asset_manager, /* How many assets to load each frame*/ 8);
 
         // R_resize(&g_application.renderer, wm_get_framebuffer_size(&g_application.window_manager));
@@ -226,6 +257,8 @@ void loop_application(void)
         wm_begin_frame(&g_application.window_manager);
         // wm_bind_framebuffer(&g_application.window_manager, R_get_final_fbo(&g_application.renderer), g_application.renderer.fb_size);
         wm_end_frame(&g_application.window_manager);
+
+        asset_manager_end_frame(&g_application.asset_manager);
 
         if (!g_application.running)
         {

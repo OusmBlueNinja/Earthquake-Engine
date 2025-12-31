@@ -17,6 +17,9 @@ typedef struct bloom_t
     uint32_t fbo_down[16];
     uint32_t fbo_up[16];
 
+    int mip_w[16];
+    int mip_h[16];
+
     uint32_t prefilter_shader_id;
     uint32_t downsample_shader_id;
     uint32_t blur_h_shader_id;

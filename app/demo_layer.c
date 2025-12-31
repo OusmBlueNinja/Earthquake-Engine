@@ -373,9 +373,6 @@ static void demo_layer_init(layer_t *layer)
     demo_layer_add_model(s, am, "C:/Users/spenc/Desktop/CoffeeCart_01_4k.gltf/CoffeeCart_01_4k.gltf",
                          demo_transform_trs((vec3){-1.5f, 0.0f, 0.0f}, 0.0f, (vec3){1.0f, 1.0f, 1.0f}));
 
-    demo_layer_add_model(s, am, "C:/Users/spenc/Desktop/CoffeeCart_01_4k.gltf/CoffeeCart_01_4k.gltf",
-                         demo_transform_trs((vec3){-1.5f, 0.0f, 0.0f}, 0.0f, (vec3){1.0f, 1.0f, 1.0f}));
-
     demo_layer_add_model(s, am, "C:/Users/spenc/Desktop/Camera_01_4k.gltf/Camera_01_4k.gltf",
                          demo_transform_trs((vec3){0.0f, 0.0f, 0.0f}, 0.0f, (vec3){4.0f, 4.0f, 4.0f}));
 
@@ -396,6 +393,9 @@ static void demo_layer_init(layer_t *layer)
 
     demo_layer_add_model(s, am, "C:/Users/spenc/Desktop/utility_box_02_4k.gltf/utility_box_02_4k.gltf",
                          demo_transform_trs((vec3){-3.0f, 0.0f, 0.0f}, 0.0f, (vec3){1.0f, 1.0f, 1.0f}));
+
+    demo_layer_add_model(s, am, "C:/Users/spenc/Desktop/ornate_mirror_01_4k.gltf/ornate_mirror_01_4k.gltf",
+                         demo_transform_trs((vec3){-0.0f, 0.0f, -5.0f}, 0.0f, (vec3){1.0f, 1.0f, 1.0f}));
 
     s->focus_index = -1;
 

@@ -59,8 +59,15 @@ static cvar_entry_t g_cvars[SV_CVAR_COUNT] = {
     [CL_CPU_THREADS] = {.name = "cl_cpu_threads", .type = CVAR_INT, .def.i = 1, .flags = CVAR_FLAG_READONLY | CVAR_FLAG_NO_LOAD},
     [CL_LOG_LEVEL] = {.name = "cl_log_level", .type = CVAR_INT, .def.i = LOG_LEVEL_INFO, .flags = CVAR_FLAG_NONE},
     [CL_R_SHADOWS] = {.name = "cl_r_shadows", .type = CVAR_BOOL, .def.b = true, .flags = CVAR_FLAG_NONE},
+    [CL_AUTO_EXPOSURE] = {.name = "cl_auto_exposure", .type = CVAR_BOOL, .def.b = false, .flags = CVAR_FLAG_NONE},
+    [CL_AUTO_EXPOSURE_HZ] = {.name = "cl_auto_exposure_hz", .type = CVAR_INT, .def.i = 10, .flags = CVAR_FLAG_NONE},
+    [CL_R_RESTORE_GL_STATE] = {.name = "cl_r_restore_gl_state", .type = CVAR_BOOL, .def.b = false, .flags = CVAR_FLAG_NONE},
     [CL_R_FORCE_LOD_LEVEL] = {.name = "cl_r_force_lod_level", .type = CVAR_INT, .def.i = -1, .flags = CVAR_FLAG_NO_LOAD | CVAR_FLAG_NO_SAVE},
     [CL_R_WIREFRAME] = {.name = "cl_r_wireframe", .type = CVAR_BOOL, .def.b = false, .flags = CVAR_FLAG_NO_LOAD | CVAR_FLAG_NO_SAVE},
+
+    [CL_AM_STREAMING] = {.name = "cl_am_streaming", .type = CVAR_BOOL, .def.b = false, .flags = CVAR_FLAG_NONE},
+    [CL_AM_VRAM_BUDGET_MB] = {.name = "cl_am_vram_budget_mb", .type = CVAR_INT, .def.i = 512, .flags = CVAR_FLAG_NONE},
+    [CL_AM_STREAM_UNUSED_FRAMES] = {.name = "cl_am_stream_unused_frames", .type = CVAR_INT, .def.i = 240, .flags = CVAR_FLAG_NONE},
 };
 
 void cvar_set_cheats_permission(bool allowed)

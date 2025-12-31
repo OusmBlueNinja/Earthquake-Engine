@@ -58,20 +58,7 @@ void main()
     int maxTY = max(u_TileCount.y - 1, 0);
 
     if (Ld.meta.x == 1)
-    {
-        for (int ty = 0; ty <= maxTY; ++ty)
-        for (int tx = 0; tx <= maxTX; ++tx)
-        {
-            int tile = tx + ty * u_TileCount.x;
-            if (tile < 0)
-                continue;
-
-            uint idx = atomicAdd(g_TileIndex[uint(tile)].y, 1u);
-            if (idx < uint(max(u_TileMax, 0)))
-                g_TileList[g_TileIndex[uint(tile)].x + idx] = li;
-        }
         return;
-    }
 
     vec3 wp = Ld.position.xyz;
     float range = Ld.params.z;

@@ -68,6 +68,14 @@ uniform int u_TileCountX;
 uniform int u_TileCountY;
 uniform int u_TileMax;
 
+uniform int u_UseLightTiles;
+
+uniform int u_DirLightCount;
+uniform int u_DirLightIndices[4];
+
+uniform int u_NonDirLightCount;
+uniform int u_NonDirLightIndices[16];
+
 uniform int u_DebugMode;
 
 uniform int u_LodXFadeEnabled;
@@ -147,16 +155,15 @@ float shadow_sample_cascade(int ci, vec3 worldPos, float bias)
     if (u_ShadowPCF == 0)
         return texture(u_ShadowMap, vec4(uvw.xy, float(ci), ref));
 
-    float sum = 0.0;
     vec2 texel = vec2(1.0) / vec2(float(max(u_ShadowMapSize, 1)));
 
+    float sum = 0.0;
     for (int y = -1; y <= 1; ++y)
     for (int x = -1; x <= 1; ++x)
     {
         vec2 o = vec2(float(x), float(y)) * texel;
         sum += texture(u_ShadowMap, vec4(uvw.xy + o, float(ci), ref));
     }
-
     return sum / 9.0;
 }
 
@@ -432,6 +439,31 @@ vec3 debug_cascade_color(int ci, int cascadeCount)
     return vec3(1.0, 1.0, 0.20);
 }
 
+vec3 ibl_ambient(vec3 N, vec3 V, float roughness, vec3 albedo, float metallic, float ao)
+{
+    float NoV = saturate(dot(N, V));
+    vec3 F0 = mix(vec3(0.04), albedo, metallic);
+
+    vec3 kS = F_SchlickRoughness(F0, NoV, roughness);
+    vec3 kD = (vec3(1.0) - kS) * (1.0 - metallic);
+
+    vec3 Nenv = N;
+    Nenv.y = -Nenv.y;
+    vec3 irradiance = texture(u_IrradianceMap, Nenv).rgb;
+    vec3 diffuseIBL = irradiance * albedo;
+
+    vec3 R = reflect(-V, N);
+    R.y = -R.y;
+    float maxLod = float(max(textureQueryLevels(u_PrefilterMap) - 1, 0));
+    vec3 prefiltered = textureLod(u_PrefilterMap, R, roughness * maxLod).rgb;
+
+    vec2 brdf = texture(u_BRDFLUT, vec2(NoV, roughness)).rg;
+    vec3 specIBL = prefiltered * (kS * brdf.x + brdf.y);
+
+    return (kD * diffuseIBL * ao + specIBL) * u_IBLIntensity;
+}
+
+
 void main()
 {
     vec3 Nw = normalize(v.worldN);
@@ -569,14 +601,19 @@ void main()
         return;
     }
 
-    ivec2 tileXY = ivec2(int(gl_FragCoord.x) / max(u_TileSize, 1), int(gl_FragCoord.y) / max(u_TileSize, 1));
-    tileXY.x = clamp(tileXY.x, 0, max(u_TileCountX - 1, 0));
-    tileXY.y = clamp(tileXY.y, 0, max(u_TileCountY - 1, 0));
-    int tileIndex = tileXY.x + tileXY.y * u_TileCountX;
+    uint start = 0u;
+    uint count = 0u;
+    if (u_UseLightTiles != 0)
+    {
+        ivec2 tileXY = ivec2(int(gl_FragCoord.x) / max(u_TileSize, 1), int(gl_FragCoord.y) / max(u_TileSize, 1));
+        tileXY.x = clamp(tileXY.x, 0, max(u_TileCountX - 1, 0));
+        tileXY.y = clamp(tileXY.y, 0, max(u_TileCountY - 1, 0));
+        int tileIndex = tileXY.x + tileXY.y * u_TileCountX;
 
-    uvec2 sc = g_TileIndex[uint(tileIndex)];
-    uint start = sc.x;
-    uint count = sc.y;
+        uvec2 sc = g_TileIndex[uint(tileIndex)];
+        start = sc.x;
+        count = sc.y;
+    }
 
     vec3 overlay2 = vec3(0.0);
     float overlay2_w = 0.0;
@@ -671,6 +708,124 @@ void main()
 
     vec3 Lo = vec3(0.0);
 
+    // Directional lights affect all pixels; handle separately (not in tile list).
+    for (int di = 0; di < clamp(u_DirLightCount, 0, 4); ++di)
+    {
+        int lii = u_DirLightIndices[di];
+        if (lii < 0 || lii >= int(g_Lights.length()))
+            continue;
+
+        GPU_Light Ld = g_Lights[uint(lii)];
+        if (Ld.meta.x != 1)
+            continue;
+
+        vec3 L = normalize(-Ld.direction.xyz);
+        float atten = 1.0;
+
+        float NoL_raw = dot(N, L);
+        float NoL = (u_MatDoubleSided != 0) ? saturate(abs(NoL_raw)) : saturate(NoL_raw);
+        if (NoL <= 1e-5)
+            continue;
+
+        vec3 H = normalize(Vw + L);
+        float NoH = saturate(dot(N, H));
+        float VoH = saturate(dot(Vw, H));
+
+        float a = roughness * roughness;
+
+        float D = D_GGX(NoH, a);
+        float G = G_Smith(NoV, NoL, a);
+        vec3 F = F_Schlick(F0, VoH);
+
+        vec3 kS = F;
+        vec3 kD = (vec3(1.0) - kS) * (1.0 - metallic);
+
+        vec3 radiance = Ld.color.rgb * Ld.params.x * atten;
+
+        if (lii == u_ShadowLightIndex)
+        {
+            float sh = shadow_factor(v.worldPos, N, L);
+            radiance *= sh;
+        }
+
+        vec3 spec = (D * G * F) / max(4.0 * NoV * NoL, 1e-6);
+        vec3 diff = kD * (albedo / 3.14159265);
+
+        Lo += (diff + spec) * radiance * NoL;
+    }
+
+    if (u_UseLightTiles == 0)
+    {
+        for (int ni = 0; ni < clamp(u_NonDirLightCount, 0, 16); ++ni)
+        {
+            int lii = u_NonDirLightIndices[ni];
+            if (lii < 0 || lii >= int(g_Lights.length()))
+                continue;
+
+            GPU_Light Ld = g_Lights[uint(lii)];
+            if (Ld.meta.x == 1)
+                continue;
+
+            vec3 toL = Ld.position.xyz - v.worldPos;
+            float d2 = dot(toL, toL);
+            float d = sqrt(max(d2, 1e-8));
+            vec3 L = toL / d;
+
+            float range = Ld.params.z;
+            float atten = 1.0;
+            if (range > 1e-4)
+            {
+                float x = saturate(1.0 - d / range);
+                atten = x * x;
+            }
+            else
+            {
+                atten = 1.0 / max(d2, 1e-4);
+            }
+
+            float NoL_raw = dot(N, L);
+            float NoL = (u_MatDoubleSided != 0) ? saturate(abs(NoL_raw)) : saturate(NoL_raw);
+            if (NoL <= 1e-5)
+                continue;
+
+            vec3 H = normalize(Vw + L);
+            float NoH = saturate(dot(N, H));
+            float VoH = saturate(dot(Vw, H));
+
+            float a = roughness * roughness;
+
+            float D = D_GGX(NoH, a);
+            float G = G_Smith(NoV, NoL, a);
+            vec3 F = F_Schlick(F0, VoH);
+
+            vec3 kS = F;
+            vec3 kD = (vec3(1.0) - kS) * (1.0 - metallic);
+
+            vec3 radiance = Ld.color.rgb * Ld.params.x * atten;
+
+            vec3 spec = (D * G * F) / max(4.0 * NoV * NoL, 1e-6);
+            vec3 diff = kD * (albedo / 3.14159265);
+
+            Lo += (diff + spec) * radiance * NoL;
+        }
+
+        vec3 color = Lo * ao;
+
+        if (u_HasIBL != 0)
+        {
+            vec3 ambient = ibl_ambient(N, Vw, roughness, albedo, metallic, ao);
+            color += ambient;
+        }
+
+        color += emissive;
+
+        if (overlay2_w > 0.0)
+            color = mix(color, overlay2, overlay2_w);
+
+        o_Color = vec4(color, 1.0);
+        return;
+    }
+
     for (uint ii = 0u; ii < count; ++ii)
     {
         uint li = g_TileList[start + ii];
@@ -681,8 +836,8 @@ void main()
 
         if (Ld.meta.x == 1)
         {
-            L = normalize(-Ld.direction.xyz);
-            atten = 1.0;
+            // Directional lights are handled in the separate loop above.
+            continue;
         }
         else
         {
@@ -742,10 +897,13 @@ void main()
         vec3 kS = F_SchlickRoughness(F0, NoV, roughness);
         vec3 kD = (vec3(1.0) - kS) * (1.0 - metallic);
 
-        vec3 irradiance = texture(u_IrradianceMap, N).rgb;
+        vec3 Nenv = N;
+        Nenv.y = -Nenv.y;
+        vec3 irradiance = texture(u_IrradianceMap, Nenv).rgb;
         vec3 diffuseIBL = irradiance * albedo;
 
         vec3 R = reflect(-Vw, N);
+        R.y = -R.y;
         float maxLod = 5.0;
         vec3 prefiltered = textureLod(u_PrefilterMap, R, roughness * maxLod).rgb;
         vec2 brdf = texture(u_BRDFLUT, vec2(NoV, roughness)).rg;

@@ -361,12 +361,29 @@ static void asset_cleanup_by_module(asset_manager_t *am, asset_any_t *a, uint16_
     asset_zero(a);
 }
 
-static void slot_cleanup(asset_manager_t *am, asset_slot_t *s)
+static void slot_cleanup_asset_only(asset_manager_t *am, asset_slot_t *s)
 {
     if (!s)
         return;
     asset_cleanup_by_module(am, &s->asset, s->module_index);
     s->module_index = 0xFFFFu;
+}
+
+static void slot_destroy(asset_manager_t *am, asset_slot_t *s)
+{
+    if (!s)
+        return;
+
+    slot_cleanup_asset_only(am, s);
+
+    if (!s->path_is_ptr && s->path)
+        free(s->path);
+    s->path = NULL;
+    s->path_is_ptr = 0;
+    s->inflight = 0;
+    s->requested_type = 0;
+    s->last_touched_frame = 0;
+
     s->persistent = ihandle_invalid();
 }
 
@@ -874,6 +891,11 @@ static asset_slot_t *alloc_slot_locked(asset_manager_t *am, asset_type_t type, i
     asset_zero(&s.asset);
     s.asset.type = type;
     s.asset.state = ASSET_STATE_LOADING;
+    s.path_is_ptr = 0;
+    s.inflight = 0;
+    s.requested_type = (uint16_t)type;
+    s.last_touched_frame = 0;
+    s.path = NULL;
 
     vector_impl_push_back(&am->slots, &s);
 
@@ -893,6 +915,9 @@ bool asset_manager_init(asset_manager_t *am, const asset_manager_desc_t *desc)
     uint32_t wc = 4;
     uint32_t cap = 1024;
     ihandle_type_t ht = 1;
+    uint64_t vram_budget_bytes = 0;
+    uint32_t stream_unused_frames = 120;
+    uint32_t streaming_enabled = 0;
 
     if (desc)
     {
@@ -902,9 +927,24 @@ bool asset_manager_init(asset_manager_t *am, const asset_manager_desc_t *desc)
             cap = desc->max_inflight_jobs;
         if (desc->handle_type)
             ht = desc->handle_type;
+        if (desc->vram_budget_bytes)
+            vram_budget_bytes = desc->vram_budget_bytes;
+        if (desc->stream_unused_frames)
+            stream_unused_frames = desc->stream_unused_frames;
+        if (desc->streaming_enabled)
+            streaming_enabled = desc->streaming_enabled;
     }
 
     am->handle_type = ht;
+    am->frame_index = 0;
+    am->vram_budget_bytes = vram_budget_bytes;
+    am->stream_unused_frames = stream_unused_frames;
+    am->streaming_enabled = streaming_enabled ? 1u : 0u;
+
+    memset(&am->stats, 0, sizeof(am->stats));
+    am->stats.frame_index = 0;
+    am->stats.vram_budget_bytes = am->vram_budget_bytes;
+    am->stats.streaming_enabled = am->streaming_enabled;
 
     am->slots = vector_impl_create_vector(sizeof(asset_slot_t));
     am->modules = vector_impl_create_vector(sizeof(asset_module_desc_t));
@@ -964,7 +1004,7 @@ void asset_manager_shutdown(asset_manager_t *am)
     for (uint32_t i = 0; i < am->slots.size; ++i)
     {
         asset_slot_t *s = (asset_slot_t *)vector_impl_at(&am->slots, i);
-        slot_cleanup(am, s);
+        slot_destroy(am, s);
     }
     mutex_unlock_impl(&am->state_m);
 
@@ -1002,7 +1042,21 @@ ihandle_t asset_manager_request(asset_manager_t *am, asset_type_t type, const ch
     }
 
     ihandle_t h;
-    alloc_slot_locked(am, type, &h);
+    asset_slot_t *slot = alloc_slot_locked(am, type, &h);
+    if (slot)
+    {
+        slot->path_is_ptr = 0;
+        slot->inflight = 1;
+        slot->requested_type = (uint16_t)type;
+        slot->last_touched_frame = am->frame_index;
+
+        size_t pn = strlen(path);
+        slot->path = (char *)malloc(pn + 1);
+        if (slot->path)
+        {
+            memcpy(slot->path, path, pn + 1);
+        }
+    }
     mutex_unlock_impl(&am->state_m);
 
     asset_job_t j;
@@ -1037,6 +1091,7 @@ ihandle_t asset_manager_request(asset_manager_t *am, asset_type_t type, const ch
         {
             s->asset.state = ASSET_STATE_FAILED;
             s->module_index = 0xFFFFu;
+            s->inflight = 0;
         }
         mutex_unlock_impl(&am->state_m);
 
@@ -1060,7 +1115,15 @@ ihandle_t asset_manager_request_ptr(asset_manager_t *am, asset_type_t type, void
     }
 
     ihandle_t h;
-    alloc_slot_locked(am, type, &h);
+    asset_slot_t *slot = alloc_slot_locked(am, type, &h);
+    if (slot)
+    {
+        slot->path = (char *)ptr;
+        slot->path_is_ptr = 1;
+        slot->inflight = 1;
+        slot->requested_type = (uint16_t)type;
+        slot->last_touched_frame = am->frame_index;
+    }
     mutex_unlock_impl(&am->state_m);
 
     asset_job_t j;
@@ -1078,6 +1141,7 @@ ihandle_t asset_manager_request_ptr(asset_manager_t *am, asset_type_t type, void
         {
             s->asset.state = ASSET_STATE_FAILED;
             s->module_index = 0xFFFFu;
+            s->inflight = 0;
         }
         mutex_unlock_impl(&am->state_m);
 
@@ -1134,24 +1198,226 @@ ihandle_t asset_manager_submit_raw(asset_manager_t *am, asset_type_t type, const
         asset_cleanup_by_module(am, &a, (uint16_t)midx32);
 
         mutex_lock_impl(&am->state_m);
-        slot_cleanup(am, slot);
+        slot_cleanup_asset_only(am, slot);
         slot->asset.state = ASSET_STATE_FAILED;
         slot->module_index = 0xFFFFu;
+        slot->inflight = 0;
         mutex_unlock_impl(&am->state_m);
 
         return ihandle_invalid();
     }
 
     mutex_lock_impl(&am->state_m);
-    slot_cleanup(am, slot);
+    slot_cleanup_asset_only(am, slot);
     a.state = ASSET_STATE_READY;
     slot->asset = a;
     slot->module_index = (uint16_t)midx32;
     slot->persistent = make_persistent_handle(am, type);
+    slot->inflight = 0;
     mutex_unlock_impl(&am->state_m);
 
     return h;
 }
+
+void asset_manager_set_streaming(asset_manager_t *am, uint32_t enabled, uint64_t vram_budget_bytes, uint32_t unused_frames)
+{
+    if (!am)
+        return;
+    mutex_lock_impl(&am->state_m);
+    am->streaming_enabled = enabled ? 1u : 0u;
+    am->vram_budget_bytes = vram_budget_bytes;
+    am->stream_unused_frames = unused_frames;
+    mutex_unlock_impl(&am->state_m);
+}
+
+static uint64_t asset_vram_bytes_if_resident(const asset_any_t *a)
+{
+    if (!a || a->state != ASSET_STATE_READY)
+        return 0;
+    if (a->type != ASSET_IMAGE)
+        return 0;
+    return a->as.image.vram_bytes;
+}
+
+typedef struct am_evict_cand_t
+{
+    uint32_t slot_index;
+    uint64_t last_used;
+    uint64_t bytes;
+} am_evict_cand_t;
+
+static int am_evict_cand_cmp(const void *a, const void *b)
+{
+    const am_evict_cand_t *x = (const am_evict_cand_t *)a;
+    const am_evict_cand_t *y = (const am_evict_cand_t *)b;
+    if (x->last_used < y->last_used)
+        return -1;
+    if (x->last_used > y->last_used)
+        return 1;
+    return 0;
+}
+
+static void asset_manager_try_evict_textures_locked(asset_manager_t *am)
+{
+    if (!am || !am->streaming_enabled)
+        return;
+
+    const uint64_t budget = am->vram_budget_bytes;
+    if (budget == 0)
+        return;
+
+    if (am->stats.vram_resident_bytes <= budget)
+        return;
+
+    const uint64_t min_age = (uint64_t)am->stream_unused_frames;
+
+    uint32_t cap = (uint32_t)am->slots.size;
+    am_evict_cand_t *cands = (am_evict_cand_t *)malloc((size_t)cap * sizeof(am_evict_cand_t));
+    if (!cands)
+        return;
+
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < cap; ++i)
+    {
+        asset_slot_t *s = (asset_slot_t *)vector_impl_at(&am->slots, i);
+        if (!s)
+            continue;
+        if (s->asset.type != ASSET_IMAGE || s->asset.state != ASSET_STATE_READY)
+            continue;
+        if (s->path_is_ptr || !s->path || !s->path[0])
+            continue;
+
+        uint64_t age = (am->frame_index > s->last_touched_frame) ? (am->frame_index - s->last_touched_frame) : 0;
+        if (age < min_age)
+            continue;
+
+        uint64_t bytes = s->asset.as.image.vram_bytes;
+        if (!bytes)
+            continue;
+
+        cands[n++] = (am_evict_cand_t){i, s->last_touched_frame, bytes};
+    }
+
+    if (n == 0)
+    {
+        free(cands);
+        return;
+    }
+
+    qsort(cands, (size_t)n, sizeof(am_evict_cand_t), am_evict_cand_cmp);
+
+    for (uint32_t k = 0; k < n && am->stats.vram_resident_bytes > budget; ++k)
+    {
+        asset_slot_t *s = (asset_slot_t *)vector_impl_at(&am->slots, cands[k].slot_index);
+        if (!s)
+            continue;
+        if (s->asset.type != ASSET_IMAGE || s->asset.state != ASSET_STATE_READY)
+            continue;
+
+        uint64_t bytes = s->asset.as.image.vram_bytes;
+        asset_cleanup_by_module(am, &s->asset, s->module_index);
+        s->asset.type = (asset_type_t)s->requested_type;
+        s->asset.state = ASSET_STATE_EMPTY;
+        memset(&s->asset.as, 0, sizeof(s->asset.as));
+        s->module_index = 0xFFFFu;
+        s->inflight = 0;
+
+        if (am->stats.vram_resident_bytes >= bytes)
+            am->stats.vram_resident_bytes -= bytes;
+        else
+            am->stats.vram_resident_bytes = 0;
+
+        if (am->stats.textures_resident)
+            am->stats.textures_resident--;
+
+        am->stats.evicted_bytes_last_pump += bytes;
+        am->stats.textures_evicted_total++;
+    }
+
+    free(cands);
+}
+
+void asset_manager_touch(asset_manager_t *am, ihandle_t h)
+{
+    if (!am || !ihandle_is_valid(h))
+        return;
+
+    mutex_lock_impl(&am->state_m);
+    asset_slot_t *slot = NULL;
+    if (!slot_valid_locked(am, h, &slot) || !slot)
+    {
+        mutex_unlock_impl(&am->state_m);
+        return;
+    }
+
+    slot->last_touched_frame = am->frame_index;
+
+    const uint32_t can_stream = (am->streaming_enabled != 0) && (slot->path_is_ptr == 0) && (slot->path && slot->path[0]);
+    const uint32_t should_reload = (slot->asset.state != ASSET_STATE_READY) && (slot->inflight == 0);
+
+    if (!can_stream || !should_reload)
+    {
+        mutex_unlock_impl(&am->state_m);
+        return;
+    }
+
+    const asset_type_t type = (asset_type_t)slot->requested_type;
+    const char *path = slot->path;
+
+    asset_job_t j;
+    memset(&j, 0, sizeof(j));
+    j.handle = h;
+    j.type = type;
+    j.path_is_ptr = 0;
+
+    size_t n = strlen(path);
+    j.path = (char *)malloc(n + 1);
+    if (!j.path)
+    {
+        slot->asset.state = ASSET_STATE_FAILED;
+        mutex_unlock_impl(&am->state_m);
+        return;
+    }
+    memcpy(j.path, path, n + 1);
+
+    slot->inflight = 1;
+    slot->asset.type = type;
+    slot->asset.state = ASSET_STATE_LOADING;
+    mutex_unlock_impl(&am->state_m);
+
+    if (!jobq_push(&am->jobs, &j))
+    {
+        free(j.path);
+        mutex_lock_impl(&am->state_m);
+        if (slot_valid_locked(am, h, &slot) && slot)
+        {
+            slot->inflight = 0;
+            slot->asset.state = ASSET_STATE_FAILED;
+        }
+        mutex_unlock_impl(&am->state_m);
+    }
+    else
+    {
+        mutex_lock_impl(&am->state_m);
+        am->stats.textures_reloaded_total++;
+        mutex_unlock_impl(&am->state_m);
+    }
+}
+
+bool asset_manager_get_stats(const asset_manager_t *am, asset_manager_stats_t *out)
+{
+    if (!am || !out)
+        return false;
+    asset_manager_t *mut = (asset_manager_t *)am;
+    mutex_lock_impl(&mut->state_m);
+    *out = mut->stats;
+    out->frame_index = mut->frame_index;
+    out->vram_budget_bytes = mut->vram_budget_bytes;
+    out->streaming_enabled = mut->streaming_enabled;
+    mutex_unlock_impl(&mut->state_m);
+    return true;
+}
+
 void asset_manager_pump(asset_manager_t *am, uint32_t max_per_frame)
 {
     if (!am)
@@ -1159,6 +1425,25 @@ void asset_manager_pump(asset_manager_t *am, uint32_t max_per_frame)
 
     if (max_per_frame == 0)
         return;
+
+    mutex_lock_impl(&am->state_m);
+    am->frame_index++;
+    am->stats.frame_index = am->frame_index;
+    am->stats.upload_bytes_last_pump = 0;
+    am->stats.evicted_bytes_last_pump = 0;
+    am->stats.vram_budget_bytes = am->vram_budget_bytes;
+    am->stats.streaming_enabled = am->streaming_enabled;
+    mutex_unlock_impl(&am->state_m);
+
+    {
+        mutex_lock_impl(&am->jobs.m);
+        am->stats.jobs_pending = am->jobs.count;
+        mutex_unlock_impl(&am->jobs.m);
+
+        mutex_lock_impl(&am->done.m);
+        am->stats.done_pending = am->done.count;
+        mutex_unlock_impl(&am->done.m);
+    }
 
     asset_done_t d;
     uint32_t processed = 0;
@@ -1170,6 +1455,8 @@ void asset_manager_pump(asset_manager_t *am, uint32_t max_per_frame)
         mutex_lock_impl(&am->state_m);
         asset_slot_t *slot = NULL;
         bool ok_slot = slot_valid_locked(am, d.handle, &slot);
+        if (ok_slot && slot)
+            slot->inflight = 0;
         mutex_unlock_impl(&am->state_m);
 
         if (!ok_slot)
@@ -1188,10 +1475,12 @@ void asset_manager_pump(asset_manager_t *am, uint32_t max_per_frame)
             if (slot_valid_locked(am, d.handle, &slot))
             {
                 old = slot->asset;
-                slot_cleanup(am, slot);
+                slot_cleanup_asset_only(am, slot);
                 asset_zero(&slot->asset);
                 slot->asset.state = ASSET_STATE_FAILED;
                 slot->module_index = 0xFFFFu;
+                slot->asset.type = (asset_type_t)slot->requested_type;
+                slot->inflight = 0;
             }
             mutex_unlock_impl(&am->state_m);
 
@@ -1217,10 +1506,12 @@ void asset_manager_pump(asset_manager_t *am, uint32_t max_per_frame)
             if (slot_valid_locked(am, d.handle, &slot))
             {
                 old = slot->asset;
-                slot_cleanup(am, slot);
+                slot_cleanup_asset_only(am, slot);
                 asset_zero(&slot->asset);
                 slot->asset.state = ASSET_STATE_FAILED;
                 slot->module_index = 0xFFFFu;
+                slot->asset.type = (asset_type_t)slot->requested_type;
+                slot->inflight = 0;
             }
             mutex_unlock_impl(&am->state_m);
 
@@ -1235,8 +1526,11 @@ void asset_manager_pump(asset_manager_t *am, uint32_t max_per_frame)
         slot = NULL;
         if (slot_valid_locked(am, d.handle, &slot))
         {
+            uint64_t old_vram = asset_vram_bytes_if_resident(&slot->asset);
+            uint64_t new_vram = asset_vram_bytes_if_resident(&d.asset);
+
             old = slot->asset;
-            slot_cleanup(am, slot);
+            slot_cleanup_asset_only(am, slot);
 
             ihandle_t ph = d.persistent;
             if (!ihandle_is_valid(ph))
@@ -1245,7 +1539,26 @@ void asset_manager_pump(asset_manager_t *am, uint32_t max_per_frame)
             d.asset.state = ASSET_STATE_READY;
             slot->asset = d.asset;
             slot->module_index = d.module_index;
-            slot->persistent = ph;
+            if (!ihandle_is_valid(slot->persistent))
+                slot->persistent = ph;
+
+            if (old_vram)
+            {
+                if (am->stats.vram_resident_bytes >= old_vram)
+                    am->stats.vram_resident_bytes -= old_vram;
+                else
+                    am->stats.vram_resident_bytes = 0;
+                if (am->stats.textures_resident)
+                    am->stats.textures_resident--;
+            }
+
+            if (new_vram)
+            {
+                am->stats.vram_resident_bytes += new_vram;
+                am->stats.textures_resident++;
+                am->stats.upload_bytes_last_pump += new_vram;
+                am->stats.textures_loaded_total++;
+            }
 
             asset_zero(&d.asset);
             d.persistent = ihandle_invalid();
@@ -1254,6 +1567,16 @@ void asset_manager_pump(asset_manager_t *am, uint32_t max_per_frame)
 
         asset_cleanup_by_module(am, &old, 0xFFFFu);
     }
+}
+
+void asset_manager_end_frame(asset_manager_t *am)
+{
+    if (!am)
+        return;
+
+    mutex_lock_impl(&am->state_m);
+    asset_manager_try_evict_textures_locked(am);
+    mutex_unlock_impl(&am->state_m);
 }
 
 const asset_any_t *asset_manager_get_any(const asset_manager_t *am, ihandle_t h)
@@ -1266,6 +1589,8 @@ const asset_any_t *asset_manager_get_any(const asset_manager_t *am, ihandle_t h)
     mutex_lock_impl(&am_mut->state_m);
     asset_slot_t *slot = NULL;
     bool ok = slot_valid_locked(am_mut, h, &slot);
+    if (ok && slot && slot->asset.type == ASSET_IMAGE && slot->asset.state == ASSET_STATE_READY)
+        slot->last_touched_frame = am_mut->frame_index;
     const asset_any_t *ret = ok ? &slot->asset : NULL;
     mutex_unlock_impl(&am_mut->state_m);
 

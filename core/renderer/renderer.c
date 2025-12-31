@@ -11,6 +11,9 @@
 #include <stdlib.h>
 #include <math.h>
 #include <stdio.h>
+#if !defined(_WIN32)
+#include <time.h>
+#endif
 
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
@@ -23,7 +26,7 @@
 #include <GL/glew.h>
 #endif
 
-#define FP_TILE_SIZE 16
+#define FP_TILE_SIZE 32
 
 #define R_SHADOW_LIGHT_DISTANCE 200.0f
 #define R_SHADOW_PAD_XY 10.0f
@@ -40,7 +43,7 @@ renderer_scene_settings_t R_scene_settings_default(void)
     s.bloom_mips = 6u;
 
     s.exposure = 1.0f;
-    s.exposure_auto = 1;
+    s.exposure_auto = cvar_get_bool_name("cl_auto_exposure") ? 1 : 0;
     s.delta_time = 1.0f / 60.0f;
     s.auto_exposure_speed = 2.0f;
     s.auto_exposure_min = 0.05f;
@@ -121,6 +124,23 @@ typedef struct instance_gpu_t
     float pad2;
 } instance_gpu_t;
 
+static inst_item_t *g_inst_item_scratch = NULL;
+static uint32_t g_inst_item_scratch_cap = 0;
+
+static inst_item_t *R_inst_item_scratch(uint32_t need)
+{
+    if (need <= g_inst_item_scratch_cap && g_inst_item_scratch)
+        return g_inst_item_scratch;
+
+    inst_item_t *p = (inst_item_t *)realloc(g_inst_item_scratch, sizeof(inst_item_t) * (size_t)need);
+    if (!p)
+        return NULL;
+
+    g_inst_item_scratch = p;
+    g_inst_item_scratch_cap = need;
+    return g_inst_item_scratch;
+}
+
 static uint32_t u32_next_pow2(uint32_t x)
 {
     if (x <= 1u)
@@ -132,6 +152,251 @@ static uint32_t u32_next_pow2(uint32_t x)
     x |= x >> 8;
     x |= x >> 16;
     return x + 1u;
+}
+
+typedef struct u32_set_t
+{
+    uint32_t *keys; // 0 = empty
+    uint32_t cap;   // power-of-two
+    uint32_t size;
+} u32_set_t;
+
+static u32_set_t g_instanced_vao_set = {0};
+
+typedef struct model_bounds_entry_t
+{
+    uint64_t key;
+    vec3 c_local;
+    float r_local;
+} model_bounds_entry_t;
+
+static model_bounds_entry_t *g_model_bounds = NULL;
+static uint32_t g_model_bounds_cap = 0;
+static uint32_t g_model_bounds_size = 0;
+
+static uint64_t model_key64(ihandle_t h)
+{
+    return ((uint64_t)h.type << 48) | ((uint64_t)h.meta << 32) | (uint64_t)h.value;
+}
+
+static uint32_t u64_hash32(uint64_t x)
+{
+    x ^= x >> 33;
+    x *= 0xff51afd7ed558ccdu;
+    x ^= x >> 33;
+    x *= 0xc4ceb9fe1a85ec53u;
+    x ^= x >> 33;
+    return (uint32_t)x;
+}
+
+static void model_bounds_free(void)
+{
+    free(g_model_bounds);
+    g_model_bounds = NULL;
+    g_model_bounds_cap = 0;
+    g_model_bounds_size = 0;
+}
+
+static void model_bounds_rehash(uint32_t new_cap)
+{
+    if (new_cap < 64u)
+        new_cap = 64u;
+    new_cap = u32_next_pow2(new_cap);
+
+    model_bounds_entry_t *n = (model_bounds_entry_t *)calloc((size_t)new_cap, sizeof(model_bounds_entry_t));
+    if (!n)
+        return;
+
+    model_bounds_entry_t *old = g_model_bounds;
+    uint32_t old_cap = g_model_bounds_cap;
+
+    g_model_bounds = n;
+    g_model_bounds_cap = new_cap;
+    g_model_bounds_size = 0;
+
+    if (old && old_cap)
+    {
+        for (uint32_t i = 0; i < old_cap; ++i)
+        {
+            if (!old[i].key)
+                continue;
+            uint32_t mask = g_model_bounds_cap - 1u;
+            uint32_t idx = u64_hash32(old[i].key) & mask;
+            while (g_model_bounds[idx].key)
+                idx = (idx + 1u) & mask;
+            g_model_bounds[idx] = old[i];
+            g_model_bounds_size++;
+        }
+    }
+
+    free(old);
+}
+
+static const model_bounds_entry_t *model_bounds_get_or_build(ihandle_t model_h, const asset_model_t *mdl)
+{
+    if (!ihandle_is_valid(model_h) || !mdl)
+        return NULL;
+
+    uint64_t key = model_key64(model_h);
+    if (!key)
+        return NULL;
+
+    if (!g_model_bounds || !g_model_bounds_cap)
+        model_bounds_rehash(256u);
+    if (!g_model_bounds || !g_model_bounds_cap)
+        return NULL;
+
+    if ((g_model_bounds_size + 1u) * 10u >= g_model_bounds_cap * 7u)
+        model_bounds_rehash(g_model_bounds_cap * 2u);
+
+    uint32_t mask = g_model_bounds_cap - 1u;
+    uint32_t idx = u64_hash32(key) & mask;
+    while (g_model_bounds[idx].key && g_model_bounds[idx].key != key)
+        idx = (idx + 1u) & mask;
+
+    if (g_model_bounds[idx].key == key)
+        return &g_model_bounds[idx];
+
+    // Build bounds by merging mesh AABBs.
+    aabb_t a;
+    a.min = (vec3){1e30f, 1e30f, 1e30f};
+    a.max = (vec3){-1e30f, -1e30f, -1e30f};
+    uint32_t have = 0;
+
+    for (uint32_t mi = 0; mi < mdl->meshes.size; ++mi)
+    {
+        const mesh_t *mesh = (const mesh_t *)vector_at((vector_t *)&mdl->meshes, mi);
+        if (!mesh || !(mesh->flags & MESH_FLAG_HAS_AABB))
+            continue;
+
+        if (mesh->local_aabb.min.x < a.min.x)
+            a.min.x = mesh->local_aabb.min.x;
+        if (mesh->local_aabb.min.y < a.min.y)
+            a.min.y = mesh->local_aabb.min.y;
+        if (mesh->local_aabb.min.z < a.min.z)
+            a.min.z = mesh->local_aabb.min.z;
+
+        if (mesh->local_aabb.max.x > a.max.x)
+            a.max.x = mesh->local_aabb.max.x;
+        if (mesh->local_aabb.max.y > a.max.y)
+            a.max.y = mesh->local_aabb.max.y;
+        if (mesh->local_aabb.max.z > a.max.z)
+            a.max.z = mesh->local_aabb.max.z;
+
+        have = 1;
+    }
+
+    vec3 c = have ? (vec3){0.5f * (a.min.x + a.max.x), 0.5f * (a.min.y + a.max.y), 0.5f * (a.min.z + a.max.z)} : (vec3){0, 0, 0};
+    float ex = have ? (0.5f * (a.max.x - a.min.x)) : 1.0f;
+    float ey = have ? (0.5f * (a.max.y - a.min.y)) : 1.0f;
+    float ez = have ? (0.5f * (a.max.z - a.min.z)) : 1.0f;
+    float r2 = ex * ex + ey * ey + ez * ez;
+    float r = (r2 > 1e-12f) ? sqrtf(r2) : 1.0f;
+
+    g_model_bounds[idx].key = key;
+    g_model_bounds[idx].c_local = c;
+    g_model_bounds[idx].r_local = r;
+    g_model_bounds_size++;
+    return &g_model_bounds[idx];
+}
+
+static uint32_t u32_hash(uint32_t x)
+{
+    x ^= x >> 16;
+    x *= 0x7feb352du;
+    x ^= x >> 15;
+    x *= 0x846ca68bu;
+    x ^= x >> 16;
+    return x;
+}
+
+static void u32_set_free(u32_set_t *s)
+{
+    if (!s)
+        return;
+    free(s->keys);
+    s->keys = NULL;
+    s->cap = 0;
+    s->size = 0;
+}
+
+static void u32_set_rehash(u32_set_t *s, uint32_t new_cap)
+{
+    if (!s)
+        return;
+    if (new_cap < 16u)
+        new_cap = 16u;
+    new_cap = u32_next_pow2(new_cap);
+
+    uint32_t *new_keys = (uint32_t *)calloc((size_t)new_cap, sizeof(uint32_t));
+    if (!new_keys)
+        return;
+
+    uint32_t *old = s->keys;
+    uint32_t old_cap = s->cap;
+
+    s->keys = new_keys;
+    s->cap = new_cap;
+    s->size = 0;
+
+    if (old && old_cap)
+    {
+        for (uint32_t i = 0; i < old_cap; ++i)
+        {
+            uint32_t k = old[i];
+            if (!k)
+                continue;
+            uint32_t mask = s->cap - 1u;
+            uint32_t idx = u32_hash(k) & mask;
+            while (s->keys[idx] != 0u)
+                idx = (idx + 1u) & mask;
+            s->keys[idx] = k;
+            s->size++;
+        }
+    }
+
+    free(old);
+}
+
+static int u32_set_has(const u32_set_t *s, uint32_t k)
+{
+    if (!s || !s->keys || !s->cap || !k)
+        return 0;
+    uint32_t mask = s->cap - 1u;
+    uint32_t idx = u32_hash(k) & mask;
+    for (;;)
+    {
+        uint32_t v = s->keys[idx];
+        if (v == 0u)
+            return 0;
+        if (v == k)
+            return 1;
+        idx = (idx + 1u) & mask;
+    }
+}
+
+static void u32_set_add(u32_set_t *s, uint32_t k)
+{
+    if (!s || !k)
+        return;
+    if (!s->keys || !s->cap)
+        u32_set_rehash(s, 64u);
+    if (!s->keys || !s->cap)
+        return;
+
+    if ((s->size + 1u) * 10u >= s->cap * 7u)
+        u32_set_rehash(s, s->cap * 2u);
+
+    uint32_t mask = s->cap - 1u;
+    uint32_t idx = u32_hash(k) & mask;
+    while (s->keys[idx] != 0u)
+    {
+        if (s->keys[idx] == k)
+            return;
+        idx = (idx + 1u) & mask;
+    }
+    s->keys[idx] = k;
+    s->size++;
 }
 
 static float clamp01(float x)
@@ -228,6 +493,83 @@ static void R_user_cfg_pull_from_cvars(renderer_t *r)
     r->cfg.debug_mode = cvar_get_int_name("cl_render_debug");
 }
 
+static int R_gpu_timers_supported(void)
+{
+#if defined(__APPLE__)
+    return 0;
+#else
+    return (GLEW_ARB_timer_query || GLEW_VERSION_3_3) ? 1 : 0;
+#endif
+}
+
+static void R_gpu_timer_begin(renderer_t *r, render_gpu_phase_t phase)
+{
+    if (!r || !R_gpu_timers_supported())
+        return;
+    if (phase < 0 || phase >= R_GPU_PHASE_COUNT)
+        return;
+    uint32_t idx = r->gpu_query_index & 15u;
+    GLuint q = r->gpu_queries[phase][idx];
+    if (!q)
+        return;
+    glBeginQuery(GL_TIME_ELAPSED, q);
+    r->gpu_timer_active = 1;
+}
+
+static void R_gpu_timer_end(renderer_t *r)
+{
+    if (!r || !R_gpu_timers_supported())
+        return;
+    if (!r->gpu_timer_active)
+        return;
+    glEndQuery(GL_TIME_ELAPSED);
+    r->gpu_timer_active = 0;
+}
+
+static void R_gpu_timers_resolve(renderer_t *r)
+{
+    if (!r || !R_gpu_timers_supported())
+        return;
+
+    for (int p = 0; p < (int)R_GPU_PHASE_COUNT; ++p)
+    {
+        // Try the newest completed query in the ring; avoids "stuck" values when the driver queues more than 2 frames.
+        for (uint32_t i = 1; i < 16u; ++i)
+        {
+            uint32_t idx = (r->gpu_query_index - i) & 15u;
+            GLuint q = r->gpu_queries[p][idx];
+            if (!q)
+                continue;
+
+            GLint available = 0;
+            glGetQueryObjectiv(q, GL_QUERY_RESULT_AVAILABLE, &available);
+            if (!available)
+                continue;
+
+            GLuint64 ns = 0;
+            glGetQueryObjectui64v(q, GL_QUERY_RESULT, &ns);
+            r->gpu_timings.ms[p] = (double)ns * 1e-6;
+            r->gpu_timings.valid = 1;
+            break;
+        }
+    }
+}
+
+static double R_time_now_ms(void)
+{
+#if defined(_WIN32)
+    LARGE_INTEGER freq;
+    LARGE_INTEGER now;
+    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&now);
+    return (double)now.QuadPart * 1000.0 / (double)freq.QuadPart;
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec * 1e-6;
+#endif
+}
+
 static int R_mip_count_2d(int w, int h);
 static uint32_t R_scene_draw_fbo(const renderer_t *r);
 static void R_msaa_resolve(renderer_t *r, GLbitfield mask);
@@ -289,6 +631,22 @@ static void R_auto_exposure_update(renderer_t *r)
     if (!r->light_color_tex)
         return;
 
+    float dt = r->scene.delta_time;
+    if (dt < 0.0f)
+        dt = 0.0f;
+
+    int hz = cvar_get_int_name("cl_auto_exposure_hz");
+    if (hz < 1)
+        hz = 1;
+    if (hz > 240)
+        hz = 240;
+
+    float period = 1.0f / (float)hz;
+    r->exposure_readback_accum += dt;
+    if (r->exposure_readback_accum < period)
+        return;
+    r->exposure_readback_accum = 0.0f;
+
     glBindTexture(GL_TEXTURE_2D, r->light_color_tex);
     glGenerateMipmap(GL_TEXTURE_2D);
 
@@ -297,10 +655,48 @@ static void R_auto_exposure_update(renderer_t *r)
     if (lod < 0)
         lod = 0;
 
-    float px[4] = {0};
-    glGetTexImage(GL_TEXTURE_2D, lod, GL_RGBA, GL_FLOAT, px);
+    const GLsizeiptr pack_sz = (GLsizeiptr)(sizeof(float) * 4u);
 
-    vec3 avg = (vec3){px[0], px[1], px[2]};
+    if (r->exposure_pbo[0] == 0 && r->exposure_pbo[1] == 0)
+        glGenBuffers(2, r->exposure_pbo);
+
+    const uint8_t write_i = r->exposure_pbo_index & 1u;
+    const uint8_t read_i = (uint8_t)(write_i ^ 1u);
+
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, r->exposure_pbo[write_i]);
+    glBufferData(GL_PIXEL_PACK_BUFFER, pack_sz, NULL, GL_STREAM_READ);
+    glGetTexImage(GL_TEXTURE_2D, lod, GL_RGBA, GL_FLOAT, 0);
+
+    float px_local[4] = {0};
+
+    if (!r->exposure_pbo_valid)
+    {
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+        r->exposure_pbo_index = read_i;
+        r->exposure_pbo_valid = 1;
+        return;
+    }
+
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, r->exposure_pbo[read_i]);
+    float *px = (float *)glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, pack_sz, GL_MAP_READ_BIT);
+    if (!px)
+    {
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+        r->exposure_pbo_index = read_i;
+        return;
+    }
+
+    px_local[0] = px[0];
+    px_local[1] = px[1];
+    px_local[2] = px[2];
+    px_local[3] = px[3];
+
+    glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+
+    r->exposure_pbo_index = read_i;
+
+    vec3 avg = (vec3){px_local[0], px_local[1], px_local[2]};
     float avgLum = R_luminance(avg);
     if (avgLum < 1e-6f)
         avgLum = 1e-6f;
@@ -317,9 +713,6 @@ static void R_auto_exposure_update(renderer_t *r)
     if (targetExposure > exMax)
         targetExposure = exMax;
 
-    float dt = r->scene.delta_time;
-    if (dt < 0.0f)
-        dt = 0.0f;
     float speed = r->scene.auto_exposure_speed;
     if (speed < 0.0f)
         speed = 0.0f;
@@ -346,8 +739,8 @@ static void R_shadow_delete(renderer_t *r)
         glDeleteTextures(1, &r->shadow.tex);
     r->shadow.tex = 0;
 
-    r->shadow.size = 0;
     r->shadow.cascades = 0;
+    r->shadow.size = 0;
     r->shadow.light_index = -1;
     memset(r->shadow.vp, 0, sizeof(r->shadow.vp));
     memset(r->shadow.splits, 0, sizeof(r->shadow.splits));
@@ -654,7 +1047,10 @@ static uint32_t R_fp_pick_tile_max(uint32_t light_count)
 {
     if (light_count < 1u)
         light_count = 1u;
-    return u32_next_pow2(light_count);
+    uint32_t t = u32_next_pow2(light_count);
+    if (t > 128u)
+        t = 128u;
+    return t;
 }
 
 static void R_fp_resize_tile_buffers(renderer_t *r, vec2i fb, uint32_t light_count)
@@ -818,6 +1214,8 @@ static uint32_t R_resolve_image_gl(const renderer_t *r, ihandle_t h)
     if (!ihandle_is_valid(h))
         return 0;
 
+    asset_manager_touch(r->assets, h);
+
     const asset_any_t *a = asset_manager_get_any(r->assets, h);
     if (!a)
         return 0;
@@ -836,6 +1234,8 @@ static int R_resolve_image_has_alpha(const renderer_t *r, ihandle_t h)
     if (!ihandle_is_valid(h))
         return 0;
 
+    asset_manager_touch(r->assets, h);
+
     const asset_any_t *a = asset_manager_get_any(r->assets, h);
     if (!a)
         return 0;
@@ -853,6 +1253,8 @@ static int R_resolve_image_has_smooth_alpha(const renderer_t *r, ihandle_t h)
         return 0;
     if (!ihandle_is_valid(h))
         return 0;
+
+    asset_manager_touch(r->assets, h);
 
     const asset_any_t *a = asset_manager_get_any(r->assets, h);
     if (!a)
@@ -1126,7 +1528,7 @@ static int R_frustum_sphere_visible(const frustum_t *f, vec3 c, float r)
     return 1;
 }
 
-static int R_mesh_visible_frustum(const frustum_t *f, const mesh_t *mesh, const mat4 *model_mtx)
+static int R_mesh_visible_frustum(const frustum_t *f, const mesh_t *mesh, const mat4 *model_mtx, float max_scale)
 {
     if (!mesh || !model_mtx)
         return 1;
@@ -1136,7 +1538,7 @@ static int R_mesh_visible_frustum(const frustum_t *f, const mesh_t *mesh, const 
     vec3 lc = R_mesh_local_center(mesh);
     vec3 wc = R_transform_point(*model_mtx, lc);
 
-    float radius_world = R_mesh_local_radius(mesh) * R_mat4_max_scale_xyz(model_mtx);
+    float radius_world = R_mesh_local_radius(mesh) * max_scale;
     if (radius_world < 1e-6f)
         radius_world = 1e-6f;
 
@@ -1157,7 +1559,7 @@ static void R_log_missing_forced_lod_once(ihandle_t model, uint32_t mesh_index, 
              (lods ? (lods - 1u) : 0u));
 }
 
-static uint32_t R_pick_lod_level_for_mesh_fade01(const renderer_t *r, const mesh_t *mesh, const mat4 *model_mtx, ihandle_t model_h, uint32_t mesh_index, float *out_fade01, int *out_xfade_01)
+static uint32_t R_pick_lod_level_for_mesh_fade01(const renderer_t *r, const mesh_t *mesh, const mat4 *model_mtx, float max_scale, ihandle_t model_h, uint32_t mesh_index, float *out_fade01, int *out_xfade_01)
 {
     if (out_fade01)
         *out_fade01 = 0.0f;
@@ -1188,7 +1590,7 @@ static uint32_t R_pick_lod_level_for_mesh_fade01(const renderer_t *r, const mesh
         return want;
     }
 
-    float dist = 0.0f;
+    float dist2 = 0.0f;
 
     {
         vec3 lc = R_mesh_local_center(mesh);
@@ -1198,27 +1600,35 @@ static uint32_t R_pick_lod_level_for_mesh_fade01(const renderer_t *r, const mesh
         float dy = wc.y - r->camera.position.y;
         float dz = wc.z - r->camera.position.z;
 
-        dist = sqrtf(dx * dx + dy * dy + dz * dz);
-        if (dist < 1e-3f)
-            dist = 1e-3f;
+        dist2 = dx * dx + dy * dy + dz * dz;
+        if (dist2 < 1e-6f)
+            dist2 = 1e-6f;
     }
 
     float proj_fy = r->camera.proj.m[5];
     if (fabsf(proj_fy) < 1e-6f)
         proj_fy = 1.0f;
 
-    float px_per_world = (0.5f * (float)r->fb_size.y) * proj_fy / dist;
-
-    float radius_world = R_mesh_local_radius(mesh) * R_mat4_max_scale_xyz(model_mtx);
-    float diameter_px = 2.0f * radius_world * px_per_world;
+    float radius_world = R_mesh_local_radius(mesh) * max_scale;
+    float k = (float)r->fb_size.y * proj_fy * radius_world; // 2*0.5*H*proj_fy*radius_world
+    if (k < 1e-6f)
+        k = 1e-6f;
 
     float t1 = 120.0f;
     float band = 0.18f;
     float hi = t1 * (1.0f + band);
     float lo = t1 * (1.0f - band);
 
-    if (diameter_px < hi && diameter_px > lo && lods >= 2)
+    // diameter_px = k / dist, so diameter between (lo,hi) => dist between (k/hi, k/lo)
+    float dhi = k / hi;
+    float dlo = k / lo;
+    float dhi2 = dhi * dhi;
+    float dlo2 = dlo * dlo;
+
+    if (dist2 > dhi2 && dist2 < dlo2 && lods >= 2)
     {
+        float dist = sqrtf(dist2);
+        float diameter_px = k / dist;
         float f = (hi - diameter_px) / (hi - lo);
         f = clamp01(f);
         if (out_fade01)
@@ -1229,15 +1639,21 @@ static uint32_t R_pick_lod_level_for_mesh_fade01(const renderer_t *r, const mesh
     }
 
     uint32_t lod = 0;
-    if (diameter_px < t1)
+    // diameter_px < t  <=> dist2 > (k/t)^2
+    float d1 = k / t1;
+    if (dist2 > d1 * d1)
         lod = 1;
-    if (diameter_px < 80.0f)
+    float d2 = k / 80.0f;
+    if (dist2 > d2 * d2)
         lod = 2;
-    if (diameter_px < 40.0f)
+    float d3 = k / 40.0f;
+    if (dist2 > d3 * d3)
         lod = 3;
-    if (diameter_px < 20.0f)
+    float d4 = k / 20.0f;
+    if (dist2 > d4 * d4)
         lod = 4;
-    if (diameter_px < 10.0f)
+    float d5 = k / 10.0f;
+    if (dist2 > d5 * d5)
         lod = 5;
 
     if (lod >= lods)
@@ -1312,8 +1728,33 @@ static void R_upload_instances(renderer_t *r, const instance_gpu_t *inst, uint32
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 }
 
-static void R_mesh_bind_instance_attribs(renderer_t *r, uint32_t vao)
+static void R_upload_instances_full(renderer_t *r, const instance_gpu_t *inst, uint32_t count)
 {
+    if (!r || !inst || !count)
+        return;
+
+    if (count > r->instance_cap)
+    {
+        r->instance_cap = u32_next_pow2(count);
+        glBindBuffer(GL_ARRAY_BUFFER, r->instance_vbo);
+        glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(sizeof(instance_gpu_t) * (size_t)r->instance_cap), 0, GL_STREAM_DRAW);
+    }
+    else
+    {
+        glBindBuffer(GL_ARRAY_BUFFER, r->instance_vbo);
+    }
+
+    glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)(sizeof(instance_gpu_t) * (size_t)count), inst);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+}
+
+static void R_mesh_ensure_instance_attribs(renderer_t *r, uint32_t vao)
+{
+    if (!r || !vao)
+        return;
+    if (u32_set_has(&g_instanced_vao_set, vao))
+        return;
+
     GLsizei stride = (GLsizei)sizeof(instance_gpu_t);
 
     glBindVertexArray(vao);
@@ -1339,6 +1780,8 @@ static void R_mesh_bind_instance_attribs(renderer_t *r, uint32_t vao)
 
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     glBindVertexArray(0);
+
+    u32_set_add(&g_instanced_vao_set, vao);
 }
 
 static int R_resolve_batch_resources(renderer_t *r,
@@ -1613,6 +2056,16 @@ static void R_build_instancing(renderer_t *r)
         if (!mdl)
             continue;
 
+        float max_scale = R_mat4_max_scale_xyz(&pm->model_matrix);
+        const model_bounds_entry_t *mb = model_bounds_get_or_build(pm->model, mdl);
+        if (mb)
+        {
+            vec3 wc = R_transform_point(pm->model_matrix, mb->c_local);
+            float wr = mb->r_local * max_scale;
+            if (!R_frustum_sphere_visible(&fr, wc, wr))
+                continue;
+        }
+
         max_items += mdl->meshes.size * 2u;
     }
 
@@ -1626,13 +2079,23 @@ static void R_build_instancing(renderer_t *r)
         if (!mdl)
             continue;
 
+        float max_scale = R_mat4_max_scale_xyz(&pm->model_matrix);
+        const model_bounds_entry_t *mb = model_bounds_get_or_build(pm->model, mdl);
+        if (mb)
+        {
+            vec3 wc = R_transform_point(pm->model_matrix, mb->c_local);
+            float wr = mb->r_local * max_scale;
+            if (!R_frustum_sphere_visible(&fr, wc, wr))
+                continue;
+        }
+
         max_items += mdl->meshes.size * 2u;
     }
 
     if (!max_items)
         return;
 
-    inst_item_t *items = (inst_item_t *)malloc(sizeof(inst_item_t) * (size_t)max_items);
+    inst_item_t *items = R_inst_item_scratch(max_items);
     if (!items)
         return;
 
@@ -1648,18 +2111,28 @@ static void R_build_instancing(renderer_t *r)
         if (!mdl)
             continue;
 
+        float max_scale = R_mat4_max_scale_xyz(&pm->model_matrix);
+        const model_bounds_entry_t *mb = model_bounds_get_or_build(pm->model, mdl);
+        if (mb)
+        {
+            vec3 wc = R_transform_point(pm->model_matrix, mb->c_local);
+            float wr = mb->r_local * max_scale;
+            if (!R_frustum_sphere_visible(&fr, wc, wr))
+                continue;
+        }
+
         for (uint32_t mi = 0; mi < mdl->meshes.size; ++mi)
         {
             mesh_t *mesh = (mesh_t *)vector_at((vector_t *)&mdl->meshes, mi);
             if (!mesh)
                 continue;
 
-            if (!R_mesh_visible_frustum(&fr, mesh, &pm->model_matrix))
+            if (!R_mesh_visible_frustum(&fr, mesh, &pm->model_matrix, max_scale))
                 continue;
 
             float fade01 = 0.0f;
             int xfade01 = 0;
-            uint32_t lod = R_pick_lod_level_for_mesh_fade01(r, mesh, &pm->model_matrix, pm->model, mi, &fade01, &xfade01);
+            uint32_t lod = R_pick_lod_level_for_mesh_fade01(r, mesh, &pm->model_matrix, max_scale, pm->model, mi, &fade01, &xfade01);
 
             if (xfade01 && mesh->lods.size >= 2)
             {
@@ -1703,18 +2176,28 @@ static void R_build_instancing(renderer_t *r)
         if (!mdl)
             continue;
 
+        float max_scale = R_mat4_max_scale_xyz(&pm->model_matrix);
+        const model_bounds_entry_t *mb = model_bounds_get_or_build(pm->model, mdl);
+        if (mb)
+        {
+            vec3 wc = R_transform_point(pm->model_matrix, mb->c_local);
+            float wr = mb->r_local * max_scale;
+            if (!R_frustum_sphere_visible(&fr, wc, wr))
+                continue;
+        }
+
         for (uint32_t mi = 0; mi < mdl->meshes.size; ++mi)
         {
             mesh_t *mesh = (mesh_t *)vector_at((vector_t *)&mdl->meshes, mi);
             if (!mesh)
                 continue;
 
-            if (!R_mesh_visible_frustum(&fr, mesh, &pm->model_matrix))
+            if (!R_mesh_visible_frustum(&fr, mesh, &pm->model_matrix, max_scale))
                 continue;
 
             float fade01 = 0.0f;
             int xfade01 = 0;
-            uint32_t lod = R_pick_lod_level_for_mesh_fade01(r, mesh, &pm->model_matrix, pm->model, mi, &fade01, &xfade01);
+            uint32_t lod = R_pick_lod_level_for_mesh_fade01(r, mesh, &pm->model_matrix, max_scale, pm->model, mi, &fade01, &xfade01);
 
             if (xfade01 && mesh->lods.size >= 2)
             {
@@ -1750,8 +2233,6 @@ static void R_build_instancing(renderer_t *r)
 
     if (n)
         R_emit_batches_from_items(r, items, n, &r->inst_batches, &r->inst_mats);
-
-    free(items);
 }
 
 static void R_build_shadow_instancing(renderer_t *r)
@@ -1790,7 +2271,7 @@ static void R_build_shadow_instancing(renderer_t *r)
     if (!max_items)
         return;
 
-    inst_item_t *items = (inst_item_t *)malloc(sizeof(inst_item_t) * (size_t)max_items);
+    inst_item_t *items = R_inst_item_scratch(max_items);
     if (!items)
         return;
 
@@ -1806,6 +2287,7 @@ static void R_build_shadow_instancing(renderer_t *r)
         if (!mdl)
             continue;
 
+        float max_scale = R_mat4_max_scale_xyz(&pm->model_matrix);
         for (uint32_t mi = 0; mi < mdl->meshes.size; ++mi)
         {
             mesh_t *mesh = (mesh_t *)vector_at((vector_t *)&mdl->meshes, mi);
@@ -1814,7 +2296,7 @@ static void R_build_shadow_instancing(renderer_t *r)
 
             float fade01 = 0.0f;
             int xfade01 = 0;
-            uint32_t lod = R_pick_lod_level_for_mesh_fade01(r, mesh, &pm->model_matrix, pm->model, mi, &fade01, &xfade01);
+            uint32_t lod = R_pick_lod_level_for_mesh_fade01(r, mesh, &pm->model_matrix, max_scale, pm->model, mi, &fade01, &xfade01);
 
             if (xfade01 && mesh->lods.size >= 2)
             {
@@ -1858,6 +2340,8 @@ static void R_build_shadow_instancing(renderer_t *r)
         if (!mdl)
             continue;
 
+        float max_scale = R_mat4_max_scale_xyz(&pm->model_matrix);
+
         for (uint32_t mi = 0; mi < mdl->meshes.size; ++mi)
         {
             mesh_t *mesh = (mesh_t *)vector_at((vector_t *)&mdl->meshes, mi);
@@ -1866,7 +2350,7 @@ static void R_build_shadow_instancing(renderer_t *r)
 
             float fade01 = 0.0f;
             int xfade01 = 0;
-            uint32_t lod = R_pick_lod_level_for_mesh_fade01(r, mesh, &pm->model_matrix, pm->model, mi, &fade01, &xfade01);
+            uint32_t lod = R_pick_lod_level_for_mesh_fade01(r, mesh, &pm->model_matrix, max_scale, pm->model, mi, &fade01, &xfade01);
 
             if (xfade01 && mesh->lods.size >= 2)
             {
@@ -1902,8 +2386,6 @@ static void R_build_shadow_instancing(renderer_t *r)
 
     if (n)
         R_emit_batches_from_items(r, items, n, &r->shadow_inst_batches, &r->shadow_inst_mats);
-
-    free(items);
 }
 
 static int R_gpu_light_type(int t)
@@ -1997,6 +2479,11 @@ static void R_depth_prepass(renderer_t *r)
     shader_set_mat4(depth, "u_Proj", r->camera.proj);
     shader_set_int(depth, "u_UseInstancing", 1);
 
+#if !defined(__APPLE__) && (defined(GLEW_ARB_base_instance) || defined(GLEW_VERSION_4_2))
+    if (r->inst_mats.size)
+        R_upload_instances_full(r, (const instance_gpu_t *)r->inst_mats.data, r->inst_mats.size);
+#endif
+
     for (uint32_t bi = 0; bi < r->inst_batches.size; ++bi)
     {
         inst_batch_t *b = (inst_batch_t *)vector_at(&r->inst_batches, bi);
@@ -2042,15 +2529,21 @@ static void R_depth_prepass(renderer_t *r)
         else
             glDisable(GL_SAMPLE_ALPHA_TO_COVERAGE);
 
-        instance_gpu_t *inst = (instance_gpu_t *)vector_at(&r->inst_mats, b->start);
-        if (!inst)
-            continue;
-
-        R_upload_instances(r, inst, b->count);
-        R_mesh_bind_instance_attribs(r, lod->vao);
+        R_mesh_ensure_instance_attribs(r, lod->vao);
 
         glBindVertexArray(lod->vao);
+#if !defined(__APPLE__) && (defined(GLEW_ARB_base_instance) || defined(GLEW_VERSION_4_2))
+        glDrawElementsInstancedBaseInstance(GL_TRIANGLES, (GLsizei)lod->index_count, GL_UNSIGNED_INT, 0, (GLsizei)b->count, (GLuint)b->start);
+#else
+        instance_gpu_t *inst = (instance_gpu_t *)vector_at(&r->inst_mats, b->start);
+        if (!inst)
+        {
+            glBindVertexArray(0);
+            continue;
+        }
+        R_upload_instances(r, inst, b->count);
         glDrawElementsInstanced(GL_TRIANGLES, (GLsizei)lod->index_count, GL_UNSIGNED_INT, 0, (GLsizei)b->count);
+#endif
         glBindVertexArray(0);
     }
 
@@ -2252,8 +2745,9 @@ static void R_shadow_build_cascades(renderer_t *r, vec3 light_dir)
         if (h < 1e-3f)
             h = 1e-3f;
 
-        float texel_x = w / (float)MAX(r->shadow.size, 1);
-        float texel_y = h / (float)MAX(r->shadow.size, 1);
+        int size_ci = r->shadow.size;
+        float texel_x = w / (float)MAX(size_ci, 1);
+        float texel_y = h / (float)MAX(size_ci, 1);
 
         if (texel_x > 1e-8f && texel_y > 1e-8f)
         {
@@ -2324,6 +2818,12 @@ static void R_shadow_pass(renderer_t *r)
 
     shader_bind(shadow);
     shader_set_int(shadow, "u_UseInstancing", 1);
+    shader_set_mat4(shadow, "u_View", mat4_identity());
+
+#if !defined(__APPLE__) && (defined(GLEW_ARB_base_instance) || defined(GLEW_VERSION_4_2))
+    if (r->shadow_inst_mats.size)
+        R_upload_instances_full(r, (const instance_gpu_t *)r->shadow_inst_mats.data, r->shadow_inst_mats.size);
+#endif
 
     for (int ci = 0; ci < r->shadow.cascades; ++ci)
     {
@@ -2333,7 +2833,6 @@ static void R_shadow_pass(renderer_t *r)
 
         // Decompose VP to view/proj uniforms expected by depth.vert: use View=identity and Proj=VP
         // because depth.vert computes u_Proj*u_View*(M*pos).
-        shader_set_mat4(shadow, "u_View", mat4_identity());
         shader_set_mat4(shadow, "u_Proj", r->shadow.vp[ci]);
 
         for (uint32_t bi = 0; bi < r->shadow_inst_batches.size; ++bi)
@@ -2377,15 +2876,21 @@ static void R_shadow_pass(renderer_t *r)
             shader_set_int(shadow, "u_LodXFadeEnabled", xfade_enabled);
             shader_set_int(shadow, "u_LodXFadeMode", xfade_mode);
 
-            instance_gpu_t *inst = (instance_gpu_t *)vector_at(&r->shadow_inst_mats, b->start);
-            if (!inst)
-                continue;
-
-            R_upload_instances(r, inst, b->count);
-            R_mesh_bind_instance_attribs(r, lod->vao);
+            R_mesh_ensure_instance_attribs(r, lod->vao);
 
             glBindVertexArray(lod->vao);
+#if !defined(__APPLE__) && (defined(GLEW_ARB_base_instance) || defined(GLEW_VERSION_4_2))
+            glDrawElementsInstancedBaseInstance(GL_TRIANGLES, (GLsizei)lod->index_count, GL_UNSIGNED_INT, 0, (GLsizei)b->count, (GLuint)b->start);
+#else
+            instance_gpu_t *inst = (instance_gpu_t *)vector_at(&r->shadow_inst_mats, b->start);
+            if (!inst)
+            {
+                glBindVertexArray(0);
+                continue;
+            }
+            R_upload_instances(r, inst, b->count);
             glDrawElementsInstanced(GL_TRIANGLES, (GLsizei)lod->index_count, GL_UNSIGNED_INT, 0, (GLsizei)b->count);
+#endif
             glBindVertexArray(0);
         }
     }
@@ -2410,11 +2915,26 @@ static void R_fp_dispatch(renderer_t *r)
         return;
 
     uint32_t light_count = r->lights.size;
+    // Always upload light data for the forward pass; tiles are optional.
+    uint32_t non_dir = 0u;
+    for (uint32_t i = 0; i < light_count; ++i)
+    {
+        const light_t *l = (const light_t *)vector_at((vector_t *)&r->lights, i);
+        if (!l)
+            continue;
+        if (l->type != LIGHT_DIRECTIONAL)
+            non_dir++;
+    }
+
+    R_fp_ensure_lights_capacity(r, light_count ? light_count : 1u);
+    (void)R_fp_upload_lights(r);
+
+    // Skip tiled light lists when there are no non-directional lights (or few enough to brute-force in the fragment shader).
+    if (non_dir == 0u || non_dir <= 16u)
+        return;
 
     R_fp_resize_tile_buffers(r, r->fb_size, light_count ? light_count : 1u);
-    R_fp_ensure_lights_capacity(r, light_count ? light_count : 1u);
-
-    uint32_t uploaded = R_fp_upload_lights(r);
+    uint32_t uploaded = light_count;
 
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, r->fp.lights_ssbo);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, r->fp.tile_index_ssbo);
@@ -2525,6 +3045,23 @@ typedef struct blend_batch_ref_t
     float depth2;
 } blend_batch_ref_t;
 
+static blend_batch_ref_t *g_blend_scratch = NULL;
+static uint32_t g_blend_scratch_cap = 0;
+
+static blend_batch_ref_t *R_blend_scratch(uint32_t need)
+{
+    if (need <= g_blend_scratch_cap && g_blend_scratch)
+        return g_blend_scratch;
+
+    blend_batch_ref_t *p = (blend_batch_ref_t *)realloc(g_blend_scratch, sizeof(blend_batch_ref_t) * (size_t)need);
+    if (!p)
+        return NULL;
+
+    g_blend_scratch = p;
+    g_blend_scratch_cap = need;
+    return g_blend_scratch;
+}
+
 static int R_blend_sort_back_to_front(const void *a, const void *b)
 {
     const blend_batch_ref_t *aa = (const blend_batch_ref_t *)a;
@@ -2543,8 +3080,13 @@ static void R_forward_draw_filtered(renderer_t *r, shader_t *fwd, int draw_blend
 
     if (draw_blend && r->inst_batches.size)
     {
-        blend_list = (blend_batch_ref_t *)malloc(sizeof(blend_batch_ref_t) * r->inst_batches.size);
+        blend_list = R_blend_scratch(r->inst_batches.size);
     }
+
+#if !defined(__APPLE__) && (defined(GLEW_ARB_base_instance) || defined(GLEW_VERSION_4_2))
+    if (r->inst_mats.size)
+        R_upload_instances_full(r, (const instance_gpu_t *)r->inst_mats.data, r->inst_mats.size);
+#endif
 
     for (uint32_t bi = 0; bi < r->inst_batches.size; ++bi)
     {
@@ -2598,10 +3140,6 @@ static void R_forward_draw_filtered(renderer_t *r, shader_t *fwd, int draw_blend
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, albedo_tex ? albedo_tex : r->black_tex);
 
-        instance_gpu_t *inst = (instance_gpu_t *)vector_at(&r->inst_mats, b->start);
-        if (!inst)
-            continue;
-
         int lodp1 = (debug_mode == 1) ? (int)(b->lod + 1u) : 0;
         int packed = (debug_mode & 255) | ((lodp1 & 255) << 8);
         shader_set_int(fwd, "u_DebugMode", packed);
@@ -2618,9 +3156,7 @@ static void R_forward_draw_filtered(renderer_t *r, shader_t *fwd, int draw_blend
         else
             glDisable(GL_SAMPLE_ALPHA_TO_COVERAGE);
 
-        R_upload_instances(r, inst, b->count);
-
-        R_mesh_bind_instance_attribs(r, lod->vao);
+        R_mesh_ensure_instance_attribs(r, lod->vao);
         R_apply_material_or_default(r, fwd, mat);
         shader_set_int(fwd, "u_MatAlphaBlend", mat_blend ? 1 : 0);
         shader_set_int(fwd, "u_MatAlphaCutout", mat_cutout ? 1 : 0);
@@ -2629,7 +3165,16 @@ static void R_forward_draw_filtered(renderer_t *r, shader_t *fwd, int draw_blend
 
         glBindVertexArray(lod->vao);
         R_stats_add_draw_instanced(r, lod->index_count, b->count);
-        glDrawElementsInstanced(GL_TRIANGLES, (GLsizei)lod->index_count, GL_UNSIGNED_INT, 0, (GLsizei)b->count);
+#if !defined(__APPLE__) && (defined(GLEW_ARB_base_instance) || defined(GLEW_VERSION_4_2))
+        glDrawElementsInstancedBaseInstance(GL_TRIANGLES, (GLsizei)lod->index_count, GL_UNSIGNED_INT, 0, (GLsizei)b->count, (GLuint)b->start);
+#else
+        instance_gpu_t *inst = (instance_gpu_t *)vector_at(&r->inst_mats, b->start);
+        if (inst)
+        {
+            R_upload_instances(r, inst, b->count);
+            glDrawElementsInstanced(GL_TRIANGLES, (GLsizei)lod->index_count, GL_UNSIGNED_INT, 0, (GLsizei)b->count);
+        }
+#endif
         glBindVertexArray(0);
     }
 
@@ -2666,10 +3211,6 @@ static void R_forward_draw_filtered(renderer_t *r, shader_t *fwd, int draw_blend
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D, albedo_tex ? albedo_tex : r->black_tex);
 
-            instance_gpu_t *inst = (instance_gpu_t *)vector_at(&r->inst_mats, b->start);
-            if (!inst)
-                continue;
-
             int lodp1 = (debug_mode == 1) ? (int)(b->lod + 1u) : 0;
             int packed = (debug_mode & 255) | ((lodp1 & 255) << 8);
             shader_set_int(fwd, "u_DebugMode", packed);
@@ -2679,9 +3220,7 @@ static void R_forward_draw_filtered(renderer_t *r, shader_t *fwd, int draw_blend
             shader_set_int(fwd, "u_LodXFadeEnabled", xfade_enabled);
             shader_set_int(fwd, "u_LodXFadeMode", xfade_mode);
 
-            R_upload_instances(r, inst, b->count);
-
-            R_mesh_bind_instance_attribs(r, lod->vao);
+            R_mesh_ensure_instance_attribs(r, lod->vao);
             R_apply_material_or_default(r, fwd, mat);
             shader_set_int(fwd, "u_MatAlphaBlend", mat_blend ? 1 : 0);
             shader_set_int(fwd, "u_MatAlphaCutout", mat_cutout ? 1 : 0);
@@ -2699,26 +3238,52 @@ static void R_forward_draw_filtered(renderer_t *r, shader_t *fwd, int draw_blend
 
                 glCullFace(GL_FRONT);
                 R_stats_add_draw_instanced(r, lod->index_count, b->count);
-                glDrawElementsInstanced(GL_TRIANGLES, (GLsizei)lod->index_count, GL_UNSIGNED_INT, 0, (GLsizei)b->count);
+#if !defined(__APPLE__) && (defined(GLEW_ARB_base_instance) || defined(GLEW_VERSION_4_2))
+                glDrawElementsInstancedBaseInstance(GL_TRIANGLES, (GLsizei)lod->index_count, GL_UNSIGNED_INT, 0, (GLsizei)b->count, (GLuint)b->start);
+#else
+                instance_gpu_t *inst = (instance_gpu_t *)vector_at(&r->inst_mats, b->start);
+                if (inst)
+                {
+                    R_upload_instances(r, inst, b->count);
+                    glDrawElementsInstanced(GL_TRIANGLES, (GLsizei)lod->index_count, GL_UNSIGNED_INT, 0, (GLsizei)b->count);
+                }
+#endif
 
                 glCullFace(GL_BACK);
                 R_stats_add_draw_instanced(r, lod->index_count, b->count);
-                glDrawElementsInstanced(GL_TRIANGLES, (GLsizei)lod->index_count, GL_UNSIGNED_INT, 0, (GLsizei)b->count);
+#if !defined(__APPLE__) && (defined(GLEW_ARB_base_instance) || defined(GLEW_VERSION_4_2))
+                glDrawElementsInstancedBaseInstance(GL_TRIANGLES, (GLsizei)lod->index_count, GL_UNSIGNED_INT, 0, (GLsizei)b->count, (GLuint)b->start);
+#else
+                inst = (instance_gpu_t *)vector_at(&r->inst_mats, b->start);
+                if (inst)
+                {
+                    R_upload_instances(r, inst, b->count);
+                    glDrawElementsInstanced(GL_TRIANGLES, (GLsizei)lod->index_count, GL_UNSIGNED_INT, 0, (GLsizei)b->count);
+                }
+#endif
             }
             else
             {
                 glEnable(GL_CULL_FACE);
                 glCullFace(GL_BACK);
                 R_stats_add_draw_instanced(r, lod->index_count, b->count);
-                glDrawElementsInstanced(GL_TRIANGLES, (GLsizei)lod->index_count, GL_UNSIGNED_INT, 0, (GLsizei)b->count);
+#if !defined(__APPLE__) && (defined(GLEW_ARB_base_instance) || defined(GLEW_VERSION_4_2))
+                glDrawElementsInstancedBaseInstance(GL_TRIANGLES, (GLsizei)lod->index_count, GL_UNSIGNED_INT, 0, (GLsizei)b->count, (GLuint)b->start);
+#else
+                instance_gpu_t *inst = (instance_gpu_t *)vector_at(&r->inst_mats, b->start);
+                if (inst)
+                {
+                    R_upload_instances(r, inst, b->count);
+                    glDrawElementsInstanced(GL_TRIANGLES, (GLsizei)lod->index_count, GL_UNSIGNED_INT, 0, (GLsizei)b->count);
+                }
+#endif
             }
 
             glBindVertexArray(0);
         }
     }
 
-    if (blend_list)
-        free(blend_list);
+    (void)blend_list;
 }
 
 static void R_forward_one_pass(renderer_t *r)
@@ -2750,6 +3315,40 @@ static void R_forward_one_pass(renderer_t *r)
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, r->fp.tile_list_ssbo);
 
     shader_bind(fwd);
+
+    // Directional lights affect all tiles; don't put them in the tile list.
+    int dir_indices[4] = {-1, -1, -1, -1};
+    int dir_count = 0;
+    int non_dir_indices[16];
+    for (int i = 0; i < 16; ++i)
+        non_dir_indices[i] = -1;
+    int non_dir_count = 0;
+    int non_dir_total = 0;
+
+    for (uint32_t i = 0; i < r->lights.size; ++i)
+    {
+        const light_t *l = (const light_t *)vector_at((vector_t *)&r->lights, i);
+        if (!l)
+            continue;
+        if (l->type == LIGHT_DIRECTIONAL)
+        {
+            if (dir_count < 4)
+                dir_indices[dir_count++] = (int)i;
+        }
+        else
+        {
+            non_dir_total++;
+            if (non_dir_count < 16)
+                non_dir_indices[non_dir_count++] = (int)i;
+        }
+    }
+    shader_set_int(fwd, "u_DirLightCount", dir_count);
+    shader_set_int_array(fwd, "u_DirLightIndices", dir_indices, 4);
+    shader_set_int(fwd, "u_NonDirLightCount", non_dir_count);
+    shader_set_int_array(fwd, "u_NonDirLightIndices", non_dir_indices, 16);
+
+    // Use tiles only if there are more non-directional lights than the brute-force budget.
+    shader_set_int(fwd, "u_UseLightTiles", non_dir_total > 16 ? 1 : 0);
 
     glActiveTexture(GL_TEXTURE8);
     glBindTexture(GL_TEXTURE_CUBE_MAP, irr ? irr : r->black_cube);
@@ -2844,6 +3443,13 @@ uint32_t R_get_final_fbo(const renderer_t *r)
     return r->final_fbo;
 }
 
+uint32_t R_get_final_color_tex(const renderer_t *r)
+{
+    if (!r)
+        return 0;
+    return r->final_color_tex;
+}
+
 int R_init(renderer_t *r, asset_manager_t *assets)
 {
     if (!r)
@@ -2867,6 +3473,11 @@ int R_init(renderer_t *r, asset_manager_t *assets)
     r->scene = R_scene_settings_default();
     r->exposure_adapted = r->scene.exposure;
     r->exposure_adapted_valid = false;
+    r->exposure_readback_accum = 0.0f;
+    r->exposure_pbo[0] = 0;
+    r->exposure_pbo[1] = 0;
+    r->exposure_pbo_index = 0;
+    r->exposure_pbo_valid = 0;
     R_user_cfg_pull_from_cvars(r);
 
     r->shadow.fbo = 0;
@@ -2885,6 +3496,23 @@ int R_init(renderer_t *r, asset_manager_t *assets)
     glDisable(GL_BLEND);
 
     glGenVertexArrays(1, &r->fs_vao);
+
+    r->cpu_timings.valid = 0;
+    for (int p = 0; p < (int)R_CPU_PHASE_COUNT; ++p)
+        r->cpu_timings.ms[p] = 0.0;
+
+    if (R_gpu_timers_supported())
+    {
+        for (int p = 0; p < (int)R_GPU_PHASE_COUNT; ++p)
+            glGenQueries(16, r->gpu_queries[p]);
+        r->gpu_query_index = 0;
+        r->gpu_timer_active = 0;
+        r->gpu_timings.valid = 0;
+        for (int p = 0; p < (int)R_GPU_PHASE_COUNT; ++p)
+        {
+            r->gpu_timings.ms[p] = 0.0;
+        }
+    }
 
     R_make_black_tex(r);
     R_make_black_cube(r);
@@ -3008,6 +3636,35 @@ void R_shutdown(renderer_t *r)
     r->black_cube = 0;
 
     R_fp_delete_buffers(r);
+
+    if (r->exposure_pbo[0] || r->exposure_pbo[1])
+        glDeleteBuffers(2, r->exposure_pbo);
+    r->exposure_pbo[0] = 0;
+    r->exposure_pbo[1] = 0;
+    r->exposure_pbo_valid = 0;
+
+    free(g_inst_item_scratch);
+    g_inst_item_scratch = NULL;
+    g_inst_item_scratch_cap = 0;
+
+    free(g_blend_scratch);
+    g_blend_scratch = NULL;
+    g_blend_scratch_cap = 0;
+
+    u32_set_free(&g_instanced_vao_set);
+    model_bounds_free();
+
+    if (R_gpu_timers_supported())
+    {
+        for (int p = 0; p < (int)R_GPU_PHASE_COUNT; ++p)
+        {
+            if (r->gpu_queries[p][0])
+                glDeleteQueries(16, r->gpu_queries[p]);
+            for (int i = 0; i < 16; ++i)
+                r->gpu_queries[p][i] = 0;
+        }
+        r->gpu_timings.valid = 0;
+    }
 }
 
 void R_resize(renderer_t *r, vec2i size)
@@ -3065,43 +3722,61 @@ void R_begin_frame(renderer_t *r)
     vector_clear(&r->models);
     vector_clear(&r->fwd_models);
 
-    GLint prev_draw_fbo = 0;
-    GLint prev_read_fbo = 0;
-    GLint prev_viewport[4] = {0, 0, 0, 0};
-    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &prev_draw_fbo);
-    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prev_read_fbo);
-    glGetIntegerv(GL_VIEWPORT, prev_viewport);
+    if (cvar_get_bool_name("cl_r_restore_gl_state"))
+    {
+        GLint prev_draw_fbo = 0;
+        GLint prev_read_fbo = 0;
+        GLint prev_viewport[4] = {0, 0, 0, 0};
+        glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &prev_draw_fbo);
+        glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prev_read_fbo);
+        glGetIntegerv(GL_VIEWPORT, prev_viewport);
 
-    GLboolean prev_scissor = glIsEnabled(GL_SCISSOR_TEST);
-    GLint prev_scissor_box[4] = {0, 0, 0, 0};
-    glGetIntegerv(GL_SCISSOR_BOX, prev_scissor_box);
+        GLboolean prev_scissor = glIsEnabled(GL_SCISSOR_TEST);
+        GLint prev_scissor_box[4] = {0, 0, 0, 0};
+        glGetIntegerv(GL_SCISSOR_BOX, prev_scissor_box);
 
-    GLboolean prev_color_mask[4] = {GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE};
-    glGetBooleanv(GL_COLOR_WRITEMASK, prev_color_mask);
+        GLboolean prev_color_mask[4] = {GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE};
+        glGetBooleanv(GL_COLOR_WRITEMASK, prev_color_mask);
 
-    GLboolean prev_depth_mask = GL_TRUE;
-    glGetBooleanv(GL_DEPTH_WRITEMASK, &prev_depth_mask);
+        GLboolean prev_depth_mask = GL_TRUE;
+        glGetBooleanv(GL_DEPTH_WRITEMASK, &prev_depth_mask);
 
-    glDisable(GL_SCISSOR_TEST);
-    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-    glDepthMask(GL_TRUE);
-    glClearDepth(1.0);
+        glDisable(GL_SCISSOR_TEST);
+        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        glDepthMask(GL_TRUE);
+        glClearDepth(1.0);
 
-    glBindFramebuffer(GL_FRAMEBUFFER, R_scene_draw_fbo(r));
-    glViewport(0, 0, r->fb_size.x, r->fb_size.y);
+        glBindFramebuffer(GL_FRAMEBUFFER, R_scene_draw_fbo(r));
+        glViewport(0, 0, r->fb_size.x, r->fb_size.y);
 
-    glClearColor(r->clear_color.x, r->clear_color.y, r->clear_color.z, 0.0f);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glClearColor(r->clear_color.x, r->clear_color.y, r->clear_color.z, 0.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)prev_draw_fbo);
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, (GLuint)prev_read_fbo);
-    glViewport(prev_viewport[0], prev_viewport[1], prev_viewport[2], prev_viewport[3]);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)prev_draw_fbo);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, (GLuint)prev_read_fbo);
+        glViewport(prev_viewport[0], prev_viewport[1], prev_viewport[2], prev_viewport[3]);
 
-    glColorMask(prev_color_mask[0], prev_color_mask[1], prev_color_mask[2], prev_color_mask[3]);
-    glDepthMask(prev_depth_mask);
-    glScissor(prev_scissor_box[0], prev_scissor_box[1], prev_scissor_box[2], prev_scissor_box[3]);
-    if (prev_scissor)
-        glEnable(GL_SCISSOR_TEST);
+        glColorMask(prev_color_mask[0], prev_color_mask[1], prev_color_mask[2], prev_color_mask[3]);
+        glDepthMask(prev_depth_mask);
+        glScissor(prev_scissor_box[0], prev_scissor_box[1], prev_scissor_box[2], prev_scissor_box[3]);
+        if (prev_scissor)
+            glEnable(GL_SCISSOR_TEST);
+    }
+    else
+    {
+        glDisable(GL_SCISSOR_TEST);
+        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        glDepthMask(GL_TRUE);
+        glClearDepth(1.0);
+
+        glBindFramebuffer(GL_FRAMEBUFFER, R_scene_draw_fbo(r));
+        glViewport(0, 0, r->fb_size.x, r->fb_size.y);
+
+        glClearColor(r->clear_color.x, r->clear_color.y, r->clear_color.z, 0.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    }
 
     R_stats_begin_frame(r);
 }
@@ -3111,36 +3786,120 @@ void R_end_frame(renderer_t *r)
     if (!r)
         return;
 
+    R_gpu_timers_resolve(r);
+
     ibl_ensure(r);
 
-    R_build_instancing(r);
+    {
+        double t0 = R_time_now_ms();
+        R_build_instancing(r);
+        r->cpu_timings.ms[R_CPU_BUILD_INSTANCING] = R_time_now_ms() - t0;
+        r->cpu_timings.valid = 1;
+    }
 
-    R_build_shadow_instancing(r);
+    {
+        double t0 = R_time_now_ms();
+        R_build_shadow_instancing(r);
+        r->cpu_timings.ms[R_CPU_BUILD_SHADOW_INSTANCING] = R_time_now_ms() - t0;
+        r->cpu_timings.valid = 1;
+    }
 
-    R_shadow_pass(r);
+    {
+        double t0 = R_time_now_ms();
+        R_gpu_timer_begin(r, R_GPU_SHADOW);
+        R_shadow_pass(r);
+        R_gpu_timer_end(r);
+        r->cpu_timings.ms[R_CPU_SHADOW] = R_time_now_ms() - t0;
+        r->cpu_timings.valid = 1;
+    }
 
-    R_depth_prepass(r);
+    {
+        double t0 = R_time_now_ms();
+        R_gpu_timer_begin(r, R_GPU_DEPTH_PREPASS);
+        R_depth_prepass(r);
+        R_gpu_timer_end(r);
+        r->cpu_timings.ms[R_CPU_DEPTH_PREPASS] = R_time_now_ms() - t0;
+        r->cpu_timings.valid = 1;
+    }
 
     // Resolve depth early so compute passes can sample it (tile cull, sky, etc).
-    R_msaa_resolve(r, GL_DEPTH_BUFFER_BIT);
+    {
+        double t0 = R_time_now_ms();
+        R_gpu_timer_begin(r, R_GPU_RESOLVE_DEPTH);
+        R_msaa_resolve(r, GL_DEPTH_BUFFER_BIT);
+        R_gpu_timer_end(r);
+        r->cpu_timings.ms[R_CPU_RESOLVE_DEPTH] = R_time_now_ms() - t0;
+        r->cpu_timings.valid = 1;
+    }
 
-    R_fp_dispatch(r);
+    {
+        double t0 = R_time_now_ms();
+        R_gpu_timer_begin(r, R_GPU_FP_CULL);
+        R_fp_dispatch(r);
+        R_gpu_timer_end(r);
+        r->cpu_timings.ms[R_CPU_FP_CULL] = R_time_now_ms() - t0;
+        r->cpu_timings.valid = 1;
+    }
 
-    R_sky_pass(r);
+    {
+        double t0 = R_time_now_ms();
+        R_gpu_timer_begin(r, R_GPU_SKY);
+        R_sky_pass(r);
+        R_gpu_timer_end(r);
+        r->cpu_timings.ms[R_CPU_SKY] = R_time_now_ms() - t0;
+        r->cpu_timings.valid = 1;
+    }
 
-    R_forward_one_pass(r);
+    {
+        double t0 = R_time_now_ms();
+        R_gpu_timer_begin(r, R_GPU_FORWARD);
+        R_forward_one_pass(r);
+        R_gpu_timer_end(r);
+        r->cpu_timings.ms[R_CPU_FORWARD] = R_time_now_ms() - t0;
+        r->cpu_timings.valid = 1;
+    }
 
     // Resolve color (and depth) for post-processing/tonemap.
-    R_msaa_resolve(r, GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    {
+        double t0 = R_time_now_ms();
+        R_gpu_timer_begin(r, R_GPU_RESOLVE_COLOR);
+        R_msaa_resolve(r, GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        R_gpu_timer_end(r);
+        r->cpu_timings.ms[R_CPU_RESOLVE_COLOR] = R_time_now_ms() - t0;
+        r->cpu_timings.valid = 1;
+    }
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-    R_auto_exposure_update(r);
+    {
+        double t0 = R_time_now_ms();
+        R_gpu_timer_begin(r, R_GPU_AUTO_EXPOSURE);
+        R_auto_exposure_update(r);
+        R_gpu_timer_end(r);
+        r->cpu_timings.ms[R_CPU_AUTO_EXPOSURE] = R_time_now_ms() - t0;
+        r->cpu_timings.valid = 1;
+    }
 
-    bloom_run(r, r->light_color_tex, r->black_tex);
+    {
+        double t0 = R_time_now_ms();
+        R_gpu_timer_begin(r, R_GPU_BLOOM);
+        bloom_run(r, r->light_color_tex, r->black_tex);
+        R_gpu_timer_end(r);
+        r->cpu_timings.ms[R_CPU_BLOOM] = R_time_now_ms() - t0;
+        r->cpu_timings.valid = 1;
+    }
 
     uint32_t bloom_tex = (r->cfg.bloom && r->bloom.mips) ? r->bloom.tex_up[0] : 0;
-    bloom_composite_to_final(r, r->light_color_tex, bloom_tex, r->gbuf_depth, r->black_tex);
+    {
+        double t0 = R_time_now_ms();
+        R_gpu_timer_begin(r, R_GPU_COMPOSITE);
+        bloom_composite_to_final(r, r->light_color_tex, bloom_tex, r->gbuf_depth, r->black_tex);
+        R_gpu_timer_end(r);
+        r->cpu_timings.ms[R_CPU_COMPOSITE] = R_time_now_ms() - t0;
+        r->cpu_timings.valid = 1;
+    }
+
+    r->gpu_query_index = (r->gpu_query_index + 1u) & 15u;
 }
 
 void R_push_scene_settings(renderer_t *r, const renderer_scene_settings_t *settings)
@@ -3189,5 +3948,15 @@ void R_push_hdri(renderer_t *r, ihandle_t tex)
 
 const render_stats_t *R_get_stats(const renderer_t *r)
 {
-    return &r->stats[r->stats_write ? 1u : 0u];
+    return r ? &r->stats[r->stats_write ? 1u : 0u] : NULL;
+}
+
+const render_gpu_timings_t *R_get_gpu_timings(const renderer_t *r)
+{
+    return r ? &r->gpu_timings : NULL;
+}
+
+const render_cpu_timings_t *R_get_cpu_timings(const renderer_t *r)
+{
+    return r ? &r->cpu_timings : NULL;
 }

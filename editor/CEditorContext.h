@@ -5,6 +5,7 @@ extern "C"
 #include "core/core.h"
 }
 
+
 namespace editor
 {
     struct CEditorContext

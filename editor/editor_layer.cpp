@@ -23,6 +23,8 @@ extern "C"
 #include "editor/windows/CViewPortWindow.h"
 #include "editor/windows/CStatsWindow.h"
 
+#include "editor/utils/themes.h"
+
 typedef struct editor_layer_data_t
 {
     int inited;
@@ -31,6 +33,7 @@ typedef struct editor_layer_data_t
     bool show_demo;
 
     vec2i fb;
+    CEditorThemeManager themes;
 
     std::vector<std::unique_ptr<editor::CBaseWindow>> windows;
     editor::CViewPortWindow *viewport;
@@ -72,6 +75,9 @@ static void editor_windows_init(editor_layer_data_t *d, Application *app)
     }
 
     d->windows.emplace_back(std::make_unique<editor::CStatsWindow>());
+
+    d->themes.RegisterBuiltins();
+    d->themes.ApplyById("graphite_dark");
 
     (void)app;
 }

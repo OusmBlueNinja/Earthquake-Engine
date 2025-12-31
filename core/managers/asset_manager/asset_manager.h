@@ -32,6 +32,13 @@ typedef struct asset_slot_t
     uint16_t module_index;
     ihandle_t persistent;
     asset_any_t asset;
+
+    // Streaming support: remember the original request so the same handle can be reloaded.
+    uint8_t path_is_ptr;
+    uint8_t inflight;
+    uint16_t requested_type;
+    uint64_t last_touched_frame;
+    char *path;
 } asset_slot_t;
 
 typedef struct asset_job_t
@@ -113,7 +120,34 @@ typedef struct asset_manager_desc_t
     uint32_t worker_count;
     uint32_t max_inflight_jobs;
     ihandle_type_t handle_type;
+
+    // Optional texture streaming / VRAM budget knobs. Leave 0 for defaults (disabled).
+    uint64_t vram_budget_bytes;
+    uint32_t stream_unused_frames;
+    uint32_t streaming_enabled;
 } asset_manager_desc_t;
+
+typedef struct asset_manager_stats_t
+{
+    uint64_t frame_index;
+
+    uint64_t vram_budget_bytes;
+    uint64_t vram_resident_bytes;
+
+    uint64_t upload_bytes_last_pump;
+    uint64_t evicted_bytes_last_pump;
+
+    uint32_t textures_resident;
+
+    uint32_t textures_loaded_total;
+    uint32_t textures_reloaded_total;
+    uint32_t textures_evicted_total;
+
+    uint32_t jobs_pending;
+    uint32_t done_pending;
+
+    uint32_t streaming_enabled;
+} asset_manager_stats_t;
 
 typedef struct asset_manager_t
 {
@@ -134,6 +168,14 @@ typedef struct asset_manager_t
     uint64_t prng_state;
 
     uint8_t asset_type_has_save[ASSET_MAX];
+
+    // Streaming/VRAM management.
+    uint64_t frame_index;
+    uint64_t vram_budget_bytes;
+    uint32_t stream_unused_frames;
+    uint32_t streaming_enabled;
+
+    asset_manager_stats_t stats;
 } asset_manager_t;
 
 bool asset_manager_init(asset_manager_t *am, const asset_manager_desc_t *desc);
@@ -148,6 +190,10 @@ ihandle_t asset_manager_submit_raw(asset_manager_t *am, asset_type_t type, const
 void asset_manager_pump(asset_manager_t *am, uint32_t max_per_frame);
 
 const asset_any_t *asset_manager_get_any(const asset_manager_t *am, ihandle_t h);
+void asset_manager_touch(asset_manager_t *am, ihandle_t h);
+bool asset_manager_get_stats(const asset_manager_t *am, asset_manager_stats_t *out);
+void asset_manager_set_streaming(asset_manager_t *am, uint32_t enabled, uint64_t vram_budget_bytes, uint32_t unused_frames);
+void asset_manager_end_frame(asset_manager_t *am);
 
 bool asset_manager_build_pack(asset_manager_t *am, uint8_t **out_data, uint32_t *out_size);
 bool asset_manager_build_pack_ex(asset_manager_t *am, uint8_t **out_data, uint32_t *out_size, uint32_t flags, const char *base_path);

@@ -219,6 +219,8 @@ static bool itex_init(asset_manager_t *am, asset_any_t *asset)
         GLint internal = (img->channels == 4) ? GL_RGBA16F : (img->channels == 3 ? GL_RGB16F : GL_R16F);
 
         glTexImage2D(GL_TEXTURE_2D, 0, internal, (GLsizei)img->width, (GLsizei)img->height, 0, fmt, GL_FLOAT, (const void *)img->pixels);
+        img->mip_count = 1;
+        img->vram_bytes = (uint64_t)img->width * (uint64_t)img->height * (uint64_t)img->channels * 2ull;
     }
     else
     {
@@ -233,6 +235,35 @@ static bool itex_init(asset_manager_t *am, asset_any_t *asset)
 
         glTexImage2D(GL_TEXTURE_2D, 0, internal, (GLsizei)img->width, (GLsizei)img->height, 0, fmt, GL_UNSIGNED_BYTE, (const void *)img->pixels);
         glGenerateMipmap(GL_TEXTURE_2D);
+
+        uint32_t mip_count = 1;
+        {
+            uint32_t mw = img->width;
+            uint32_t mh = img->height;
+            while (mw > 1u || mh > 1u)
+            {
+                if (mw > 1u)
+                    mw >>= 1u;
+                if (mh > 1u)
+                    mh >>= 1u;
+                mip_count++;
+            }
+        }
+        img->mip_count = mip_count;
+
+        uint64_t total = 0;
+        uint32_t mw = img->width;
+        uint32_t mh = img->height;
+        const uint32_t bpp = img->channels;
+        for (uint32_t mip = 0; mip < mip_count; ++mip)
+        {
+            total += (uint64_t)mw * (uint64_t)mh * (uint64_t)bpp;
+            if (mw > 1u)
+                mw >>= 1u;
+            if (mh > 1u)
+                mh >>= 1u;
+        }
+        img->vram_bytes = total;
     }
 
     glBindTexture(GL_TEXTURE_2D, 0);
@@ -271,6 +302,8 @@ static void itex_cleanup(asset_manager_t *am, asset_any_t *asset)
     img->is_float = 0;
     img->has_alpha = 0;
     img->has_smooth_alpha = 0;
+    img->mip_count = 0;
+    img->vram_bytes = 0;
 }
 
 static uint32_t itex_bytes_per_pixel(uint32_t channels, uint32_t is_float)

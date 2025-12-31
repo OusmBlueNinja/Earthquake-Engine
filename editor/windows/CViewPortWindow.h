@@ -11,7 +11,6 @@ extern "C"
 #include <stdint.h>
 #include <math.h>
 #include <stdio.h>
-#include <GL/glew.h>
 
 #include "imgui.h"
 #include "CBaseWindow.h"
@@ -116,6 +115,39 @@ namespace editor
                 }
 
                 ImGui::SameLine();
+                bool vsync_on = cvar_get_bool_name("cl_vsync");
+                if (ImGui::Checkbox("VSync", &vsync_on))
+                    cvar_set_bool_name("cl_vsync", vsync_on);
+
+                ImGui::SameLine();
+                bool bloom_on = cvar_get_bool_name("cl_bloom");
+                if (ImGui::Checkbox("Bloom", &bloom_on))
+                    cvar_set_bool_name("cl_bloom", bloom_on);
+
+                ImGui::SameLine();
+                bool shadows_on = cvar_get_bool_name("cl_r_shadows");
+                if (ImGui::Checkbox("Shadows", &shadows_on))
+                    cvar_set_bool_name("cl_r_shadows", shadows_on);
+
+                ImGui::SameLine();
+                bool auto_exp_on = cvar_get_bool_name("cl_auto_exposure");
+                if (ImGui::Checkbox("AutoExp", &auto_exp_on))
+                    cvar_set_bool_name("cl_auto_exposure", auto_exp_on);
+
+                if (auto_exp_on)
+                {
+                    ImGui::SameLine();
+                    ImGui::SetNextItemWidth(110.0f);
+                    int hz = cvar_get_int_name("cl_auto_exposure_hz");
+                    if (hz < 1)
+                        hz = 1;
+                    if (hz > 240)
+                        hz = 240;
+                    if (ImGui::SliderInt("AE Hz", &hz, 1, 240))
+                        cvar_set_int_name("cl_auto_exposure_hz", hz);
+                }
+
+                ImGui::SameLine();
                 int samples = cvar_get_int_name("cl_msaa_samples");
                 if (samples < 1)
                     samples = 1;
@@ -128,6 +160,7 @@ namespace editor
 
                 char label[32];
                 snprintf(label, sizeof(label), "%dx", kSamples[curIdx]);
+                ImGui::SetNextItemWidth(110.0f);
 
                 if (ImGui::BeginCombo("Samples", label))
                 {
@@ -198,21 +231,19 @@ namespace editor
                 m_LastSceneSize = scene_fb;
             }
 
-            uint32_t fbo_or_tex = R_get_final_fbo(r);
-            uint32_t tex = ResolveTexFromFboOrTex(fbo_or_tex);
-            m_LastFinalTex = tex;
+            m_LastFinalTex = R_get_final_color_tex(r);
 
             ImVec2 img_pos = ImGui::GetCursorScreenPos();
 
-            if (tex)
-                ImGui::Image((ImTextureID)(intptr_t)tex, ImVec2(w, h), ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f));
+            if (m_LastFinalTex)
+                ImGui::Image((ImTextureID)(intptr_t)m_LastFinalTex, ImVec2(w, h), ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f));
             else
                 ImGui::Text("No final texture");
 
             UpdateStats(dt);
 
             if (m_ShowOverlay)
-                DrawOverlaySmall(img_pos);
+                DrawOverlaySmall(r, img_pos);
         }
 
     private:
@@ -401,7 +432,7 @@ namespace editor
             m_FpsSmooth = vp_lerpf(m_FpsSmooth, fps, a);
         }
 
-        void DrawOverlaySmall(ImVec2 img_pos)
+        void DrawOverlaySmall(const renderer_t *r, ImVec2 img_pos)
         {
             ImDrawList *dl = ImGui::GetWindowDrawList();
             if (!dl)
@@ -410,10 +441,65 @@ namespace editor
             vec3 dir = OrbitDir(m_Yaw, m_Pitch);
             vec3 pos = vp_v3_add(m_Target, vp_v3_mul(dir, m_Distance));
 
-            char text[256];
-            snprintf(text, sizeof(text), "%.1f fps  %.2f ms  (%.2f %.2f %.2f)",
-                     (double)m_FpsSmooth, (double)(m_DtSmooth * 1000.0f),
-                     (double)pos.x, (double)pos.y, (double)pos.z);
+            const render_gpu_timings_t *gt = r ? R_get_gpu_timings(r) : nullptr;
+
+            char text[768];
+            char asset_line[256];
+            asset_line[0] = 0;
+
+            if (r && r->assets)
+            {
+                asset_manager_stats_t st;
+                if (asset_manager_get_stats(r->assets, &st))
+                {
+                    double vram_mb = (double)st.vram_resident_bytes / (1024.0 * 1024.0);
+                    double bud_mb = (double)st.vram_budget_bytes / (1024.0 * 1024.0);
+                    double up_mb = (double)st.upload_bytes_last_pump / (1024.0 * 1024.0);
+                    double ev_mb = (double)st.evicted_bytes_last_pump / (1024.0 * 1024.0);
+
+                    if (st.vram_budget_bytes)
+                    {
+                        snprintf(asset_line, sizeof(asset_line),
+                                 "Tex: %.1f/%.0f MB  up %.2f MB  ev %.2f MB  jobs %u/%u",
+                                 vram_mb, bud_mb, up_mb, ev_mb,
+                                 (unsigned)st.jobs_pending, (unsigned)st.done_pending);
+                    }
+                    else
+                    {
+                        snprintf(asset_line, sizeof(asset_line),
+                                 "Tex: %.1f MB  up %.2f MB  ev %.2f MB  jobs %u/%u",
+                                 vram_mb, up_mb, ev_mb,
+                                 (unsigned)st.jobs_pending, (unsigned)st.done_pending);
+                    }
+                }
+            }
+
+            if (gt && gt->valid)
+            {
+                snprintf(text, sizeof(text),
+                         "%.1f fps  %.2f ms  (%.2f %.2f %.2f)\n"
+                         "GPU: sh %.2f dp %.2f fp %.2f sky %.2f fwd %.2f rs %.2f blm %.2f cmp %.2f%s%s",
+                         (double)m_FpsSmooth, (double)(m_DtSmooth * 1000.0f),
+                         (double)pos.x, (double)pos.y, (double)pos.z,
+                         gt->ms[R_GPU_SHADOW],
+                         gt->ms[R_GPU_DEPTH_PREPASS],
+                         gt->ms[R_GPU_FP_CULL],
+                         gt->ms[R_GPU_SKY],
+                         gt->ms[R_GPU_FORWARD],
+                         gt->ms[R_GPU_RESOLVE_COLOR],
+                         gt->ms[R_GPU_BLOOM],
+                         gt->ms[R_GPU_COMPOSITE],
+                         asset_line[0] ? "\n" : "",
+                         asset_line[0] ? asset_line : "");
+            }
+            else
+            {
+                snprintf(text, sizeof(text), "%.1f fps  %.2f ms  (%.2f %.2f %.2f)%s%s",
+                         (double)m_FpsSmooth, (double)(m_DtSmooth * 1000.0f),
+                         (double)pos.x, (double)pos.y, (double)pos.z,
+                         asset_line[0] ? "\n" : "",
+                         asset_line[0] ? asset_line : "");
+            }
 
             float pad = 8.0f;
             ImVec2 p = ImVec2(img_pos.x + pad, img_pos.y + pad);
@@ -424,35 +510,6 @@ namespace editor
 
             dl->AddRectFilled(b0, b1, IM_COL32(0, 0, 0, 95), 5.0f);
             dl->AddText(p, IM_COL32(255, 255, 255, 215), text);
-        }
-
-        static uint32_t ResolveTexFromFboOrTex(uint32_t id)
-        {
-            if (id == 0)
-                return 0;
-
-            if (glIsFramebuffer((GLuint)id))
-            {
-                GLint prev = 0;
-                glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &prev);
-
-                glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)id);
-
-                GLint obj_type = 0;
-                GLint obj_name = 0;
-                glGetFramebufferAttachmentParameteriv(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE, &obj_type);
-                glGetFramebufferAttachmentParameteriv(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, &obj_name);
-
-                glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)prev);
-
-                if (obj_type == GL_TEXTURE)
-                    return (uint32_t)obj_name;
-                return 0;
-            }
-
-            if (glIsTexture((GLuint)id))
-                return id;
-            return 0;
         }
 
     private:
