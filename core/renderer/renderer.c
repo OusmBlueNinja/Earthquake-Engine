@@ -111,6 +111,7 @@ typedef struct inst_batch_t
 
     const mesh_lod_t *lod_ptr;
     const asset_material_t *mat_ptr;
+    uint64_t tex_key;
 
     uint8_t mat_cutout;
     uint8_t mat_blend;
@@ -130,6 +131,7 @@ typedef struct inst_item_t
 
     const mesh_lod_t *lod_ptr;
     const asset_material_t *mat_ptr;
+    uint64_t tex_key;
 
     uint8_t mat_cutout;
     uint8_t mat_blend;
@@ -234,6 +236,34 @@ static uint32_t u64_hash32(uint64_t x)
     x *= 0xc4ceb9fe1a85ec53u;
     x ^= x >> 33;
     return (uint32_t)x;
+}
+
+static uint64_t u64_fnv1a(uint64_t h, uint64_t v)
+{
+    h ^= v;
+    h *= 1099511628211ull;
+    return h;
+}
+
+static uint64_t R_material_tex_key(const asset_material_t *mat)
+{
+    if (!mat)
+        return 0ull;
+
+    uint64_t h = 1469598103934665603ull;
+    h = u64_fnv1a(h, (uint64_t)mat->shader_id);
+    h = u64_fnv1a(h, (uint64_t)mat->flags);
+
+    h = u64_fnv1a(h, model_key64(mat->albedo_tex));
+    h = u64_fnv1a(h, model_key64(mat->normal_tex));
+    h = u64_fnv1a(h, model_key64(mat->metallic_tex));
+    h = u64_fnv1a(h, model_key64(mat->roughness_tex));
+    h = u64_fnv1a(h, model_key64(mat->emissive_tex));
+    h = u64_fnv1a(h, model_key64(mat->occlusion_tex));
+    h = u64_fnv1a(h, model_key64(mat->height_tex));
+    h = u64_fnv1a(h, model_key64(mat->arm_tex));
+
+    return h;
 }
 
 static void model_bounds_free(void)
@@ -2311,6 +2341,16 @@ static int R_inst_item_sort(const void *a, const void *b)
     const inst_item_t *ia = (const inst_item_t *)a;
     const inst_item_t *ib = (const inst_item_t *)b;
 
+    if (ia->mat_blend < ib->mat_blend)
+        return -1;
+    if (ia->mat_blend > ib->mat_blend)
+        return 1;
+
+    if (ia->tex_key < ib->tex_key)
+        return -1;
+    if (ia->tex_key > ib->tex_key)
+        return 1;
+
     if (ia->model.type < ib->model.type)
         return -1;
     if (ia->model.type > ib->model.type)
@@ -2372,6 +2412,7 @@ static void R_emit_batches_from_items(renderer_t *r, inst_item_t *items, uint32_
             cur.count = 0;
             cur.lod_ptr = items[i].lod_ptr;
             cur.mat_ptr = items[i].mat_ptr;
+            cur.tex_key = items[i].tex_key;
             cur.mat_cutout = items[i].mat_cutout;
             cur.mat_blend = items[i].mat_blend;
             cur.mat_doublesided = items[i].mat_doublesided;
@@ -2401,6 +2442,7 @@ static void R_emit_batches_from_items(renderer_t *r, inst_item_t *items, uint32_
                 cur.count = 0;
                 cur.lod_ptr = items[i].lod_ptr;
                 cur.mat_ptr = items[i].mat_ptr;
+                cur.tex_key = items[i].tex_key;
                 cur.mat_cutout = items[i].mat_cutout;
                 cur.mat_blend = items[i].mat_blend;
                 cur.mat_doublesided = items[i].mat_doublesided;
@@ -2537,6 +2579,7 @@ static void R_build_instancing(renderer_t *r)
             float alpha_cutoff = 0.0f;
             uint32_t albedo_tex = 0;
             R_material_state(r, mat, &mat_cutout, &mat_blend, &mat_doublesided, &alpha_cutoff, &albedo_tex);
+            uint64_t tex_key = R_material_tex_key(mat);
 
             float fade01 = 0.0f;
             int xfade01 = 0;
@@ -2551,6 +2594,7 @@ static void R_build_instancing(renderer_t *r)
                 items[n].m = pm->model_matrix;
                 items[n].lod_ptr = (const mesh_lod_t *)vector_at((vector_t *)&mesh->lods, 0);
                 items[n].mat_ptr = mat;
+                items[n].tex_key = tex_key;
                 items[n].mat_cutout = (uint8_t)(mat_cutout ? 1 : 0);
                 items[n].mat_blend = (uint8_t)(mat_blend ? 1 : 0);
                 items[n].mat_doublesided = (uint8_t)(mat_doublesided ? 1 : 0);
@@ -2565,6 +2609,7 @@ static void R_build_instancing(renderer_t *r)
                 items[n].m = pm->model_matrix;
                 items[n].lod_ptr = (const mesh_lod_t *)vector_at((vector_t *)&mesh->lods, 1);
                 items[n].mat_ptr = mat;
+                items[n].tex_key = tex_key;
                 items[n].mat_cutout = (uint8_t)(mat_cutout ? 1 : 0);
                 items[n].mat_blend = (uint8_t)(mat_blend ? 1 : 0);
                 items[n].mat_doublesided = (uint8_t)(mat_doublesided ? 1 : 0);
@@ -2585,6 +2630,7 @@ static void R_build_instancing(renderer_t *r)
                 items[n].m = pm->model_matrix;
                 items[n].lod_ptr = (const mesh_lod_t *)vector_at((vector_t *)&mesh->lods, lod);
                 items[n].mat_ptr = mat;
+                items[n].tex_key = tex_key;
                 items[n].mat_cutout = (uint8_t)(mat_cutout ? 1 : 0);
                 items[n].mat_blend = (uint8_t)(mat_blend ? 1 : 0);
                 items[n].mat_doublesided = (uint8_t)(mat_doublesided ? 1 : 0);
@@ -2631,6 +2677,7 @@ static void R_build_instancing(renderer_t *r)
             float alpha_cutoff = 0.0f;
             uint32_t albedo_tex = 0;
             R_material_state(r, mat, &mat_cutout, &mat_blend, &mat_doublesided, &alpha_cutoff, &albedo_tex);
+            uint64_t tex_key = R_material_tex_key(mat);
 
             float fade01 = 0.0f;
             int xfade01 = 0;
@@ -2645,6 +2692,7 @@ static void R_build_instancing(renderer_t *r)
                 items[n].m = pm->model_matrix;
                 items[n].lod_ptr = (const mesh_lod_t *)vector_at((vector_t *)&mesh->lods, 0);
                 items[n].mat_ptr = mat;
+                items[n].tex_key = tex_key;
                 items[n].mat_cutout = (uint8_t)(mat_cutout ? 1 : 0);
                 items[n].mat_blend = (uint8_t)(mat_blend ? 1 : 0);
                 items[n].mat_doublesided = (uint8_t)(mat_doublesided ? 1 : 0);
@@ -2659,6 +2707,7 @@ static void R_build_instancing(renderer_t *r)
                 items[n].m = pm->model_matrix;
                 items[n].lod_ptr = (const mesh_lod_t *)vector_at((vector_t *)&mesh->lods, 1);
                 items[n].mat_ptr = mat;
+                items[n].tex_key = tex_key;
                 items[n].mat_cutout = (uint8_t)(mat_cutout ? 1 : 0);
                 items[n].mat_blend = (uint8_t)(mat_blend ? 1 : 0);
                 items[n].mat_doublesided = (uint8_t)(mat_doublesided ? 1 : 0);
@@ -2679,6 +2728,7 @@ static void R_build_instancing(renderer_t *r)
                 items[n].m = pm->model_matrix;
                 items[n].lod_ptr = (const mesh_lod_t *)vector_at((vector_t *)&mesh->lods, lod);
                 items[n].mat_ptr = mat;
+                items[n].tex_key = tex_key;
                 items[n].mat_cutout = (uint8_t)(mat_cutout ? 1 : 0);
                 items[n].mat_blend = (uint8_t)(mat_blend ? 1 : 0);
                 items[n].mat_doublesided = (uint8_t)(mat_doublesided ? 1 : 0);
@@ -2759,6 +2809,7 @@ static void R_build_shadow_instancing(renderer_t *r)
             float alpha_cutoff = 0.0f;
             uint32_t albedo_tex = 0;
             R_material_state(r, mat, &mat_cutout, &mat_blend, &mat_doublesided, &alpha_cutoff, &albedo_tex);
+            uint64_t tex_key = R_material_tex_key(mat);
 
             float fade01 = 0.0f;
             int xfade01 = 0;
@@ -2773,6 +2824,7 @@ static void R_build_shadow_instancing(renderer_t *r)
                 items[n].m = pm->model_matrix;
                 items[n].lod_ptr = (const mesh_lod_t *)vector_at((vector_t *)&mesh->lods, 0);
                 items[n].mat_ptr = mat;
+                items[n].tex_key = tex_key;
                 items[n].mat_cutout = (uint8_t)(mat_cutout ? 1 : 0);
                 items[n].mat_blend = (uint8_t)(mat_blend ? 1 : 0);
                 items[n].mat_doublesided = (uint8_t)(mat_doublesided ? 1 : 0);
@@ -2787,6 +2839,7 @@ static void R_build_shadow_instancing(renderer_t *r)
                 items[n].m = pm->model_matrix;
                 items[n].lod_ptr = (const mesh_lod_t *)vector_at((vector_t *)&mesh->lods, 1);
                 items[n].mat_ptr = mat;
+                items[n].tex_key = tex_key;
                 items[n].mat_cutout = (uint8_t)(mat_cutout ? 1 : 0);
                 items[n].mat_blend = (uint8_t)(mat_blend ? 1 : 0);
                 items[n].mat_doublesided = (uint8_t)(mat_doublesided ? 1 : 0);
@@ -2807,6 +2860,7 @@ static void R_build_shadow_instancing(renderer_t *r)
                 items[n].m = pm->model_matrix;
                 items[n].lod_ptr = (const mesh_lod_t *)vector_at((vector_t *)&mesh->lods, lod);
                 items[n].mat_ptr = mat;
+                items[n].tex_key = tex_key;
                 items[n].mat_cutout = (uint8_t)(mat_cutout ? 1 : 0);
                 items[n].mat_blend = (uint8_t)(mat_blend ? 1 : 0);
                 items[n].mat_doublesided = (uint8_t)(mat_doublesided ? 1 : 0);
@@ -2842,6 +2896,7 @@ static void R_build_shadow_instancing(renderer_t *r)
             float alpha_cutoff = 0.0f;
             uint32_t albedo_tex = 0;
             R_material_state(r, mat, &mat_cutout, &mat_blend, &mat_doublesided, &alpha_cutoff, &albedo_tex);
+            uint64_t tex_key = R_material_tex_key(mat);
 
             float fade01 = 0.0f;
             int xfade01 = 0;
@@ -2856,6 +2911,7 @@ static void R_build_shadow_instancing(renderer_t *r)
                 items[n].m = pm->model_matrix;
                 items[n].lod_ptr = (const mesh_lod_t *)vector_at((vector_t *)&mesh->lods, 0);
                 items[n].mat_ptr = mat;
+                items[n].tex_key = tex_key;
                 items[n].mat_cutout = (uint8_t)(mat_cutout ? 1 : 0);
                 items[n].mat_blend = (uint8_t)(mat_blend ? 1 : 0);
                 items[n].mat_doublesided = (uint8_t)(mat_doublesided ? 1 : 0);
@@ -2870,6 +2926,7 @@ static void R_build_shadow_instancing(renderer_t *r)
                 items[n].m = pm->model_matrix;
                 items[n].lod_ptr = (const mesh_lod_t *)vector_at((vector_t *)&mesh->lods, 1);
                 items[n].mat_ptr = mat;
+                items[n].tex_key = tex_key;
                 items[n].mat_cutout = (uint8_t)(mat_cutout ? 1 : 0);
                 items[n].mat_blend = (uint8_t)(mat_blend ? 1 : 0);
                 items[n].mat_doublesided = (uint8_t)(mat_doublesided ? 1 : 0);
@@ -2890,6 +2947,7 @@ static void R_build_shadow_instancing(renderer_t *r)
                 items[n].m = pm->model_matrix;
                 items[n].lod_ptr = (const mesh_lod_t *)vector_at((vector_t *)&mesh->lods, lod);
                 items[n].mat_ptr = mat;
+                items[n].tex_key = tex_key;
                 items[n].mat_cutout = (uint8_t)(mat_cutout ? 1 : 0);
                 items[n].mat_blend = (uint8_t)(mat_blend ? 1 : 0);
                 items[n].mat_doublesided = (uint8_t)(mat_doublesided ? 1 : 0);
