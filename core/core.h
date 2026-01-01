@@ -23,6 +23,8 @@
 #include "systems/ecs/components/c_transform.h"
 #include "systems/ecs/components/c_mesh_renderer.h"
 
+#include "systems/scene_renderer/scene_renderer.h"
+
 #include "renderer/renderer.h"
 
 #include "net/server.h"

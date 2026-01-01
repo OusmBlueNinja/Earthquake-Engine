@@ -224,6 +224,8 @@ void loop_application(void)
 
         R_begin_frame(&g_application.renderer);
 
+        scene_renderer_render(&g_application.renderer, &g_application.scene);
+
         VECTOR_FOR_EACH(g_application.layers, layer_t, layer)
         {
             if ((layer->flags & LAYER_FLAG_BLOCK_DRAW) != 0)
