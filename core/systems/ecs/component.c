@@ -27,7 +27,8 @@ ecs_component_id_t ecs_register_component_type(
     uint32_t size,
     uint32_t base_offset,
     ecs_component_save_fn save_fn,
-    ecs_component_load_fn load_fn
+    ecs_component_load_fn load_fn,
+    ecs_component_ctor_fn ctor_fn
 )
 {
     if (!w || !name || !name[0] || !size)
@@ -43,6 +44,7 @@ ecs_component_id_t ecs_register_component_type(
     t.base_offset = base_offset;
     t.save_fn = save_fn;
     t.load_fn = load_fn;
+    t.ctor_fn = ctor_fn;
 
     vector_push_back(&w->types, &t);
 

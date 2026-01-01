@@ -19,6 +19,10 @@
 #include "managers/cvar.h"
 #include "managers/asset_manager/asset_manager.h"
 
+#include "systems/ecs/components/c_tag.h"
+#include "systems/ecs/components/c_transform.h"
+#include "systems/ecs/components/c_mesh_renderer.h"
+
 #include "renderer/renderer.h"
 
 #include "net/server.h"

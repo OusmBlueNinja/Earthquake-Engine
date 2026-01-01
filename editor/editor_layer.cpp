@@ -23,6 +23,8 @@ extern "C"
 #include "editor/windows/CViewPortWindow.h"
 #include "editor/windows/CStatsWindow.h"
 #include "editor/windows/CAssetManagerWindow.h"
+#include "editor/windows/CSceneViewerWindow.h"
+#include "editor/windows/CEntityInspectorWindow.h"
 
 #include "editor/utils/themes.h"
 
@@ -38,6 +40,8 @@ typedef struct editor_layer_data_t
 
     std::vector<std::unique_ptr<editor::CBaseWindow>> windows;
     editor::CViewPortWindow *viewport;
+    editor::CEditorContext ctx;
+
 } editor_layer_data_t;
 
 static editor_layer_data_t *layer_data(layer_t *layer)
@@ -77,21 +81,23 @@ static void editor_windows_init(editor_layer_data_t *d, Application *app)
 
     d->windows.emplace_back(std::make_unique<editor::CStatsWindow>());
     d->windows.emplace_back(std::make_unique<editor::CAssetManagerWindow>());
+    d->windows.emplace_back(std::make_unique<editor::CSceneViewerWindow>());
+    d->windows.emplace_back(std::make_unique<editor::CEntityInspectorWindow>());
 
     d->themes.RegisterBuiltins();
     d->themes.ApplyById("graphite_dark");
-
+    ImGui::GetStyle().WindowMinSize.x = 380.0f;
     (void)app;
 }
 
 static void editor_windows_tick(editor_layer_data_t *d, float dt, Application *app)
 {
-    editor::CEditorContext ctx;
-    ctx.app = app;
-    ctx.renderer = app ? &app->renderer : nullptr;
-    ctx.assets = (ctx.renderer) ? ctx.renderer->assets : nullptr;
-    ctx.dt = dt;
-    ctx.fps = (dt > 0.000001f) ? (1.0f / dt) : 0.0f;
+
+    d->ctx.app = app;
+    d->ctx.renderer = app ? &app->renderer : nullptr;
+    d->ctx.assets = (d->ctx.renderer) ? d->ctx.renderer->assets : nullptr;
+    d->ctx.dt = dt;
+    d->ctx.fps = (dt > 0.000001f) ? (1.0f / dt) : 0.0f;
 
     for (auto &wptr : d->windows)
     {
@@ -104,7 +110,7 @@ static void editor_windows_tick(editor_layer_data_t *d, float dt, Application *a
 
         bool draw = w->Begin();
         if (draw)
-            w->Tick(dt, &ctx);
+            w->Tick(dt, &d->ctx);
         w->End();
     }
 }
@@ -204,7 +210,16 @@ void layer_init(layer_t *layer)
     ImGui_ImplGlfw_InitForOpenGL(w, true);
     ImGui_ImplOpenGL3_Init("#version 430");
 
-    io.Fonts->AddFontFromFileTTF("res/fonts/0xProtoNerdFontPropo-Regular.ttf", 16.0f);
+    io.Fonts->AddFontFromFileTTF("res/fonts/CascadiaMono-Regular.ttf", 16.0f);
+
+    ImFontConfig cfg;
+    cfg.MergeMode = true;
+    cfg.PixelSnapH = true;
+    cfg.GlyphMinAdvanceX = 13.0f;
+
+    static const ImWchar icon_ranges[] = {ICON_MIN_FA, ICON_MAX_FA, 0};
+
+    io.Fonts->AddFontFromFileTTF("res/fonts/fa-solid-900.ttf", 16.0f, &cfg, icon_ranges);
 
     d->first_frame = 1;
     d->inited = 1;
@@ -254,6 +269,8 @@ void layer_post_update(layer_t *layer, float dt)
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glViewport(0, 0, fb.x, fb.y);
     glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_SAMPLE_ALPHA_TO_COVERAGE);
+    glDisable(GL_SAMPLE_COVERAGE);
 
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 

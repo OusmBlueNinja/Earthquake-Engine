@@ -1,5 +1,7 @@
 #pragma once
 
+#include "IconsFontAwesome6.h"
+
 namespace editor
 {
     class CEditorContext;

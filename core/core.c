@@ -18,7 +18,7 @@ ApplicationSpecification create_specification()
     spec.asset_manager_desc.stream_unused_ms = 120000;
     spec.asset_manager_desc.streaming_enabled = 1u;
     spec.asset_manager_desc.upload_budget_bytes_per_pump = 32ull * 1024ull * 1024ull;
-    spec.asset_manager_desc.pump_per_frame = 2u;
+    spec.asset_manager_desc.pump_per_frame = 8u;
 
     return spec;
 }
@@ -68,24 +68,28 @@ void init_application(Application *app)
     log_enable_colors(g_application.specification->terminal_colors);
     LOG_INFO("Starting Application");
 
+    LOG_INFO("Initializing cvars");
     if (cvar_init())
     {
         g_application.status = APP_STATUS_FAILED_TO_INIT_CVARS;
         return;
     }
 
+    LOG_INFO("Initializing window manager");
     if (wm_init(&g_application.window_manager))
     {
         g_application.status = APP_STATUS_FAILED_TO_CREATE_WINDOW;
         return;
     }
 
+    LOG_INFO("Initializing renderer");
     if (R_init(&g_application.renderer, &g_application.asset_manager))
     {
         g_application.status = APP_STATUS_FAILED_TO_INITALIZE_RENDERER;
         return;
     }
 
+    LOG_INFO("Initializing server");
     if (sv_init())
     {
         g_application.status = APP_STATUS_FAILED_TO_INIT_SV;
@@ -106,10 +110,20 @@ void init_application(Application *app)
     asset_manager_desc_t desc = g_application.specification->asset_manager_desc;
     desc.worker_count = (cpu_threads > 0) ? (uint32_t)cpu_threads : 1u;
     desc.handle_type = iHANDLE_TYPE_ASSET;
+
+    LOG_INFO("Initializing asset manager");
     asset_manager_init(&g_application.asset_manager, &desc);
 
+    LOG_INFO("Initializing ECS");
+    ecs_world_init(&g_application.scene, (ecs_world_desc_t){.initial_entity_capacity = 0});
+
+    c_tag_register(&g_application.scene);
+    c_transform_register(&g_application.scene);
+    c_mesh_renderer_register(&g_application.scene);
+
+    ecs_world_set_required_tag(&g_application.scene, ecs_component_id(&g_application.scene, c_tag_t));
+
     {
-        // Init Layers
         layer_t *layer;
         VECTOR_FOR_EACH(g_application.layers, layer_t, layer)
         {

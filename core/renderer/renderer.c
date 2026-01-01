@@ -3709,7 +3709,7 @@ static void R_forward_draw_filtered(renderer_t *r, shader_t *fwd, int draw_blend
         int xfade_mode = (b->lod == 1) ? 1 : 0;
         shader_set_int(fwd, "u_LodXFadeEnabled", xfade_enabled);
         shader_set_int(fwd, "u_LodXFadeMode", xfade_mode);
-        if (r->cfg.msaa && r->msaa_samples > 1 && b->mat_cutout)
+        if (r->cfg.msaa && r->msaa_samples > 1 && (b->mat_cutout || xfade_enabled))
             gl_state_enable(&r->gl, GL_SAMPLE_ALPHA_TO_COVERAGE);
         else
             gl_state_disable(&r->gl, GL_SAMPLE_ALPHA_TO_COVERAGE);

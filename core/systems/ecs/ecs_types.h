@@ -11,6 +11,7 @@ typedef uint32_t ecs_component_id_t;
 
 typedef int (*ecs_component_save_fn)(const void *component, vector_t *out_bytes);
 typedef int (*ecs_component_load_fn)(void *component, const uint8_t *payload, uint32_t payload_size);
+typedef void (*ecs_component_ctor_fn)(void *component);
 
 typedef struct base_component_t
 {
