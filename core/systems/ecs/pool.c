@@ -134,6 +134,8 @@ void *ecs_add_raw(ecs_world_t *w, ecs_entity_t e, ecs_component_id_t type_id)
     b->entity = e;
     b->type_id = type_id;
     b->flags = 0;
+    b->save_fn = ti->save_fn;
+    b->load_fn = ti->load_fn;
 
     return (void *)ptr;
 }

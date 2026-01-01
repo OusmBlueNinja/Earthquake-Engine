@@ -4,8 +4,38 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "ecs/world.h"
-#include "ecs/entity.h"
+#include "types/vector.h"
+#include "ecs_types.h"
+#include "entity.h"
+
+typedef struct ecs_type_info_t
+{
+    char *name;
+    uint32_t size;
+    uint32_t base_offset;
+    ecs_component_save_fn save_fn;
+    ecs_component_load_fn load_fn;
+} ecs_type_info_t;
+
+typedef struct ecs_pool_t
+{
+    ecs_component_id_t type_id;
+    vector_t dense_entities;
+    vector_t dense_data;
+    vector_t sparse;
+} ecs_pool_t;
+
+struct ecs_world_t
+{
+    vector_t entity_gen;
+    vector_t entity_alive;
+    vector_t free_list;
+
+    vector_t types;
+    vector_t pools;
+
+    ecs_component_id_t required_tag_id;
+};
 
 static inline char *ecs_strdup_local(const char *s)
 {

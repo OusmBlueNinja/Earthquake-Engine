@@ -1,11 +1,6 @@
 #include "component.h"
 #include "internal.h"
 
-static ecs_type_info_t *ecs_type_at(ecs_world_t *w, ecs_component_id_t id)
-{
-    return (ecs_type_info_t *)vector_impl_at(&w->types, id);
-}
-
 static const ecs_type_info_t *ecs_type_at_const(const ecs_world_t *w, ecs_component_id_t id)
 {
     return (const ecs_type_info_t *)((uint8_t *)w->types.data + (size_t)id * w->types.element_size);
@@ -30,7 +25,9 @@ ecs_component_id_t ecs_register_component_type(
     ecs_world_t *w,
     const char *name,
     uint32_t size,
-    uint32_t base_offset
+    uint32_t base_offset,
+    ecs_component_save_fn save_fn,
+    ecs_component_load_fn load_fn
 )
 {
     if (!w || !name || !name[0] || !size)
@@ -44,6 +41,8 @@ ecs_component_id_t ecs_register_component_type(
     t.name = ecs_strdup_local(name);
     t.size = size;
     t.base_offset = base_offset;
+    t.save_fn = save_fn;
+    t.load_fn = load_fn;
 
     vector_push_back(&w->types, &t);
 
