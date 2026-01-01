@@ -38,7 +38,8 @@ typedef struct ApplicationSpecification
     int argc;
     char **argv;
     bool terminal_colors;
-    int am_max_inflight_jobs;
+
+    asset_manager_desc_t asset_manager_desc;
 
 } ApplicationSpecification;
 

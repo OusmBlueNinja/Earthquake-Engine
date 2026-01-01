@@ -949,6 +949,8 @@ bool asset_manager_init(asset_manager_t *am, const asset_manager_desc_t *desc)
     uint32_t stream_unused_frames = 120;
     uint32_t stream_unused_ms = 10000;
     uint32_t streaming_enabled = 0;
+    uint64_t upload_budget_bytes_per_pump = 32ull * 1024ull * 1024ull;
+    uint32_t pump_per_frame = 2;
 
     if (desc)
     {
@@ -966,6 +968,10 @@ bool asset_manager_init(asset_manager_t *am, const asset_manager_desc_t *desc)
             stream_unused_ms = desc->stream_unused_ms;
         if (desc->streaming_enabled)
             streaming_enabled = desc->streaming_enabled;
+        if (desc->upload_budget_bytes_per_pump)
+            upload_budget_bytes_per_pump = desc->upload_budget_bytes_per_pump;
+        if (desc->pump_per_frame)
+            pump_per_frame = desc->pump_per_frame;
     }
 
     am->handle_type = ht;
@@ -974,6 +980,8 @@ bool asset_manager_init(asset_manager_t *am, const asset_manager_desc_t *desc)
     am->stream_unused_frames = stream_unused_frames;
     am->stream_unused_ms = stream_unused_ms;
     am->streaming_enabled = streaming_enabled ? 1u : 0u;
+    am->upload_budget_bytes_per_pump = upload_budget_bytes_per_pump;
+    am->pump_per_frame = (pump_per_frame == 0) ? 1u : pump_per_frame;
     am->now_ms = am_time_ms();
     am->unload_scan_index = 0;
 
@@ -1729,6 +1737,20 @@ void asset_manager_pump(asset_manager_t *am, uint32_t max_per_frame)
         }
         mutex_unlock_impl(&am->state_m);
     }
+}
+
+void asset_manager_pump_frame(asset_manager_t *am)
+{
+    if (!am)
+        return;
+
+    uint32_t pump = 1;
+    mutex_lock_impl(&am->state_m);
+    if (am->pump_per_frame)
+        pump = am->pump_per_frame;
+    mutex_unlock_impl(&am->state_m);
+
+    asset_manager_pump(am, pump);
 }
 
 void asset_manager_begin_frame(asset_manager_t *am)

@@ -130,6 +130,9 @@ typedef struct asset_manager_desc_t
     uint32_t stream_unused_frames;
     uint32_t stream_unused_ms;
     uint32_t streaming_enabled;
+
+    uint64_t upload_budget_bytes_per_pump;
+    uint32_t pump_per_frame;
 } asset_manager_desc_t;
 
 typedef struct asset_manager_stats_t
@@ -187,6 +190,7 @@ typedef struct asset_manager_t
     // Note: a single large texture upload can still stall for one frame; this mostly prevents
     // doing many uploads in the same pump.
     uint64_t upload_budget_bytes_per_pump;
+    uint32_t pump_per_frame;
 
     asset_manager_stats_t stats;
 
@@ -250,6 +254,7 @@ ihandle_t asset_manager_request(asset_manager_t *am, asset_type_t type, const ch
 ihandle_t asset_manager_submit_raw(asset_manager_t *am, asset_type_t type, const void *raw_asset);
 
 void asset_manager_pump(asset_manager_t *am, uint32_t max_per_frame);
+void asset_manager_pump_frame(asset_manager_t *am);
 
 void asset_manager_begin_frame(asset_manager_t *am);
 

@@ -11,6 +11,14 @@ ApplicationSpecification create_specification()
     spec.argc = 0;
     spec.argv = NULL;
     spec.terminal_colors = true;
+    spec.asset_manager_desc = (asset_manager_desc_t){0};
+    spec.asset_manager_desc.max_inflight_jobs = 1024;
+    spec.asset_manager_desc.vram_budget_bytes = 512ull * 1024ull * 1024ull;
+    spec.asset_manager_desc.stream_unused_frames = 240;
+    spec.asset_manager_desc.stream_unused_ms = 120000;
+    spec.asset_manager_desc.streaming_enabled = 1u;
+    spec.asset_manager_desc.upload_budget_bytes_per_pump = 32ull * 1024ull * 1024ull;
+    spec.asset_manager_desc.pump_per_frame = 2u;
 
     return spec;
 }
@@ -90,44 +98,15 @@ void init_application(Application *app)
     }
 
     log_set_level(cvar_get_int_name("cl_log_level"));
-    cvar_force_set_int_name("cl_cpu_threads", threads_get_cpu_logical_count());
+    const int cpu_threads = threads_get_cpu_logical_count();
+    cvar_force_set_int_name("cl_cpu_threads", cpu_threads);
 
     LOG_INFO("Logical Processors: %d", cvar_get_int_name("cl_cpu_threads"));
 
-    asset_manager_desc_t desc = {0};
-    desc.worker_count = cvar_get_int_name("cl_cpu_threads");
-    desc.max_inflight_jobs = g_application.specification->am_max_inflight_jobs;
+    asset_manager_desc_t desc = g_application.specification->asset_manager_desc;
+    desc.worker_count = (cpu_threads > 0) ? (uint32_t)cpu_threads : 1u;
     desc.handle_type = iHANDLE_TYPE_ASSET;
-    
-
-    {
-        int vram_budget_mb = cvar_get_int_name("cl_am_vram_budget_mb");
-        if (vram_budget_mb < 0)
-            vram_budget_mb = 0;
-        desc.vram_budget_bytes = (uint64_t)vram_budget_mb * 1024ull * 1024ull;
-
-        desc.streaming_enabled = cvar_get_bool_name("cl_am_streaming") ? 1u : 0u;
-
-        int unused_frames = cvar_get_int_name("cl_am_stream_unused_frames");
-        if (unused_frames < 0)
-            unused_frames = 0;
-        desc.stream_unused_frames = (uint32_t)unused_frames;
-
-        int unused_ms = cvar_get_int_name("cl_am_stream_unused_ms");
-        if (unused_ms < 0)
-            unused_ms = 0;
-        desc.stream_unused_ms = (uint32_t)unused_ms;
-
-    }
-
     asset_manager_init(&g_application.asset_manager, &desc);
-
-    {
-        int upload_mb = cvar_get_int_name("cl_am_upload_budget_mb");
-        if (upload_mb < 0)
-            upload_mb = 0;
-        asset_manager_set_upload_budget(&g_application.asset_manager, (uint64_t)upload_mb * 1024ull * 1024ull);
-    }
 
     {
         // Init Layers
@@ -225,31 +204,7 @@ void loop_application(void)
                 layer->update(layer, (float)dt);
         }
 
-        {
-            int vram_budget_mb = cvar_get_int_name("cl_am_vram_budget_mb");
-            if (vram_budget_mb < 0)
-                vram_budget_mb = 0;
-            uint64_t budget_bytes = (uint64_t)vram_budget_mb * 1024ull * 1024ull;
-
-            int unused_frames = cvar_get_int_name("cl_am_stream_unused_frames");
-            if (unused_frames < 0)
-                unused_frames = 0;
-
-            asset_manager_set_streaming(&g_application.asset_manager,
-                                       cvar_get_bool_name("cl_am_streaming") ? 1u : 0u,
-                                       budget_bytes,
-                                       (uint32_t)unused_frames);
-
-            int upload_mb = cvar_get_int_name("cl_am_upload_budget_mb");
-            if (upload_mb < 0)
-                upload_mb = 0;
-            asset_manager_set_upload_budget(&g_application.asset_manager, (uint64_t)upload_mb * 1024ull * 1024ull);
-        }
-
-        uint32_t pump = (uint32_t)cvar_get_int_name("cl_am_pump_per_frame");
-        if (pump == 0)
-            pump = 1;
-        asset_manager_pump(&g_application.asset_manager, pump);
+        asset_manager_pump_frame(&g_application.asset_manager);
 
         // R_resize(&g_application.renderer, wm_get_framebuffer_size(&g_application.window_manager));
 
