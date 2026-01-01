@@ -8,6 +8,7 @@
 #include "layer.h"
 
 #include "systems/event.h"
+#include "systems/ecs/ecs.h"
 
 #include "types/vec2.h"
 #include "types/vec2i.h"
@@ -61,6 +62,8 @@ typedef struct Application
     asset_manager_t asset_manager;
 
     renderer_t renderer;
+
+    ecs_world_t scene;
 
     bool application_initalized;
     app_status_t status;
