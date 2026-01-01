@@ -156,11 +156,33 @@ typedef struct line3d_vertex_t
     float color[4];
 } line3d_vertex_t;
 
+typedef struct quad3d_vertex_t
+{
+    float pos[3];
+    float uv[2];
+    float color[4];
+} quad3d_vertex_t;
+
+typedef struct quad3d_item_t
+{
+    uint64_t key;
+    uint32_t src_index;
+    uint32_t tex_gl;
+} quad3d_item_t;
+
 static inst_item_t *g_inst_item_scratch = NULL;
 static uint32_t g_inst_item_scratch_cap = 0;
 
 static line3d_vertex_t *g_line3d_vert_scratch = NULL;
 static uint32_t g_line3d_vert_scratch_cap = 0;
+
+static quad3d_vertex_t *g_quad3d_vert_scratch = NULL;
+static uint32_t g_quad3d_vert_scratch_cap = 0;
+
+static quad3d_item_t *g_quad3d_item_scratch = NULL;
+static uint32_t g_quad3d_item_scratch_cap = 0;
+
+static uint32_t R_resolve_image_gl(const renderer_t *r, ihandle_t h);
 
 static inst_item_t *R_inst_item_scratch(uint32_t need)
 {
@@ -201,6 +223,34 @@ static line3d_vertex_t *R_line3d_vert_scratch(uint32_t need)
     g_line3d_vert_scratch = p;
     g_line3d_vert_scratch_cap = need;
     return g_line3d_vert_scratch;
+}
+
+static quad3d_vertex_t *R_quad3d_vert_scratch(uint32_t need)
+{
+    if (need <= g_quad3d_vert_scratch_cap && g_quad3d_vert_scratch)
+        return g_quad3d_vert_scratch;
+
+    quad3d_vertex_t *p = (quad3d_vertex_t *)realloc(g_quad3d_vert_scratch, sizeof(quad3d_vertex_t) * (size_t)need);
+    if (!p)
+        return NULL;
+
+    g_quad3d_vert_scratch = p;
+    g_quad3d_vert_scratch_cap = need;
+    return g_quad3d_vert_scratch;
+}
+
+static quad3d_item_t *R_quad3d_item_scratch(uint32_t need)
+{
+    if (need <= g_quad3d_item_scratch_cap && g_quad3d_item_scratch)
+        return g_quad3d_item_scratch;
+
+    quad3d_item_t *p = (quad3d_item_t *)realloc(g_quad3d_item_scratch, sizeof(quad3d_item_t) * (size_t)need);
+    if (!p)
+        return NULL;
+
+    g_quad3d_item_scratch = p;
+    g_quad3d_item_scratch_cap = need;
+    return g_quad3d_item_scratch;
 }
 
 typedef struct u32_set_t
@@ -601,6 +651,48 @@ static void R_line3d_ensure_vbo_capacity(renderer_t *r, uint32_t vertex_count)
     r->line3d_vbo_cap_vertices = new_cap;
 }
 
+static void R_quad3d_ensure_gpu(renderer_t *r)
+{
+    ASSERT(r);
+
+    if (!r->quad3d_vao)
+        glGenVertexArrays(1, &r->quad3d_vao);
+    if (!r->quad3d_vbo)
+        glGenBuffers(1, &r->quad3d_vbo);
+
+    glBindVertexArray(r->quad3d_vao);
+
+    glBindBuffer(GL_ARRAY_BUFFER, r->quad3d_vbo);
+
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, (GLsizei)sizeof(quad3d_vertex_t), (const void *)0);
+
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, (GLsizei)sizeof(quad3d_vertex_t), (const void *)(uintptr_t)(sizeof(float) * 3u));
+
+    glEnableVertexAttribArray(2);
+    glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, (GLsizei)sizeof(quad3d_vertex_t), (const void *)(uintptr_t)(sizeof(float) * 5u));
+
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindVertexArray(0);
+}
+
+static void R_quad3d_ensure_vbo_capacity(renderer_t *r, uint32_t vertex_count)
+{
+    if (!r || !r->quad3d_vbo)
+        return;
+    if (vertex_count <= r->quad3d_vbo_cap_vertices)
+        return;
+
+    uint32_t new_cap = u32_next_pow2(vertex_count);
+
+    glBindBuffer(GL_ARRAY_BUFFER, r->quad3d_vbo);
+    glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)((size_t)new_cap * sizeof(quad3d_vertex_t)), NULL, GL_DYNAMIC_DRAW);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+    r->quad3d_vbo_cap_vertices = new_cap;
+}
+
 static void R_line3d_draw_batch(renderer_t *r,
                                 shader_t *s,
                                 uint32_t first_vertex,
@@ -640,6 +732,55 @@ static void R_line3d_draw_batch(renderer_t *r,
 
     glBindVertexArray(r->line3d_vao);
     glDrawArrays(GL_LINES, (GLint)first_vertex, (GLsizei)vertex_count);
+    glBindVertexArray(0);
+
+    R_stats_add_draw_arrays(r);
+}
+
+static void R_quad3d_draw_batch(renderer_t *r,
+                                shader_t *s,
+                                uint32_t first_vertex,
+                                uint32_t vertex_count,
+                                bool depth_test,
+                                bool translucent,
+                                uint32_t tex)
+{
+    if (!r || !s)
+        return;
+    if (!vertex_count)
+        return;
+
+    gl_state_disable(&r->gl, GL_CULL_FACE);
+
+    if (depth_test)
+        gl_state_enable(&r->gl, GL_DEPTH_TEST);
+    else
+        gl_state_disable(&r->gl, GL_DEPTH_TEST);
+
+    if (translucent)
+    {
+        gl_state_enable(&r->gl, GL_BLEND);
+        gl_state_blend_func(&r->gl, GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        gl_state_depth_mask(&r->gl, 0);
+    }
+    else
+    {
+        gl_state_disable(&r->gl, GL_BLEND);
+        gl_state_depth_mask(&r->gl, 1);
+    }
+
+    if (!depth_test)
+        gl_state_depth_mask(&r->gl, 0);
+
+    shader_bind(s);
+    R_bind_common_uniforms(r, s);
+    shader_set_int(s, "u_Tex", 0);
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, tex ? tex : r->black_tex);
+
+    glBindVertexArray(r->quad3d_vao);
+    glDrawArrays(GL_TRIANGLES, (GLint)first_vertex, (GLsizei)vertex_count);
     glBindVertexArray(0);
 
     R_stats_add_draw_arrays(r);
@@ -756,6 +897,240 @@ static void R_line3d_render(renderer_t *r)
     R_line3d_draw_batch(r, s, batch_first[LINE_BATCH_DEPTH_TRANSLUCENT], batch_counts[LINE_BATCH_DEPTH_TRANSLUCENT], true, true);
     R_line3d_draw_batch(r, s, batch_first[LINE_BATCH_ONTOP_OPAQUE], batch_counts[LINE_BATCH_ONTOP_OPAQUE], false, false);
     R_line3d_draw_batch(r, s, batch_first[LINE_BATCH_ONTOP_TRANSLUCENT], batch_counts[LINE_BATCH_ONTOP_TRANSLUCENT], false, true);
+
+    gl_state_disable(&r->gl, GL_BLEND);
+    gl_state_enable(&r->gl, GL_DEPTH_TEST);
+    gl_state_depth_func(&r->gl, GL_LEQUAL);
+    gl_state_depth_mask(&r->gl, 1);
+}
+
+static int R_quad3d_item_sort(const void *a, const void *b)
+{
+    const quad3d_item_t *aa = (const quad3d_item_t *)a;
+    const quad3d_item_t *bb = (const quad3d_item_t *)b;
+    if (aa->key < bb->key)
+        return -1;
+    if (aa->key > bb->key)
+        return 1;
+    if (aa->src_index < bb->src_index)
+        return -1;
+    if (aa->src_index > bb->src_index)
+        return 1;
+    return 0;
+}
+
+static void R_quad3d_render(renderer_t *r)
+{
+    if (!r || r->quads3d.size == 0)
+        return;
+
+    shader_t *s = (r->quad3d_shader_id != 0xFF) ? R_get_shader(r, r->quad3d_shader_id) : NULL;
+    if (!s)
+        return;
+
+    const uint32_t quad_count = r->quads3d.size;
+
+    quad3d_item_t *items = R_quad3d_item_scratch(quad_count);
+    if (!items)
+        return;
+
+    uint32_t item_count = 0;
+    for (uint32_t i = 0; i < quad_count; ++i)
+    {
+        const quad3d_t *q = (const quad3d_t *)vector_at((vector_t *)&r->quads3d, i);
+        if (!q)
+            continue;
+
+        uint32_t tex_gl = 0;
+        if ((q->flags & QUAD3D_TEX_GL) != 0u)
+            tex_gl = q->texture.gl;
+        else
+            tex_gl = R_resolve_image_gl(r, q->texture.handle);
+        if (!tex_gl)
+            tex_gl = r->black_tex;
+
+        uint32_t category = 0;
+        const bool on_top = (q->flags & QUAD3D_ON_TOP) != 0u;
+        const bool translucent = (q->flags & QUAD3D_TRANSLUCENT) != 0u;
+        if (on_top && translucent)
+            category = 3;
+        else if (on_top)
+            category = 2;
+        else if (translucent)
+            category = 1;
+        else
+            category = 0;
+
+        items[item_count++] = (quad3d_item_t){
+            ((uint64_t)category << 32) | (uint64_t)tex_gl,
+            i,
+            tex_gl};
+    }
+
+    if (!item_count)
+        return;
+
+    qsort(items, (size_t)item_count, sizeof(items[0]), R_quad3d_item_sort);
+
+    const uint32_t total_vertices = item_count * 6u;
+    quad3d_vertex_t *verts = R_quad3d_vert_scratch(total_vertices);
+    if (!verts)
+        return;
+
+    for (uint32_t ii = 0; ii < item_count; ++ii)
+    {
+        const quad3d_item_t *it = &items[ii];
+        const quad3d_t *q = (const quad3d_t *)vector_at((vector_t *)&r->quads3d, it->src_index);
+        if (!q)
+            continue;
+
+        vec3 right, up;
+        {
+            if ((q->flags & QUAD3D_FACE_CAMERA) != 0u)
+            {
+                const float deg2rad = 0.01745329251994329577f;
+                const vec3 cam_right = (vec3){r->camera.inv_view.m[0], r->camera.inv_view.m[1], r->camera.inv_view.m[2]};
+                const vec3 cam_up = (vec3){r->camera.inv_view.m[4], r->camera.inv_view.m[5], r->camera.inv_view.m[6]};
+
+                if ((q->flags & QUAD3D_ABSOLUTE_ROTATION) != 0u)
+                {
+                    const vec3 to_cam = vec3_norm_safe(vec3_sub(r->camera.position, q->center), 1e-6f);
+                    vec3 up_world = (vec3){0.0f, 1.0f, 0.0f};
+                    vec3 r0 = vec3_cross(up_world, to_cam);
+                    if (vec3_len_sq(r0) < 1e-8f)
+                    {
+                        right = cam_right;
+                        up = cam_up;
+                    }
+                    else
+                    {
+                        right = vec3_norm(r0);
+                        up = vec3_cross(to_cam, right);
+                    }
+                }
+                else
+                {
+                    right = cam_right;
+                    up = cam_up;
+                }
+
+                const float roll = q->rotation.z * deg2rad;
+                if (fabsf(roll) > 1e-8f)
+                {
+                    const float c = cosf(roll);
+                    const float s0 = sinf(roll);
+                    const vec3 r1 = vec3_add(vec3_mul_f(right, c), vec3_mul_f(up, -s0));
+                    const vec3 u1 = vec3_add(vec3_mul_f(right, s0), vec3_mul_f(up, c));
+                    right = r1;
+                    up = u1;
+                }
+            }
+            else
+            {
+                const float deg2rad = 0.01745329251994329577f;
+                const mat4 Rx = mat4_rotate_x(q->rotation.x * deg2rad);
+                const mat4 Ry = mat4_rotate_y(q->rotation.y * deg2rad);
+                const mat4 Rz = mat4_rotate_z(q->rotation.z * deg2rad);
+                const mat4 R = mat4_mul(mat4_mul(Rz, Ry), Rx);
+
+                right = (vec3){R.m[0], R.m[1], R.m[2]};
+                up = (vec3){R.m[4], R.m[5], R.m[6]};
+            }
+        }
+
+        const float hw = q->size.x * 0.5f;
+        const float hh = q->size.y * 0.5f;
+
+        float hw_world = hw;
+        float hh_world = hh;
+        if ((q->flags & QUAD3D_SCALE_WITH_VIEW) != 0u && r->fb_size.y > 0)
+        {
+            const float proj_fy = r->camera.proj.m[5];
+            const vec3 to = vec3_sub(q->center, r->camera.position);
+            const vec3 cam_forward = vec3_norm_safe((vec3){-r->camera.inv_view.m[8], -r->camera.inv_view.m[9], -r->camera.inv_view.m[10]}, 1e-6f);
+            float depth = vec3_dot(to, cam_forward);
+            if (depth < 0.01f)
+                depth = 0.01f;
+
+            float world_per_px = 0.0f;
+            const bool is_perspective = fabsf(r->camera.proj.m[11] + 1.0f) < 1e-6f;
+            if (is_perspective)
+            {
+                float tan_half_fovy = (fabsf(proj_fy) > 1e-8f) ? (1.0f / proj_fy) : 1.0f;
+                float view_h = 2.0f * depth * tan_half_fovy;
+                world_per_px = view_h / (float)r->fb_size.y;
+            }
+            else
+            {
+                float view_h = (fabsf(proj_fy) > 1e-8f) ? (2.0f / proj_fy) : 2.0f;
+                world_per_px = view_h / (float)r->fb_size.y;
+            }
+
+            hw_world = hw * world_per_px;
+            hh_world = hh * world_per_px;
+        }
+
+        const vec3 rx = vec3_mul_f(right, hw_world);
+        const vec3 uy = vec3_mul_f(up, hh_world);
+
+        const vec3 p0 = vec3_sub(vec3_sub(q->center, rx), uy);
+        const vec3 p1 = vec3_add(vec3_sub(q->center, uy), rx);
+        const vec3 p2 = vec3_add(vec3_add(q->center, rx), uy);
+        const vec3 p3 = vec3_sub(vec3_add(q->center, uy), rx);
+
+        const float u0 = q->uv.x;
+        const float v0 = q->uv.y;
+        const float u1 = q->uv.z;
+        const float v1 = q->uv.w;
+
+        const quad3d_vertex_t vtx0 = {{p0.x, p0.y, p0.z}, {u0, v0}, {q->color.x, q->color.y, q->color.z, q->color.w}};
+        const quad3d_vertex_t vtx1 = {{p1.x, p1.y, p1.z}, {u1, v0}, {q->color.x, q->color.y, q->color.z, q->color.w}};
+        const quad3d_vertex_t vtx2 = {{p2.x, p2.y, p2.z}, {u1, v1}, {q->color.x, q->color.y, q->color.z, q->color.w}};
+        const quad3d_vertex_t vtx3 = {{p3.x, p3.y, p3.z}, {u0, v1}, {q->color.x, q->color.y, q->color.z, q->color.w}};
+
+        const uint32_t w = ii * 6u;
+        verts[w + 0u] = vtx0;
+        verts[w + 1u] = vtx1;
+        verts[w + 2u] = vtx2;
+        verts[w + 3u] = vtx2;
+        verts[w + 4u] = vtx3;
+        verts[w + 5u] = vtx0;
+    }
+
+    R_quad3d_ensure_gpu(r);
+    R_quad3d_ensure_vbo_capacity(r, total_vertices);
+
+    glBindBuffer(GL_ARRAY_BUFFER, r->quad3d_vbo);
+    glBufferData(GL_ARRAY_BUFFER,
+                 (GLsizeiptr)((size_t)r->quad3d_vbo_cap_vertices * sizeof(quad3d_vertex_t)),
+                 NULL,
+                 GL_DYNAMIC_DRAW);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)((size_t)total_vertices * sizeof(quad3d_vertex_t)), verts);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+    gl_state_depth_func(&r->gl, GL_LEQUAL);
+
+    uint32_t group_start = 0;
+    while (group_start < item_count)
+    {
+        const uint64_t key = items[group_start].key;
+        uint32_t group_end = group_start + 1u;
+        while (group_end < item_count && items[group_end].key == key)
+            group_end++;
+
+        const uint32_t category = (uint32_t)(key >> 32);
+        const uint32_t tex_gl = (uint32_t)(key & 0xffffffffu);
+
+        const bool on_top = (category == 2u || category == 3u);
+        const bool translucent = (category == 1u || category == 3u);
+
+        const uint32_t first_vertex = group_start * 6u;
+        const uint32_t vertex_count = (group_end - group_start) * 6u;
+
+        R_quad3d_draw_batch(r, s, first_vertex, vertex_count, !on_top, translucent, tex_gl);
+
+        group_start = group_end;
+    }
 
     gl_state_disable(&r->gl, GL_BLEND);
     gl_state_enable(&r->gl, GL_DEPTH_TEST);
@@ -3997,6 +4372,7 @@ int R_init(renderer_t *r, asset_manager_t *assets)
     r->depth_shader_id = 0xFF;
     r->shadow_shader_id = 0xFF;
     r->line3d_shader_id = 0xFF;
+    r->quad3d_shader_id = 0xFF;
 
     r->fp.shader_init_id = 0xFF;
     r->fp.shader_cull_id = 0xFF;
@@ -4062,6 +4438,7 @@ int R_init(renderer_t *r, asset_manager_t *assets)
     r->fwd_models = create_vector(pushed_model_t);
     r->shaders = create_vector(shader_t *);
     r->lines3d = create_vector(line3d_t);
+    r->quads3d = create_vector(quad3d_t);
 
     R_instance_stream_init(r);
 
@@ -4135,6 +4512,16 @@ int R_init(renderer_t *r, asset_manager_t *assets)
         r->line3d_shader_id = R_add_shader(r, line3d_shader);
     }
 
+    shader_t *quad3d_shader = R_new_shader_from_files("res/shaders/quad3d.vert", "res/shaders/quad3d.frag");
+    if (!quad3d_shader)
+    {
+        LOG_WARN("Failed to load quad3d shader");
+    }
+    else
+    {
+        r->quad3d_shader_id = R_add_shader(r, quad3d_shader);
+    }
+
     if (!ibl_init(r))
         LOG_ERROR("IBL init failed");
 
@@ -4184,6 +4571,7 @@ void R_shutdown(renderer_t *r)
     vector_free(&r->models);
     vector_free(&r->fwd_models);
     vector_free(&r->lines3d);
+    vector_free(&r->quads3d);
 
     if (r->line3d_vao)
         glDeleteVertexArrays(1, &r->line3d_vao);
@@ -4193,6 +4581,15 @@ void R_shutdown(renderer_t *r)
         glDeleteBuffers(1, &r->line3d_vbo);
     r->line3d_vbo = 0;
     r->line3d_vbo_cap_vertices = 0;
+
+    if (r->quad3d_vao)
+        glDeleteVertexArrays(1, &r->quad3d_vao);
+    r->quad3d_vao = 0;
+
+    if (r->quad3d_vbo)
+        glDeleteBuffers(1, &r->quad3d_vbo);
+    r->quad3d_vbo = 0;
+    r->quad3d_vbo_cap_vertices = 0;
 
     R_shadow_delete(r);
 
@@ -4310,6 +4707,7 @@ void R_begin_frame(renderer_t *r)
     vector_clear(&r->models);
     vector_clear(&r->fwd_models);
     vector_clear(&r->lines3d);
+    vector_clear(&r->quads3d);
 
     if (cvar_get_bool_name("cl_r_restore_gl_state"))
     {
@@ -4440,6 +4838,7 @@ static void R_fg_lines_exec(void *user)
 {
     renderer_t *r = (renderer_t *)user;
     R_line3d_render(r);
+    R_quad3d_render(r);
 }
 
 static void R_fg_resolve_color_exec(void *user)
@@ -4624,6 +5023,12 @@ void R_push_line3d(renderer_t *r, line3d_t line)
 {
     ASSERT(r);
     vector_push_back(&r->lines3d, &line);
+}
+
+void R_push_quad3d(renderer_t *r, quad3d_t quad)
+{
+    ASSERT(r);
+    vector_push_back(&r->quads3d, &quad);
 }
 
 void R_push_hdri(renderer_t *r, ihandle_t tex)

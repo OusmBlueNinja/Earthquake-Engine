@@ -1421,8 +1421,7 @@ void asset_manager_touch(asset_manager_t *am, ihandle_t h)
     slot->last_requested_ms = now_ms;
 
     const uint32_t can_stream = (am->streaming_enabled != 0) && (slot->path_is_ptr == 0) && (slot->path && slot->path[0]);
-    // Only auto-reload assets that were explicitly unloaded/evicted.
-    // If an asset ever enters FAILED, retrying it every frame (via touch) can cause a reload storm + hitches.
+
     const uint32_t should_reload = (slot->asset.state == ASSET_STATE_EMPTY || slot->asset.state == ASSET_STATE_LOADING) && (slot->inflight == 0);
 
     if (!can_stream || !should_reload)
@@ -1789,6 +1788,7 @@ const asset_any_t *asset_manager_get_any(const asset_manager_t *am, ihandle_t h)
     }
     const asset_any_t *ret = ok ? &slot->asset : NULL;
     mutex_unlock_impl(&am_mut->state_m);
+
 
     return ret;
 }

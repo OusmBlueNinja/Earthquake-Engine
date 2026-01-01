@@ -206,8 +206,7 @@ namespace editor
 
             const ImGuiIO &io = ImGui::GetIO();
             bool hovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
-            bool focused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
-            bool active = hovered && focused;
+            bool active = hovered;
 
             if (active)
                 UpdateNavGodotFeel(io, dt, h);

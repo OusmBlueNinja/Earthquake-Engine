@@ -278,111 +278,8 @@ static int demo_key_to_focus_index(int key)
 
 static bool demo_layer_on_event(layer_t *layer, event_t *e)
 {
-    demo_layer_state_t *s = (demo_layer_state_t *)layer->data;
-    if (!s || !s->ready || !e)
-        return false;
-
-    if (e->type == EV_MOUSE_BUTTON_DOWN || e->type == EV_MOUSE_BUTTON_UP)
-    {
-        int down = (e->type == EV_MOUSE_BUTTON_DOWN) ? 1 : 0;
-        int b = e->as.mouse_button.button;
-
-        if (b == 1)
-            s->look_down = down;
-
-        s->have_last_mouse = 0;
-
-        e->handled = (b == 1);
-        return e->handled;
-    }
-
-    if (e->type == EV_MOUSE_SCROLL)
-    {
-        double dy = e->as.mouse_scroll.dy;
-        float k = (dy > 0.0) ? 1.10f : 0.90f;
-        float steps = (float)fabs(dy);
-        float mult = powf(k, steps);
-        s->move_speed = demo_clampf(s->move_speed * mult, 0.25f, 5000.0f);
-        e->handled = true;
-        return true;
-    }
-
-    if (e->type == EV_MOUSE_MOVE)
-    {
-        double mx = e->as.mouse_move.x;
-        double my = e->as.mouse_move.y;
-
-        if (!s->have_last_mouse)
-        {
-            s->last_mx = mx;
-            s->last_my = my;
-            s->have_last_mouse = 1;
-            return false;
-        }
-
-        double dx = mx - s->last_mx;
-        double dy = my - s->last_my;
-        s->last_mx = mx;
-        s->last_my = my;
-
-        if (s->look_down)
-        {
-            float sens = 0.0025f;
-            s->yaw -= (float)dx * sens;
-            s->pitch += (float)-dy * sens;
-            e->handled = true;
-            return true;
-        }
-
-        return false;
-    }
-
-    if (e->type == EV_KEY_DOWN || e->type == EV_KEY_UP)
-    {
-        int down = (e->type == EV_KEY_DOWN) ? 1 : 0;
-        int key = e->as.key.key;
-
-        if (down)
-        {
-            int fi = demo_key_to_focus_index(key);
-            if (fi >= 0 && (uint32_t)fi < s->models.size)
-            {
-                s->focus_index = fi;
-                demo_layer_focus_model(s, (uint32_t)fi);
-                e->handled = 1;
-                return true;
-            }
-        }
-
-        if (key == 'W')
-            s->key_w = down;
-        if (key == 'A')
-            s->key_a = down;
-        if (key == 'S')
-            s->key_s = down;
-        if (key == 'D')
-            s->key_d = down;
-
-        if (key == KEY_SPACE)
-            s->key_space = down;
-        if (key == KEY_LEFT_CONTROL || key == KEY_RIGHT_CONTROL)
-            s->key_ctrl = down;
-
-        if (key == KEY_RIGHT)
-            s->key_left = down;
-        if (key == KEY_LEFT)
-            s->key_right = down;
-        if (key == KEY_UP)
-            s->key_up = down;
-        if (key == KEY_DOWN)
-            s->key_down = down;
-
-        if (key == KEY_LEFT_SHIFT || key == KEY_RIGHT_SHIFT)
-            s->boost_mult = down ? 4.0f : 1.0f;
-
-        e->handled = 1;
-        return true;
-    }
+    
+    
 
     return false;
 }
@@ -426,36 +323,7 @@ static void demo_layer_init(layer_t *layer)
     demo_layer_apply_camera(s, r);
     s->hdri_h = asset_manager_request(am, ASSET_IMAGE, "C:/Users/spenc/Desktop/Bistro_v5_2/Bistro_v5_2/san_giuseppe_bridge_4k.hdr");
 
-    demo_layer_add_model(s, am, "C:/Users/spenc/Desktop/38-floor/Floor.FBX",
-                         demo_transform_trs((vec3){0.0f, -1.0f, 0.0f}, 0.0f, (vec3){1.0f, 1.0f, 1.0f}));
-
-    demo_layer_add_model(s, am, "C:/Users/spenc/Desktop/CoffeeCart_01_4k.gltf/CoffeeCart_01_4k.gltf",
-                         demo_transform_trs((vec3){-1.5f, 0.0f, 0.0f}, 0.0f, (vec3){1.0f, 1.0f, 1.0f}));
-
-    demo_layer_add_model(s, am, "C:/Users/spenc/Desktop/Camera_01_4k.gltf/Camera_01_4k.gltf",
-                         demo_transform_trs((vec3){0.0f, 0.0f, 0.0f}, 0.0f, (vec3){4.0f, 4.0f, 4.0f}));
-
-    demo_layer_add_model(s, am, "C:/Users/spenc/Desktop/vintage_video_camera_4k.gltf/vintage_video_camera_4k.gltf",
-                         demo_transform_trs((vec3){0.5f, 0.0f, 0.0f}, 0.0f, (vec3){4.0f, 4.0f, 4.0f}));
-
-    demo_layer_add_model(s, am, "C:/Users/spenc/Desktop/CashRegister_01_4k.gltf/CashRegister_01_4k.gltf",
-                         demo_transform_trs((vec3){1.5f, 0.0f, 0.0f}, 0.0f, (vec3){1.0f, 1.0f, 1.0f}));
-
-    demo_layer_add_model(s, am, "C:/Users/spenc/Desktop/electric_stove_4k.gltf/electric_stove_4k.gltf",
-                         demo_transform_trs((vec3){2.5f, 0.0f, 0.0f}, 0.0f, (vec3){1.0f, 1.0f, 1.0f}));
-
-    demo_layer_add_model(s, am, "C:/Users/spenc/Desktop/Television_01_4k.gltf/Television_01_4k.gltf",
-                         demo_transform_trs((vec3){3.5f, 0.0f, 0.0f}, 0.0f, (vec3){1.0f, 1.0f, 1.0f}));
-
-    demo_layer_add_model(s, am, "C:/Users/spenc/Desktop/ship_pinnace_4k.gltf/ship_pinnace_4k.gltf",
-                         demo_transform_trs((vec3){10.0f, 0.0f, 0.0f}, 0.0f, (vec3){1.0f, 1.0f, 1.0f}));
-
-    demo_layer_add_model(s, am, "C:/Users/spenc/Desktop/utility_box_02_4k.gltf/utility_box_02_4k.gltf",
-                         demo_transform_trs((vec3){-3.0f, 0.0f, 0.0f}, 0.0f, (vec3){1.0f, 1.0f, 1.0f}));
-
-    demo_layer_add_model(s, am, "C:/Users/spenc/Desktop/ornate_mirror_01_4k.gltf/ornate_mirror_01_4k.gltf",
-                         demo_transform_trs((vec3){-0.0f, 0.0f, -5.0f}, 0.0f, (vec3){1.0f, 1.0f, 1.0f}));
-
+    
     s->focus_index = -1;
 
     s->stats_accum = 0.0f;
@@ -482,70 +350,8 @@ static void demo_layer_shutdown(layer_t *layer)
 
 static void demo_layer_update(layer_t *layer, float dt)
 {
-    demo_layer_state_t *s = (demo_layer_state_t *)layer->data;
-    if (!s || !s->ready)
-        return;
-
-    renderer_t *r = &layer->app->renderer;
-
-    s->last_dt = dt;
-
-    s->t += dt;
-
-    float rot_speed = 1.6f;
-    if (s->key_left)
-        s->yaw += rot_speed * dt;
-    if (s->key_right)
-        s->yaw -= rot_speed * dt;
-    if (s->key_up)
-        s->pitch += rot_speed * dt;
-    if (s->key_down)
-        s->pitch -= rot_speed * dt;
-
-    s->pitch = demo_clampf(s->pitch, -1.55f, 1.55f);
-
-    float move = s->move_speed * s->boost_mult * dt;
-
-    vec3 world_up = (vec3){0.0f, 1.0f, 0.0f};
-    vec3 fwd = demo_cam_forward(s->yaw, s->pitch);
-    vec3 right = demo_vec3_norm(demo_vec3_cross(fwd, world_up));
-    vec3 up = demo_vec3_norm(demo_vec3_cross(right, fwd));
-
-    vec3 delta = (vec3){0, 0, 0};
-
-    if (s->key_w)
-        delta = demo_vec3_add(delta, fwd);
-    if (s->key_s)
-        delta = demo_vec3_sub(delta, fwd);
-    if (s->key_d)
-        delta = demo_vec3_add(delta, right);
-    if (s->key_a)
-        delta = demo_vec3_sub(delta, right);
-
-    if (s->key_space)
-        delta = demo_vec3_add(delta, world_up);
-    if (s->key_ctrl)
-        delta = demo_vec3_sub(delta, world_up);
-
-    float dl = demo_vec3_len(delta);
-    if (dl > 1e-6f)
-        delta = demo_vec3_scale(delta, move / dl);
-
-    s->pos = demo_vec3_add(s->pos, delta);
-
-    demo_layer_apply_camera(s, r);
-
-    s->stats_accum += dt;
-    s->stats_frame_id++;
-
-    // if (all_loaded(&layer->app->asset_manager))
-    //{
-    //     uint8_t *pack = 0;
-    //     uint32_t pack_size = 0;
-    //     asset_manager_build_pack_ex(&layer->app->asset_manager, &pack, &pack_size, SAVE_FLAG_SEPARATE_ASSETS, "./test/save");
-    //     asset_manager_free_pack(pack);
-    //     layer->app->running = false;
-    // }
+    
+    
 }
 
 static void demo_layer_draw(layer_t *layer)
@@ -560,66 +366,7 @@ static void demo_layer_draw(layer_t *layer)
     settings.delta_time = s->last_dt;
     R_push_scene_settings(r, &settings);
 
-    // R_push_camera(r, &s->cam);
     R_push_hdri(r, s->hdri_h);
-
-    light_t lights[2 + MOVING_LIGHTS];
-    uint32_t light_count = 0;
-
-    {
-        light_t sun = (light_t){0};
-        sun.type = LIGHT_DIRECTIONAL;
-        sun.direction = demo_vec3_norm((vec3){-0.3f, -1.0f, -0.2f});
-        sun.color = (vec3){1.0f, 1.0f, 1.0f};
-        sun.intensity = 1.0f;
-        lights[light_count++] = sun;
-    }
-
-    {
-        light_t p = (light_t){0};
-        p.type = LIGHT_POINT;
-        p.position = (vec3){0.0f, 4.0f, 0.0f};
-        p.direction = (vec3){0.0f, -1.0f, 0.0f};
-        p.color = (vec3){1.0f, 0.82f, 0.70f};
-        p.intensity = 1.0f;
-        p.range = 20.0f;
-        p.radius = p.range;
-        lights[light_count++] = p;
-    }
-
-    for (int i = 0; i < MOVING_LIGHTS; ++i)
-    {
-        moving_light_t *L = &s->lights[i];
-
-        float a = L->phase + s->t * L->speed;
-        float x = cosf(a) * L->radius;
-        float z = sinf(a) * L->radius;
-
-        light_t lt = (light_t){0};
-
-        lt.type = LIGHT_POINT;
-        lt.position = (vec3){x, L->height, z};
-        lt.direction = (vec3){0.0f, -1.0f, 0.0f};
-        lt.color = L->color;
-        lt.intensity = L->intensity;
-        lt.range = L->range;
-        lt.radius = L->range;
-
-        lights[light_count++] = lt;
-    }
-
-    for (uint32_t i = 0; i < light_count; ++i)
-        R_push_light(r, lights[i]);
-
-    // for (uint32_t i = 0; i < s->models.size; ++i)
-    //{
-    //     demo_model_entry_t *e = (demo_model_entry_t *)vector_impl_at(&s->models, i);
-    //     if (!e)
-    //         continue;
-    //     R_push_model(r, e->model, e->model_matrix);
-    //     // asset_model_t model = asset_manager_get_any(&layer->app->asset_manager, e->model)->as.model;
-    //     // debug_draw_asset_model_aabbs_overlay(r, &model, e->model_matrix);
-    // }
 }
 
 layer_t create_demo_layer(void)

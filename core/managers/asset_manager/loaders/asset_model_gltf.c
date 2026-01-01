@@ -79,6 +79,63 @@ static char *mdl_strdup(const char *s)
     return p;
 }
 
+static int mdl_hex_val(char c)
+{
+    if (c >= '0' && c <= '9')
+        return (int)(c - '0');
+    if (c >= 'a' && c <= 'f')
+        return 10 + (int)(c - 'a');
+    if (c >= 'A' && c <= 'F')
+        return 10 + (int)(c - 'A');
+    return -1;
+}
+
+static char *mdl_uri_decode_dup(const char *s)
+{
+    if (!s)
+        return NULL;
+
+    const size_t n = strlen(s);
+    char *out = (char *)malloc(n + 1);
+    if (!out)
+        return NULL;
+
+    size_t w = 0;
+    for (size_t i = 0; i < n; ++i)
+    {
+        const char c = s[i];
+        if (c == '%' && i + 2 < n)
+        {
+            const int hi = mdl_hex_val(s[i + 1]);
+            const int lo = mdl_hex_val(s[i + 2]);
+            if (hi >= 0 && lo >= 0)
+            {
+                out[w++] = (char)((hi << 4) | lo);
+                i += 2;
+                continue;
+            }
+        }
+        out[w++] = c;
+    }
+
+    out[w] = 0;
+    return out;
+}
+
+static void mdl_uri_strip_query_fragment_inplace(char *s)
+{
+    if (!s)
+        return;
+    for (size_t i = 0; s[i]; ++i)
+    {
+        if (s[i] == '?' || s[i] == '#')
+        {
+            s[i] = 0;
+            return;
+        }
+    }
+}
+
 static char *mdl_path_dirname_dup(const char *path)
 {
     if (!path)
@@ -112,12 +169,17 @@ static char *mdl_path_join_dup(const char *a, const char *b)
         if (c != '/' && c != '\\')
             need = 1;
     }
+
+    char sep = '/';
+    if (strchr(a, '\\') && !strchr(a, '/'))
+        sep = '\\';
+
     char *out = (char *)malloc(na + (size_t)need + nb + 1);
     if (!out)
         return NULL;
     memcpy(out, a, na);
     if (need)
-        out[na] = '/';
+        out[na] = sep;
     memcpy(out + na + (size_t)need, b, nb);
     out[na + (size_t)need + nb] = 0;
     return out;
@@ -397,18 +459,29 @@ static ihandle_t mdl_gltf_request_image(asset_manager_t *am, const char *gltf_pa
 
     if (img->uri && img->uri[0] && strncmp(img->uri, "data:", 5))
     {
+        char *uri = mdl_uri_decode_dup(img->uri);
+        if (!uri)
+            uri = mdl_strdup(img->uri);
+        if (!uri)
+        {
+            MDL_LOGE("image request failed: out of memory (uri)");
+            return ihandle_invalid();
+        }
+        mdl_uri_strip_query_fragment_inplace(uri);
+
         char *dir = mdl_path_dirname_dup(gltf_path);
-        char *full = dir ? mdl_path_join_dup(dir, img->uri) : NULL;
+        char *full = dir ? mdl_path_join_dup(dir, uri) : NULL;
         free(dir);
+        free(uri);
         if (!full)
         {
             MDL_LOGE("image request failed: couldn't join path (%s + %s)", gltf_path, img->uri);
             return ihandle_invalid();
         }
         ihandle_t h = asset_manager_request(am, ASSET_IMAGE, full);
-        free(full);
         if (!ihandle_is_valid(h))
-            MDL_LOGE("image request failed: asset_manager_request returned invalid handle");
+            MDL_LOGE("image request failed: resolved path not found or request failed (uri='%s', full='%s')", img->uri, full);
+        free(full);
         return h;
     }
 

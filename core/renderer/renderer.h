@@ -1,6 +1,7 @@
 #pragma once
 #include <stdint.h>
 #include <stdbool.h>
+#include "types/vec2.h"
 #include "types/vec2i.h"
 #include "types/mat4.h"
 #include "types/vec3.h"
@@ -174,6 +175,43 @@ typedef struct line3d_t
 
 } line3d_t;
 
+typedef enum quad3d_flags_t
+{
+    QUAD3D_TRANSLUCENT = 1u << 0,
+    QUAD3D_ON_TOP = 1u << 1,
+    QUAD3D_FACE_CAMERA = 1u << 2,
+    QUAD3D_ABSOLUTE_ROTATION = 1u << 3,
+
+    // If set, interpret `quad3d_t.texture.gl` as a raw OpenGL `GL_TEXTURE_2D` name.
+    // If not set, interpret `quad3d_t.texture.handle` as an `ASSET_IMAGE` handle and resolve via the asset manager.
+    QUAD3D_TEX_GL = 1u << 4,
+
+    // If set, `quad3d_t.size` is treated as pixels and converted to world units based on depth/projection,
+    // so the quad stays a consistent size on screen (useful for editor icons / text).
+    QUAD3D_SCALE_WITH_VIEW = 1u << 5
+} quad3d_flags_t;
+
+typedef union quad3d_texture_u
+{
+    uint32_t gl;
+    ihandle_t handle;
+} quad3d_texture_u;
+
+typedef struct quad3d_t
+{
+    vec3 center;
+    // World-units by default; if `QUAD3D_SCALE_WITH_VIEW` is set, this is pixels.
+    vec2 size;
+
+    vec3 rotation;
+
+    vec4 color;
+    vec4 uv;
+
+    quad3d_texture_u texture;
+    quad3d_flags_t flags;
+} quad3d_t;
+
 typedef struct renderer_t
 {
     asset_manager_t *assets;
@@ -228,6 +266,12 @@ typedef struct renderer_t
     uint32_t line3d_vbo;
     uint32_t line3d_vbo_cap_vertices;
     uint8_t line3d_shader_id;
+
+    vector_t quads3d;
+    uint32_t quad3d_vao;
+    uint32_t quad3d_vbo;
+    uint32_t quad3d_vbo_cap_vertices;
+    uint8_t quad3d_shader_id;
 
     uint32_t gbuf_fbo;
     uint32_t light_fbo;
@@ -289,6 +333,7 @@ void R_push_camera(renderer_t *r, const camera_t *cam);
 void R_push_light(renderer_t *r, light_t light);
 void R_push_model(renderer_t *r, const ihandle_t model, mat4 model_matrix);
 void R_push_line3d(renderer_t *r, line3d_t line);
+void R_push_quad3d(renderer_t *r, quad3d_t quad);
 
 void R_push_hdri(renderer_t *r, ihandle_t tex);
 

@@ -186,9 +186,6 @@ typedef struct asset_manager_t
     uint64_t now_ms;
     uint32_t unload_scan_index;
 
-    // Soft budget to avoid hitching: limits how much "new VRAM" we finalize per pump.
-    // Note: a single large texture upload can still stall for one frame; this mostly prevents
-    // doing many uploads in the same pump.
     uint64_t upload_budget_bytes_per_pump;
     uint32_t pump_per_frame;
 

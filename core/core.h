@@ -22,6 +22,7 @@
 #include "systems/ecs/components/c_tag.h"
 #include "systems/ecs/components/c_transform.h"
 #include "systems/ecs/components/c_mesh_renderer.h"
+#include "systems/ecs/components/c_light.h"
 
 #include "systems/scene_renderer/scene_renderer.h"
 

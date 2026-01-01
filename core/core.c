@@ -120,6 +120,7 @@ void init_application(Application *app)
     c_tag_register(&g_application.scene);
     c_transform_register(&g_application.scene);
     c_mesh_renderer_register(&g_application.scene);
+    c_light_register(&g_application.scene);
 
     ecs_world_set_required_tag(&g_application.scene, ecs_component_id(&g_application.scene, c_tag_t));
 

@@ -69,6 +69,29 @@ static int asset_path_has_ext_lower(const char *path, const char *ext_lower)
     return 1;
 }
 
+static void image_flip_y_bytes(void *pixels, uint32_t w, uint32_t h, uint32_t bytes_per_pixel)
+{
+    if (!pixels || w == 0 || h == 0 || bytes_per_pixel == 0)
+        return;
+
+    const uint32_t row_bytes = w * bytes_per_pixel;
+    uint8_t *tmp = (uint8_t *)malloc((size_t)row_bytes);
+    if (!tmp)
+        return;
+
+    uint8_t *p = (uint8_t *)pixels;
+    for (uint32_t y = 0; y < h / 2u; ++y)
+    {
+        uint8_t *row0 = p + (size_t)y * (size_t)row_bytes;
+        uint8_t *row1 = p + (size_t)(h - 1u - y) * (size_t)row_bytes;
+        memcpy(tmp, row0, row_bytes);
+        memcpy(row0, row1, row_bytes);
+        memcpy(row1, tmp, row_bytes);
+    }
+
+    free(tmp);
+}
+
 static bool itex_can_load(asset_manager_t *am, const char *path, uint32_t path_is_ptr)
 {
     (void)am;
@@ -199,6 +222,12 @@ static bool itex_init(asset_manager_t *am, asset_any_t *asset)
 
     if (!img->pixels || img->width == 0 || img->height == 0 || img->channels == 0)
         return false;
+
+    // See `asset_image.c`: keep UVs consistent by flipping at upload time.
+    {
+        uint32_t bpp = img->channels * (img->is_float ? (uint32_t)sizeof(float) : 1u);
+        image_flip_y_bytes(img->pixels, img->width, img->height, bpp);
+    }
 
     GLuint tex = 0;
     glGenTextures(1, &tex);
