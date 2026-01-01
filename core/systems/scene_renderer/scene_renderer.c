@@ -65,9 +65,6 @@ void scene_renderer_render(renderer_t *r, ecs_world_t *scene)
         c_transform_t *tr = (c_transform_t *)c[0];
         c_mesh_renderer_t *mr = (c_mesh_renderer_t *)c[1];
 
-        if (!ihandle_is_valid(mr->model))
-            continue;
-
         c_tag_t *tag = ecs_get(scene, e, c_tag_t);
         if (tag && tag->visible == 0)
             continue;

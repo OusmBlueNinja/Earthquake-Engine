@@ -562,8 +562,7 @@ static void R_make_black_cube(renderer_t *r)
 
 static void R_line3d_ensure_gpu(renderer_t *r)
 {
-    if (!r)
-        return;
+    ASSERT(r);
 
     if (!r->line3d_vao)
         glGenVertexArrays(1, &r->line3d_vao);
@@ -885,8 +884,7 @@ typedef struct R_per_frame_ubo_t
 
 static void R_per_frame_ubo_ensure(renderer_t *r)
 {
-    if (!r)
-        return;
+    ASSERT(r);
     if (r->per_frame_ubo == 0)
         glGenBuffers(1, &r->per_frame_ubo);
     if (r->per_frame_ubo == 0)
@@ -901,8 +899,7 @@ static void R_per_frame_ubo_ensure(renderer_t *r)
 
 static void R_per_frame_ubo_update(renderer_t *r)
 {
-    if (!r)
-        return;
+    ASSERT(r);
     R_per_frame_ubo_ensure(r);
     if (!r->per_frame_ubo)
         return;
@@ -957,8 +954,7 @@ static uint32_t R_scene_draw_fbo(const renderer_t *r)
 
 static void R_msaa_resolve(renderer_t *r, GLbitfield mask)
 {
-    if (!r)
-        return;
+    ASSERT(r);
     if (!r->msaa_fbo || !r->light_fbo)
         return;
     if (!r->cfg.msaa || r->msaa_samples <= 1)
@@ -985,8 +981,7 @@ static void R_msaa_resolve(renderer_t *r, GLbitfield mask)
 
 static void R_exposure_reduce_ensure(renderer_t *r, uint32_t need_vec4)
 {
-    if (!r)
-        return;
+    ASSERT(r);
 
     if (need_vec4 < 1u)
         need_vec4 = 1u;
@@ -1101,8 +1096,7 @@ static int R_exposure_reduce_avg_color(renderer_t *r, vec3 *out_avg)
 
 static void R_auto_exposure_update(renderer_t *r)
 {
-    if (!r)
-        return;
+    ASSERT(r);
 
     if (!r->scene.exposure_auto)
     {
@@ -1165,8 +1159,7 @@ static void R_auto_exposure_update(renderer_t *r)
 
 static void R_shadow_delete(renderer_t *r)
 {
-    if (!r)
-        return;
+    ASSERT(r);
 
     if (r->shadow.fbo)
         glDeleteFramebuffers(1, &r->shadow.fbo);
@@ -1203,8 +1196,7 @@ static int R_shadow_clamp_size(int s)
 
 static void R_shadow_ensure(renderer_t *r)
 {
-    if (!r)
-        return;
+    ASSERT(r);
 
     if (!r->cfg.shadows)
     {
@@ -3182,8 +3174,7 @@ static vec3 R_shadow_pick_up(vec3 dir)
 
 static void R_shadow_build_cascades(renderer_t *r, vec3 light_dir)
 {
-    if (!r)
-        return;
+    ASSERT(r);
 
     int cascades = r->shadow.cascades;
     if (cascades < 1)
@@ -3465,8 +3456,7 @@ static void R_shadow_pass(renderer_t *r)
 
 static void R_fp_dispatch(renderer_t *r)
 {
-    if (!r)
-        return;
+    ASSERT(r);
 
     shader_t *init = (r->fp.shader_init_id != 0xFF) ? R_get_shader(r, r->fp.shader_init_id) : NULL;
     shader_t *cull = (r->fp.shader_cull_id != 0xFF) ? R_get_shader(r, r->fp.shader_cull_id) : NULL;
@@ -4167,8 +4157,7 @@ int R_init(renderer_t *r, asset_manager_t *assets)
 
 void R_shutdown(renderer_t *r)
 {
-    if (!r)
-        return;
+    ASSERT(r);
 
     bloom_shutdown(r);
     ssr_shutdown(r);
@@ -4271,8 +4260,7 @@ void R_shutdown(renderer_t *r)
 
 void R_resize(renderer_t *r, vec2i size)
 {
-    if (!r)
-        return;
+    ASSERT(r);
 
     if (size.x < 1)
         size.x = 1;
@@ -4284,8 +4272,7 @@ void R_resize(renderer_t *r, vec2i size)
 
 void R_update_resize(renderer_t *r)
 {
-    if (!r)
-        return;
+    ASSERT(r);
 
     if (r->fb_size.x < 1)
         r->fb_size.x = 1;
@@ -4304,15 +4291,13 @@ void R_update_resize(renderer_t *r)
 
 void R_set_clear_color(renderer_t *r, vec4 color)
 {
-    if (!r)
-        return;
+    ASSERT(r);
     r->clear_color = color;
 }
 
 void R_begin_frame(renderer_t *r)
 {
-    if (!r)
-        return;
+    ASSERT(r);
 
     // External callers may mutate GL state between frames; treat it as unknown at frame start.
     gl_state_reset(&r->gl);
@@ -4505,8 +4490,7 @@ static void R_fg_composite_exec(void *user)
 
 void R_end_frame(renderer_t *r)
 {
-    if (!r)
-        return;
+    ASSERT(r);
 
     R_gpu_timers_resolve(r);
 
@@ -4618,15 +4602,13 @@ void R_push_camera(renderer_t *r, const camera_t *cam)
 
 void R_push_light(renderer_t *r, light_t light)
 {
-    if (!r)
-        return;
+    ASSERT(r);
     vector_push_back(&r->lights, &light);
 }
 
 void R_push_model(renderer_t *r, const ihandle_t model, mat4 model_matrix)
 {
-    if (!r)
-        return;
+    ASSERT(r);
     if (!ihandle_is_valid(model))
         return;
 
@@ -4640,15 +4622,13 @@ void R_push_model(renderer_t *r, const ihandle_t model, mat4 model_matrix)
 
 void R_push_line3d(renderer_t *r, line3d_t line)
 {
-    if (!r)
-        return;
+    ASSERT(r);
     vector_push_back(&r->lines3d, &line);
 }
 
 void R_push_hdri(renderer_t *r, ihandle_t tex)
 {
-    if (!r)
-        return;
+    ASSERT(r);
     r->hdri_tex = tex;
 }
 

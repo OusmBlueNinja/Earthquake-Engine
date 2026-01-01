@@ -41,6 +41,43 @@ namespace editor
         return h;
     }
 
+    static bool parse_hex_u32(const char *s, uint32_t *out)
+    {
+        if (!s || !out)
+            return false;
+
+        while (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r')
+            ++s;
+
+        if (!*s)
+            return false;
+
+        char *endp = nullptr;
+        unsigned long v = strtoul(s, &endp, 16);
+        if (endp == s)
+            return false;
+
+        while (*endp == ' ' || *endp == '\t' || *endp == '\n' || *endp == '\r')
+            ++endp;
+
+        if (*endp != 0)
+            return false;
+
+        *out = (uint32_t)v;
+        return true;
+    }
+
+    static bool parse_hex_u16(const char *s, uint16_t *out)
+    {
+        uint32_t v = 0;
+        if (!parse_hex_u32(s, &v))
+            return false;
+        if (v > 0xFFFFu)
+            return false;
+        *out = (uint16_t)v;
+        return true;
+    }
+
     static void clipboard_set(const char *type_name, const void *data, uint32_t size)
     {
         g_comp_clip.valid = 0;
@@ -531,43 +568,74 @@ namespace editor
 
         ImGui::Dummy(ImVec2(0.0f, 1.0f));
 
-        uint32_t v = mr->model.value;
+        char vbuf[9];
+        char tbuf[5];
+        char mbuf[5];
 
-        char buf[64];
-        snprintf(buf, sizeof(buf), "%u", v);
+        snprintf(vbuf, sizeof(vbuf), "%08X", (unsigned)mr->model.value);
+        snprintf(tbuf, sizeof(tbuf), "%04X", (unsigned)mr->model.type);
+        snprintf(mbuf, sizeof(mbuf), "%04X", (unsigned)mr->model.meta);
 
-        float bw = ImGui::GetContentRegionAvail().x;
-        float h = ImGui::GetFrameHeight();
+        ImGuiInputTextFlags flags = ImGuiInputTextFlags_CharsHexadecimal | ImGuiInputTextFlags_AutoSelectAll;
 
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted("Model Handle");
-        ImGui::SameLine();
-
-        float input_w = bw * 0.55f;
-        if (input_w < 120.0f)
-            input_w = 120.0f;
-
-        ImGui::SetNextItemWidth(input_w);
-        if (ImGui::InputText("##ModelHandle", buf, sizeof(buf), ImGuiInputTextFlags_AutoSelectAll))
+        if (ImGui::BeginTable("##MeshRendererTable", 2, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_PadOuterX))
         {
-            uint32_t outv = 0;
-            if (parse_u32(buf, &outv))
-                mr->model.value = outv;
+            ImGui::TableSetupColumn("Key", ImGuiTableColumnFlags_WidthFixed, 90.0f);
+            ImGui::TableSetupColumn("Val", ImGuiTableColumnFlags_WidthStretch);
+
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted("Value");
+            ImGui::TableSetColumnIndex(1);
+            ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+            if (ImGui::InputText("##mr_val", vbuf, sizeof(vbuf), flags))
+            {
+                uint32_t v = 0;
+                if (parse_hex_u32(vbuf, &v))
+                    mr->model.value = v;
+            }
+
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted("Type");
+            ImGui::TableSetColumnIndex(1);
+            ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+            if (ImGui::InputText("##mr_type", tbuf, sizeof(tbuf), flags))
+            {
+                uint16_t v = 0;
+                if (parse_hex_u16(tbuf, &v))
+                    mr->model.type = v;
+            }
+
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted("Meta");
+            ImGui::TableSetColumnIndex(1);
+            ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+            if (ImGui::InputText("##mr_meta", mbuf, sizeof(mbuf), flags))
+            {
+                uint16_t v = 0;
+                if (parse_hex_u16(mbuf, &v))
+                    mr->model.meta = v;
+            }
+
+            ImGui::EndTable();
         }
 
-        ImGui::SameLine();
-
-        char hex[64];
-        handle_hex_triplet(hex, mr->model);
+        char fs[64];
+        handle_hex_triplet_filesafe(fs, mr->model);
 
         ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetColorU32(ImGuiCol_TextDisabled));
-        ImGui::TextUnformatted(hex);
+        ImGui::TextUnformatted(fs);
         ImGui::PopStyleColor();
 
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Handle (value:type:meta)");
+            ImGui::SetTooltip("Value_Type_Meta (hex)");
 
-        ImGui::Dummy(ImVec2(0.0f, h * 0.25f));
+        ImGui::Dummy(ImVec2(0.0f, 2.0f));
     }
 
     static void inspector_transform_menu(ecs_world_t *w, ecs_entity_t e)
