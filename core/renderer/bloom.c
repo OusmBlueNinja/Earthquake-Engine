@@ -60,6 +60,8 @@ static void bloom_free_mips(bloom_t *b)
         b->fbo_up[i] = 0;
         b->tex_down[i] = 0;
         b->tex_up[i] = 0;
+        b->mip_w[i] = 0;
+        b->mip_h[i] = 0;
     }
     b->mips = 0;
     b->last_w = 0;
@@ -93,6 +95,9 @@ static void bloom_alloc_mips(renderer_t *r, int w, int h, uint32_t mips)
 
         b->tex_up[i] = bloom_tex_new(cw, ch);
         b->fbo_up[i] = bloom_fbo_new(b->tex_up[i]);
+
+        b->mip_w[i] = cw;
+        b->mip_h[i] = ch;
     }
 
     b->mips = mips;
@@ -209,11 +214,8 @@ static void bloom_prefilter(renderer_t *r, uint32_t src_tex)
 
     glBindFramebuffer(GL_FRAMEBUFFER, b->fbo_down[0]);
 
-    int tw = 1;
-    int th = 1;
-    glBindTexture(GL_TEXTURE_2D, b->tex_down[0]);
-    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &tw);
-    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &th);
+    int tw = b->mip_w[0] > 0 ? b->mip_w[0] : 1;
+    int th = b->mip_h[0] > 0 ? b->mip_h[0] : 1;
 
     glViewport(0, 0, tw, th);
 
@@ -244,11 +246,8 @@ static void bloom_downsample_chain(renderer_t *r)
     {
         glBindFramebuffer(GL_FRAMEBUFFER, b->fbo_down[i]);
 
-        int tw = 1;
-        int th = 1;
-        glBindTexture(GL_TEXTURE_2D, b->tex_down[i]);
-        glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &tw);
-        glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &th);
+        int tw = b->mip_w[i] > 0 ? b->mip_w[i] : 1;
+        int th = b->mip_h[i] > 0 ? b->mip_h[i] : 1;
 
         glViewport(0, 0, tw, th);
 
@@ -275,11 +274,8 @@ static void bloom_blur_mips(renderer_t *r)
 
     for (uint32_t i = 0; i < b->mips; ++i)
     {
-        int tw = 1;
-        int th = 1;
-        glBindTexture(GL_TEXTURE_2D, b->tex_down[i]);
-        glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &tw);
-        glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &th);
+        int tw = b->mip_w[i] > 0 ? b->mip_w[i] : 1;
+        int th = b->mip_h[i] > 0 ? b->mip_h[i] : 1;
 
         glBindFramebuffer(GL_FRAMEBUFFER, b->fbo_up[i]);
         glViewport(0, 0, tw, th);
@@ -326,7 +322,7 @@ static float bloom_level_weight(uint32_t i)
     return 0.35f;
 }
 
-static void bloom_upsample_chain(renderer_t *r)
+static void bloom_upsample_chain(renderer_t *r, uint32_t black_tex)
 {
     bloom_t *b = &r->bloom;
     shader_t *s = R_get_shader(r, b->upsample_shader_id);
@@ -339,11 +335,8 @@ static void bloom_upsample_chain(renderer_t *r)
 
     glBindFramebuffer(GL_FRAMEBUFFER, b->fbo_up[last]);
 
-    int tw = 1;
-    int th = 1;
-    glBindTexture(GL_TEXTURE_2D, b->tex_up[last]);
-    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &tw);
-    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &th);
+    int tw = b->mip_w[last] > 0 ? b->mip_w[last] : 1;
+    int th = b->mip_h[last] > 0 ? b->mip_h[last] : 1;
 
     glViewport(0, 0, tw, th);
 
@@ -352,7 +345,7 @@ static void bloom_upsample_chain(renderer_t *r)
     shader_set_int(s, "u_Low", 0);
 
     glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D, 0);
+    glBindTexture(GL_TEXTURE_2D, black_tex);
     shader_set_int(s, "u_High", 1);
 
     shader_set_float(s, "u_TexelX", 1.0f / (float)tw);
@@ -367,11 +360,8 @@ static void bloom_upsample_chain(renderer_t *r)
     {
         glBindFramebuffer(GL_FRAMEBUFFER, b->fbo_up[i]);
 
-        int w = 1;
-        int h = 1;
-        glBindTexture(GL_TEXTURE_2D, b->tex_up[i]);
-        glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &w);
-        glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &h);
+        int w = b->mip_w[i] > 0 ? b->mip_w[i] : 1;
+        int h = b->mip_h[i] > 0 ? b->mip_h[i] : 1;
 
         glViewport(0, 0, w, h);
 
@@ -395,8 +385,6 @@ static void bloom_upsample_chain(renderer_t *r)
 
 void bloom_run(renderer_t *r, uint32_t src_tex, uint32_t black_tex)
 {
-    (void)black_tex;
-
     if (!r)
         return;
 
@@ -409,14 +397,14 @@ void bloom_run(renderer_t *r, uint32_t src_tex, uint32_t black_tex)
     if (!b->ready || b->mips == 0)
         return;
 
-    glDisable(GL_DEPTH_TEST);
-    glDisable(GL_CULL_FACE);
-    glDisable(GL_BLEND);
+    gl_state_disable(&r->gl, GL_DEPTH_TEST);
+    gl_state_disable(&r->gl, GL_CULL_FACE);
+    gl_state_disable(&r->gl, GL_BLEND);
 
     bloom_prefilter(r, src_tex);
     bloom_downsample_chain(r);
     bloom_blur_mips(r);
-    bloom_upsample_chain(r);
+    bloom_upsample_chain(r, black_tex);
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
@@ -444,9 +432,9 @@ void bloom_composite_to_final(renderer_t *r, uint32_t scene_tex, uint32_t bloom_
     glBindFramebuffer(GL_FRAMEBUFFER, r->final_fbo);
     glViewport(0, 0, r->fb_size.x, r->fb_size.y);
 
-    glDisable(GL_DEPTH_TEST);
-    glDisable(GL_CULL_FACE);
-    glDisable(GL_BLEND);
+    gl_state_disable(&r->gl, GL_DEPTH_TEST);
+    gl_state_disable(&r->gl, GL_CULL_FACE);
+    gl_state_disable(&r->gl, GL_BLEND);
 
     shader_bind(s);
 

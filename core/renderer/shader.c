@@ -597,6 +597,17 @@ unsigned int shader_get_program(const shader_t *shader)
     return shader ? shader->program : 0;
 }
 
+bool shader_bind_uniform_block(const shader_t *shader, const char *block_name, unsigned int binding)
+{
+    if (!shader || !shader->program || !block_name)
+        return false;
+    GLuint idx = glGetUniformBlockIndex(shader->program, block_name);
+    if (idx == GL_INVALID_INDEX)
+        return false;
+    glUniformBlockBinding(shader->program, idx, binding);
+    return true;
+}
+
 void shader_dispatch_compute(const shader_t *shader, unsigned int groups_x, unsigned int groups_y, unsigned int groups_z)
 {
     if (!shader || !shader->linked || shader->program == 0)

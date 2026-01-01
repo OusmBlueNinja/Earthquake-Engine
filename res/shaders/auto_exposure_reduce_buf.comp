@@ -1,0 +1,39 @@
+#version 430 core
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, binding = 0) readonly buffer InBuf
+{
+    vec4 inData[];
+};
+
+layout(std430, binding = 1) writeonly buffer OutBuf
+{
+    vec4 outData[];
+};
+
+uniform int u_Count;
+
+shared vec4 sdata[256];
+
+void main()
+{
+    uint gid = gl_GlobalInvocationID.x;
+    uint lid = gl_LocalInvocationIndex;
+
+    uint idx = gl_WorkGroupID.x * 256u + lid;
+    vec4 v = (idx < uint(u_Count)) ? inData[idx] : vec4(0.0);
+    sdata[lid] = v;
+    barrier();
+
+    for (uint s = 128u; s > 0u; s >>= 1u)
+    {
+        if (lid < s)
+            sdata[lid] += sdata[lid + s];
+        barrier();
+    }
+
+    if (lid == 0u)
+        outData[gl_WorkGroupID.x] = sdata[0];
+}
+

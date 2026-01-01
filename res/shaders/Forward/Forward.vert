@@ -11,10 +11,29 @@ layout(location = 6) in vec4 a_I2;
 layout(location = 7) in vec4 a_I3;
 layout(location = 8) in float a_Fade01;
 
-uniform mat4 u_View;
-uniform mat4 u_Proj;
 uniform mat4 u_Model;
 uniform int u_UseInstancing;
+
+layout(std140, binding = 0) uniform PerFrame
+{
+    mat4 u_View;
+    mat4 u_Proj;
+    vec4 u_CameraPos;
+    int u_HeightInvert;
+    int u_ManualSRGB;
+    int u_ShadowEnabled;
+    int u_ShadowCascadeCount;
+    int u_ShadowMapSize;
+    int u_ShadowLightIndex;
+    int u_ShadowPCF;
+    int _pad0;
+    vec4 u_ShadowSplits;
+    float u_ShadowBias;
+    float u_ShadowNormalBias;
+    float u_IBLIntensity;
+    float _pad1;
+    mat4 u_ShadowVP[4];
+};
 
 out VS_OUT
 {

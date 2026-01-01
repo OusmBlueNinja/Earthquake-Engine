@@ -1,4 +1,3 @@
-/* core/managers/asset_manager/asset_manager.h */
 #pragma once
 #include <stdint.h>
 #include <stdbool.h>
@@ -12,6 +11,11 @@
 
 #define SAVE_FLAG_NONE 0u
 #define SAVE_FLAG_SEPARATE_ASSETS (1u << 0)
+
+typedef uint32_t asset_flags_t;
+
+#define ASSET_FLAG_NONE 0u
+#define ASSET_FLAG_NO_UNLOAD (1u << 0)
 
 typedef struct mutex_t
 {
@@ -32,6 +36,14 @@ typedef struct asset_slot_t
     uint16_t module_index;
     ihandle_t persistent;
     asset_any_t asset;
+
+    asset_flags_t flags;
+    uint8_t path_is_ptr;
+    uint8_t inflight;
+    uint16_t requested_type;
+    uint64_t last_touched_frame;
+    uint64_t last_requested_ms;
+    char *path;
 } asset_slot_t;
 
 typedef struct asset_job_t
@@ -113,7 +125,34 @@ typedef struct asset_manager_desc_t
     uint32_t worker_count;
     uint32_t max_inflight_jobs;
     ihandle_type_t handle_type;
+
+    uint64_t vram_budget_bytes;
+    uint32_t stream_unused_frames;
+    uint32_t stream_unused_ms;
+    uint32_t streaming_enabled;
 } asset_manager_desc_t;
+
+typedef struct asset_manager_stats_t
+{
+    uint64_t frame_index;
+
+    uint64_t vram_budget_bytes;
+    uint64_t vram_resident_bytes;
+
+    uint64_t upload_bytes_last_pump;
+    uint64_t evicted_bytes_last_pump;
+
+    uint32_t textures_resident;
+
+    uint32_t textures_loaded_total;
+    uint32_t textures_reloaded_total;
+    uint32_t textures_evicted_total;
+
+    uint32_t jobs_pending;
+    uint32_t done_pending;
+
+    uint32_t streaming_enabled;
+} asset_manager_stats_t;
 
 typedef struct asset_manager_t
 {
@@ -134,7 +173,72 @@ typedef struct asset_manager_t
     uint64_t prng_state;
 
     uint8_t asset_type_has_save[ASSET_MAX];
+
+    uint64_t frame_index;
+    uint64_t vram_budget_bytes;
+    uint32_t stream_unused_frames;
+    uint32_t stream_unused_ms;
+    uint32_t streaming_enabled;
+
+    uint64_t now_ms;
+    uint32_t unload_scan_index;
+
+    // Soft budget to avoid hitching: limits how much "new VRAM" we finalize per pump.
+    // Note: a single large texture upload can still stall for one frame; this mostly prevents
+    // doing many uploads in the same pump.
+    uint64_t upload_budget_bytes_per_pump;
+
+    asset_manager_stats_t stats;
+
+    uint32_t asset_get_any_cnt_frame;
+    uint32_t asset_get_any_cnt_last_frame;
 } asset_manager_t;
+
+enum
+{
+    ASSET_DEBUG_PATH_MAX = 260
+};
+
+typedef struct asset_debug_slot_t
+{
+    uint32_t slot_index;
+    ihandle_t handle;
+    ihandle_t persistent;
+
+    asset_type_t type;
+    asset_state_t state;
+    uint16_t module_index;
+    uint16_t requested_type;
+
+    uint8_t inflight;
+    uint8_t path_is_ptr;
+    uint16_t reserved0;
+
+    asset_flags_t flags;
+
+    uint64_t last_touched_frame;
+    uint64_t last_requested_ms;
+    uint64_t vram_bytes;
+
+    char path[ASSET_DEBUG_PATH_MAX];
+} asset_debug_slot_t;
+
+typedef struct asset_manager_debug_snapshot_t
+{
+    uint32_t slot_count;
+    uint32_t streaming_enabled;
+    uint32_t stream_unused_frames;
+    uint32_t stream_unused_ms;
+
+    uint32_t unload_scan_index;
+    uint32_t jobs_pending;
+    uint32_t done_pending;
+
+    uint64_t frame_index;
+    uint64_t now_ms;
+    uint64_t vram_budget_bytes;
+    uint64_t vram_resident_bytes;
+} asset_manager_debug_snapshot_t;
 
 bool asset_manager_init(asset_manager_t *am, const asset_manager_desc_t *desc);
 void asset_manager_shutdown(asset_manager_t *am);
@@ -147,7 +251,18 @@ ihandle_t asset_manager_submit_raw(asset_manager_t *am, asset_type_t type, const
 
 void asset_manager_pump(asset_manager_t *am, uint32_t max_per_frame);
 
+void asset_manager_begin_frame(asset_manager_t *am);
+
 const asset_any_t *asset_manager_get_any(const asset_manager_t *am, ihandle_t h);
+void asset_manager_touch(asset_manager_t *am, ihandle_t h);
+bool asset_manager_update_flags(asset_manager_t *am, ihandle_t h, asset_flags_t set_mask, asset_flags_t clear_mask);
+bool asset_manager_get_stats(const asset_manager_t *am, asset_manager_stats_t *out);
+void asset_manager_set_streaming(asset_manager_t *am, uint32_t enabled, uint64_t vram_budget_bytes, uint32_t unused_frames);
+void asset_manager_set_upload_budget(asset_manager_t *am, uint64_t bytes_per_pump);
+void asset_manager_end_frame(asset_manager_t *am);
+
+uint32_t asset_manager_debug_get_slot_count(const asset_manager_t *am);
+bool asset_manager_debug_get_slots(const asset_manager_t *am, asset_debug_slot_t *out_slots, uint32_t cap, asset_manager_debug_snapshot_t *out_snapshot);
 
 bool asset_manager_build_pack(asset_manager_t *am, uint8_t **out_data, uint32_t *out_size);
 bool asset_manager_build_pack_ex(asset_manager_t *am, uint8_t **out_data, uint32_t *out_size, uint32_t flags, const char *base_path);

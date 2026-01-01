@@ -255,11 +255,11 @@ static void ibl_render_to_cubemap(renderer_t *r, uint32_t cubemap, uint32_t size
     glBindRenderbuffer(GL_RENDERBUFFER, r->ibl.capture_rbo);
     glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, (GLsizei)size, (GLsizei)size);
 
-    glDisable(GL_CULL_FACE);
-    glDisable(GL_BLEND);
-    glEnable(GL_DEPTH_TEST);
-    glDepthFunc(GL_LEQUAL);
-    glDepthMask(GL_TRUE);
+    gl_state_disable(&r->gl, GL_CULL_FACE);
+    gl_state_disable(&r->gl, GL_BLEND);
+    gl_state_enable(&r->gl, GL_DEPTH_TEST);
+    gl_state_depth_func(&r->gl, GL_LEQUAL);
+    gl_state_depth_mask(&r->gl, 1);
 
     shader_bind(s);
     shader_set_mat4(s, "u_Proj", ibl_capture_proj);
@@ -311,11 +311,11 @@ static void ibl_render_prefilter(renderer_t *r, uint32_t cubemap, uint32_t base_
     glBindFramebuffer(GL_FRAMEBUFFER, r->ibl.capture_fbo);
     glDrawBuffer(GL_COLOR_ATTACHMENT0);
 
-    glDisable(GL_CULL_FACE);
-    glDisable(GL_BLEND);
-    glEnable(GL_DEPTH_TEST);
-    glDepthFunc(GL_LEQUAL);
-    glDepthMask(GL_TRUE);
+    gl_state_disable(&r->gl, GL_CULL_FACE);
+    gl_state_disable(&r->gl, GL_BLEND);
+    gl_state_enable(&r->gl, GL_DEPTH_TEST);
+    gl_state_depth_func(&r->gl, GL_LEQUAL);
+    gl_state_depth_mask(&r->gl, 1);
 
     shader_bind(s);
     shader_set_mat4(s, "u_Proj", ibl_capture_proj);
@@ -396,9 +396,9 @@ static void ibl_render_brdf(renderer_t *r, uint32_t lut, uint32_t size, uint8_t 
         return;
     }
 
-    glDisable(GL_CULL_FACE);
-    glDisable(GL_BLEND);
-    glDisable(GL_DEPTH_TEST);
+    gl_state_disable(&r->gl, GL_CULL_FACE);
+    gl_state_disable(&r->gl, GL_BLEND);
+    gl_state_disable(&r->gl, GL_DEPTH_TEST);
 
     shader_bind(s);
 

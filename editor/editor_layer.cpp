@@ -22,6 +22,9 @@ extern "C"
 #include "editor/windows/CBaseWindow.h"
 #include "editor/windows/CViewPortWindow.h"
 #include "editor/windows/CStatsWindow.h"
+#include "editor/windows/CAssetManagerWindow.h"
+
+#include "editor/utils/themes.h"
 
 typedef struct editor_layer_data_t
 {
@@ -31,6 +34,7 @@ typedef struct editor_layer_data_t
     bool show_demo;
 
     vec2i fb;
+    CEditorThemeManager themes;
 
     std::vector<std::unique_ptr<editor::CBaseWindow>> windows;
     editor::CViewPortWindow *viewport;
@@ -72,6 +76,10 @@ static void editor_windows_init(editor_layer_data_t *d, Application *app)
     }
 
     d->windows.emplace_back(std::make_unique<editor::CStatsWindow>());
+    d->windows.emplace_back(std::make_unique<editor::CAssetManagerWindow>());
+
+    d->themes.RegisterBuiltins();
+    d->themes.ApplyById("graphite_dark");
 
     (void)app;
 }
@@ -94,11 +102,10 @@ static void editor_windows_tick(editor_layer_data_t *d, float dt, Application *a
         if (!w->IsVisible())
             continue;
 
-        if (w->Begin())
-        {
+        bool draw = w->Begin();
+        if (draw)
             w->Tick(dt, &ctx);
-            w->End();
-        }
+        w->End();
     }
 }
 
@@ -108,7 +115,7 @@ static void editor_windows_shutdown(editor_layer_data_t *d)
     d->viewport = nullptr;
 }
 
-static void editor_draw_dockspace()
+static void editor_draw_dockspace(editor_layer_data_t *d)
 {
     ImGuiWindowFlags host_flags =
         ImGuiWindowFlags_NoDocking |
@@ -130,6 +137,38 @@ static void editor_draw_dockspace()
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
 
     ImGui::Begin("DockspaceHost", nullptr, host_flags);
+
+    if (ImGui::BeginMenuBar())
+    {
+        if (ImGui::BeginMenu("Window"))
+        {
+            if (d)
+            {
+                for (auto &wptr : d->windows)
+                {
+                    editor::CBaseWindow *w = wptr.get();
+                    if (!w)
+                        continue;
+                    bool open = w->IsVisible();
+                    if (ImGui::MenuItem(w->GetName(), nullptr, &open))
+                        w->SetVisible(open);
+                }
+            }
+
+            ImGui::Separator();
+
+            bool show_demo = d ? d->show_demo : false;
+            if (ImGui::MenuItem("ImGui Demo", nullptr, &show_demo))
+            {
+                if (d)
+                    d->show_demo = show_demo;
+            }
+
+            ImGui::EndMenu();
+        }
+
+        ImGui::EndMenuBar();
+    }
 
     ImGui::PopStyleVar(3);
 
@@ -204,7 +243,7 @@ void layer_post_update(layer_t *layer, float dt)
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
 
-    editor_draw_dockspace();
+    editor_draw_dockspace(d);
     editor_windows_tick(d, dt, app);
 
     if (d->show_demo)
