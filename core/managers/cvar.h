@@ -44,14 +44,6 @@ typedef enum
     // Renderer dev/debug (not intended to be saved)
     CL_R_FORCE_LOD_LEVEL,
     CL_R_WIREFRAME,
-
-    // Asset streaming / VRAM budget
-    CL_AM_STREAMING,
-    CL_AM_VRAM_BUDGET_MB,
-    CL_AM_STREAM_UNUSED_FRAMES,
-    CL_AM_STREAM_UNUSED_MS,
-    CL_AM_PUMP_PER_FRAME,
-    CL_AM_UPLOAD_BUDGET_MB,
     SV_CVAR_COUNT
 } sv_cvar_key_t;
 

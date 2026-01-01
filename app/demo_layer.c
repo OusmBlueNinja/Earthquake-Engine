@@ -395,7 +395,9 @@ static void demo_layer_add_model(demo_layer_state_t *s, asset_manager_t *am, con
     demo_model_entry_t e;
     e.model = asset_manager_request(am, ASSET_MODEL, path);
     e.model_matrix = mtx;
-
+    char out[64];
+    handle_hex_triplet_filesafe(out, e.model);
+    LOG_INFO("Handle: %s", out);
     vector_impl_push_back(&s->models, &e);
 }
 
@@ -609,15 +611,15 @@ static void demo_layer_draw(layer_t *layer)
     for (uint32_t i = 0; i < light_count; ++i)
         R_push_light(r, lights[i]);
 
-    for (uint32_t i = 0; i < s->models.size; ++i)
-    {
-        demo_model_entry_t *e = (demo_model_entry_t *)vector_impl_at(&s->models, i);
-        if (!e)
-            continue;
-        R_push_model(r, e->model, e->model_matrix);
-        //asset_model_t model = asset_manager_get_any(&layer->app->asset_manager, e->model)->as.model;
-        //debug_draw_asset_model_aabbs_overlay(r, &model, e->model_matrix);
-    }
+    // for (uint32_t i = 0; i < s->models.size; ++i)
+    //{
+    //     demo_model_entry_t *e = (demo_model_entry_t *)vector_impl_at(&s->models, i);
+    //     if (!e)
+    //         continue;
+    //     R_push_model(r, e->model, e->model_matrix);
+    //     // asset_model_t model = asset_manager_get_any(&layer->app->asset_manager, e->model)->as.model;
+    //     // debug_draw_asset_model_aabbs_overlay(r, &model, e->model_matrix);
+    // }
 }
 
 layer_t create_demo_layer(void)

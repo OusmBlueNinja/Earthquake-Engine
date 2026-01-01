@@ -539,24 +539,40 @@ void main()
         }
         else
         {
-            // Dithered LOD cross-fade (avoids translucency + avoids MSAA alpha-to-coverage patterns).
-            // Uses a single threshold so LOD0/LOD1 are mutually exclusive per pixel.
-            float r = dither8x8_threshold(gl_FragCoord.xy);
-            bool would_discard = false;
-            if (u_LodXFadeMode == 0)
-                would_discard = (r < t);
-            else
-                would_discard = (r >= t);
-
-            if (mode == 6)
+            // Prefer MSAA alpha-to-coverage for opaque LOD cross-fade so it looks alpha blended
+            // without introducing translucency; fall back to 8x8 dither + discard without MSAA.
+            if (gl_NumSamples > 1)
             {
-                vec3 col = would_discard ? vec3(1.0, 0.0, t) : vec3(0.0, 1.0, t);
-                o_Color = vec4(col, 1.0);
-                return;
+                float w = (u_LodXFadeMode == 0) ? (1.0 - t) : t;
+                alpha = clamp(w, 0.0, 1.0);
+                if (mode == 6)
+                {
+                    o_Color = vec4(vec3(alpha), alpha);
+                    return;
+                }
+                if (alpha <= 0.0)
+                    discard;
             }
+            else
+            {
+                // Uses a single threshold so LOD0/LOD1 are mutually exclusive per pixel.
+                float r = dither8x8_threshold(gl_FragCoord.xy);
+                bool would_discard = false;
+                if (u_LodXFadeMode == 0)
+                    would_discard = (r < t);
+                else
+                    would_discard = (r >= t);
 
-            if (would_discard)
-                discard;
+                if (mode == 6)
+                {
+                    vec3 col = would_discard ? vec3(1.0, 0.0, t) : vec3(0.0, 1.0, t);
+                    o_Color = vec4(col, 1.0);
+                    return;
+                }
+
+                if (would_discard)
+                    discard;
+            }
         }
     }
 

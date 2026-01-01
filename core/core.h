@@ -8,6 +8,7 @@
 #include "layer.h"
 
 #include "systems/event.h"
+#include "systems/ecs/ecs.h"
 
 #include "types/vec2.h"
 #include "types/vec2i.h"
@@ -17,6 +18,12 @@
 #include "managers/window_manager.h"
 #include "managers/cvar.h"
 #include "managers/asset_manager/asset_manager.h"
+
+#include "systems/ecs/components/c_tag.h"
+#include "systems/ecs/components/c_transform.h"
+#include "systems/ecs/components/c_mesh_renderer.h"
+
+#include "systems/scene_renderer/scene_renderer.h"
 
 #include "renderer/renderer.h"
 
@@ -37,7 +44,8 @@ typedef struct ApplicationSpecification
     int argc;
     char **argv;
     bool terminal_colors;
-    int am_max_inflight_jobs;
+
+    asset_manager_desc_t asset_manager_desc;
 
 } ApplicationSpecification;
 
@@ -61,6 +69,8 @@ typedef struct Application
     asset_manager_t asset_manager;
 
     renderer_t renderer;
+
+    ecs_world_t scene;
 
     bool application_initalized;
     app_status_t status;
