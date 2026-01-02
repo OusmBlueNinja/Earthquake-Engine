@@ -28,17 +28,34 @@ namespace editor
         return p ? (p + 1) : path;
     }
 
-    static void hist_push(std::vector<float> &v, size_t max_n, float x)
+    static void hist_push_ring(std::vector<texture_stream_hist_sample_t> &v,
+                               size_t &head,
+                               size_t &count,
+                               size_t cap,
+                               texture_stream_hist_sample_t x)
     {
-        if (max_n == 0)
+        if (cap == 0)
             return;
-        if (v.size() < max_n)
+        if (v.size() != cap)
+            v.resize(cap);
+
+        if (count < cap)
         {
-            v.push_back(x);
-            return;
+            const size_t idx = (head + count) % cap;
+            v[idx] = x;
+            ++count;
         }
-        memmove(v.data(), v.data() + 1, (v.size() - 1) * sizeof(float));
-        v[v.size() - 1] = x;
+        else
+        {
+            v[head] = x;
+            head = (head + 1) % cap;
+        }
+    }
+
+    static const texture_stream_hist_sample_t *hist_at(const std::vector<texture_stream_hist_sample_t> &v, size_t head, size_t cap, size_t i)
+    {
+        const size_t idx = (head + i) % cap;
+        return &v[idx];
     }
 
     struct scoped_texture_mip_preview_t final
@@ -112,28 +129,24 @@ namespace editor
         m_Slots.resize(slot_count);
         asset_manager_debug_get_slots(ctx->assets, slot_count ? m_Slots.data() : nullptr, slot_count, &m_Snapshot);
 
-        // History: 1 sample/sec, last 60s.
-        m_HistAccUploadedBytes += m_Snapshot.tex_stream_uploaded_bytes_last_frame;
-        m_HistAccEvictedBytes += m_Snapshot.tex_stream_evicted_bytes_last_frame;
-        if (m_HistLastSampleMs == 0)
+        // History: one sample per frame, keep last 60 seconds.
         {
-            m_HistLastSampleMs = m_Snapshot.now_ms;
-            hist_push(m_HistVRAM, m_HistMax, bytes_to_mb(m_Snapshot.vram_resident_bytes));
-            hist_push(m_HistUp, m_HistMax, 0.0f);
-            hist_push(m_HistEv, m_HistMax, 0.0f);
-        }
-        if (m_Snapshot.now_ms >= (m_HistLastSampleMs + 1000))
-        {
-            const uint64_t dt_ms = m_Snapshot.now_ms - m_HistLastSampleMs;
-            const uint32_t steps = (uint32_t)(dt_ms / 1000);
-            for (uint32_t i = 0; i < steps; ++i)
+            const texture_stream_hist_sample_t s = {
+                m_Snapshot.now_ms,
+                bytes_to_mb(m_Snapshot.vram_resident_bytes),
+                bytes_to_mb(m_Snapshot.tex_stream_uploaded_bytes_last_frame),
+                bytes_to_mb(m_Snapshot.tex_stream_evicted_bytes_last_frame),
+            };
+            hist_push_ring(m_Hist, m_HistHead, m_HistCount, m_HistCap, s);
+
+            const uint64_t cutoff = (m_Snapshot.now_ms > 60000u) ? (m_Snapshot.now_ms - 60000u) : 0u;
+            while (m_HistCount)
             {
-                hist_push(m_HistVRAM, m_HistMax, bytes_to_mb(m_Snapshot.vram_resident_bytes));
-                hist_push(m_HistUp, m_HistMax, bytes_to_mb(m_HistAccUploadedBytes));
-                hist_push(m_HistEv, m_HistMax, bytes_to_mb(m_HistAccEvictedBytes));
-                m_HistAccUploadedBytes = 0;
-                m_HistAccEvictedBytes = 0;
-                m_HistLastSampleMs += 1000;
+                const texture_stream_hist_sample_t *oldest = hist_at(m_Hist, m_HistHead, m_HistCap, 0);
+                if (oldest->ms >= cutoff)
+                    break;
+                m_HistHead = (m_HistHead + 1) % m_HistCap;
+                --m_HistCount;
             }
         }
 
@@ -150,6 +163,32 @@ namespace editor
                     (unsigned)m_Snapshot.tex_stream_evictions_last_frame,
                     (unsigned)m_Snapshot.tex_stream_stable_frames,
                     (unsigned)m_Snapshot.tex_stream_evict_unused_ms);
+
+        // VRAM caveat / sparse stats (Task Manager only drops when sparse commit/decommit is supported+used).
+        {
+            uint32_t shown = 0;
+            uint32_t sparse = 0;
+            for (uint32_t i = 0; i < slot_count; ++i)
+            {
+                const asset_debug_slot_t &s = m_Slots[i];
+                if (s.type != ASSET_IMAGE || s.state != ASSET_STATE_READY)
+                    continue;
+                if (s.vram_bytes == 0)
+                    continue;
+                const asset_image_t *img = asset_manager_get_image(ctx->assets, s.handle);
+                if (!img)
+                    continue;
+                ++shown;
+                if (img->stream_sparse)
+                    ++sparse;
+            }
+            if (shown)
+            {
+                ImGui::Text("Sparse textures: %u / %u", (unsigned)sparse, (unsigned)shown);
+                if (sparse == 0)
+                    ImGui::TextUnformatted("Note: without sparse textures, OS VRAM may not drop even after mip eviction.");
+            }
+        }
 
         ImGui::SeparatorText("Filters");
         m_Filter.Draw("Filter (path)", 240.0f);
@@ -326,7 +365,7 @@ namespace editor
                     ImGuiTableFlags_Hideable |
                     ImGuiTableFlags_ScrollY;
 
-                if (!ImGui::BeginTable("##tex_stream_table", 9, table_flags, ImVec2(0.0f, 0.0f)))
+                if (!ImGui::BeginTable("##tex_stream_table", 10, table_flags, ImVec2(0.0f, 0.0f)))
                 {
                     ImGui::EndTabItem();
                 }
@@ -335,6 +374,7 @@ namespace editor
                     ImGui::TableSetupScrollFreeze(0, 1);
                     ImGui::TableSetupColumn("Slot", ImGuiTableColumnFlags_WidthFixed, 48.0f);
                     ImGui::TableSetupColumn("VRAM (MB)", ImGuiTableColumnFlags_WidthFixed, 90.0f);
+                    ImGui::TableSetupColumn("Sparse", ImGuiTableColumnFlags_WidthFixed, 54.0f);
                     ImGui::TableSetupColumn("Mips", ImGuiTableColumnFlags_WidthFixed, 48.0f);
                     ImGui::TableSetupColumn("Res/Tgt", ImGuiTableColumnFlags_WidthFixed, 72.0f);
                     ImGui::TableSetupColumn("Forced", ImGuiTableColumnFlags_WidthFixed, 58.0f);
@@ -363,36 +403,42 @@ namespace editor
                         ImGui::Text("%.2f", (double)bytes_to_mb(s.vram_bytes));
 
                         ImGui::TableSetColumnIndex(2);
+                        {
+                            const asset_image_t *img = asset_manager_get_image(ctx->assets, s.handle);
+                            ImGui::TextUnformatted((img && img->stream_sparse) ? "yes" : "no");
+                        }
+
+                        ImGui::TableSetColumnIndex(3);
                         if (s.img_mip_count)
                             ImGui::Text("%u", (unsigned)s.img_mip_count);
                         else
                             ImGui::TextUnformatted("-");
 
-                        ImGui::TableSetColumnIndex(3);
+                        ImGui::TableSetColumnIndex(4);
                         if (s.img_mip_count)
                             ImGui::Text("%u/%u", (unsigned)s.img_resident_top_mip, (unsigned)s.img_target_top_mip);
                         else
                             ImGui::TextUnformatted("-");
 
-                        ImGui::TableSetColumnIndex(4);
+                        ImGui::TableSetColumnIndex(5);
                         if (s.img_forced)
                             ImGui::Text("%u", (unsigned)s.img_forced_top_mip);
                         else
                             ImGui::TextUnformatted("-");
 
-                        ImGui::TableSetColumnIndex(5);
+                        ImGui::TableSetColumnIndex(6);
                         ImGui::Text("%u", (unsigned)s.img_priority);
 
-                        ImGui::TableSetColumnIndex(6);
+                        ImGui::TableSetColumnIndex(7);
                         ImGui::Text("0x%08X%08X", (unsigned)(s.img_residency_mask >> 32), (unsigned)(s.img_residency_mask & 0xFFFFFFFFu));
 
-                        ImGui::TableSetColumnIndex(7);
+                        ImGui::TableSetColumnIndex(8);
                         if (s.last_requested_ms)
                             ImGui::Text("%.1f", (double)age_ms / 1000.0);
                         else
                             ImGui::TextUnformatted("-");
 
-                        ImGui::TableSetColumnIndex(8);
+                        ImGui::TableSetColumnIndex(9);
                         ImGui::TextUnformatted(s.path[0] ? s.path : "-");
                     }
 
@@ -403,13 +449,27 @@ namespace editor
 
             if (ImGui::BeginTabItem("History (60s)"))
             {
+                std::vector<float> vram;
+                std::vector<float> up;
+                std::vector<float> ev;
+                vram.reserve(m_HistCount);
+                up.reserve(m_HistCount);
+                ev.reserve(m_HistCount);
+                for (size_t i = 0; i < m_HistCount; ++i)
+                {
+                    const texture_stream_hist_sample_t *s = hist_at(m_Hist, m_HistHead, m_HistCap, i);
+                    vram.push_back(s->vram_mb);
+                    up.push_back(s->up_mb);
+                    ev.push_back(s->ev_mb);
+                }
+
                 const float vram_budget_mb = bytes_to_mb(m_Snapshot.vram_budget_bytes);
-                if (!m_HistVRAM.empty())
-                    ImGui::PlotLines("VRAM (MB)", m_HistVRAM.data(), (int)m_HistVRAM.size(), 0, nullptr, 0.0f, std::max(1.0f, vram_budget_mb), ImVec2(0, 70));
-                if (!m_HistUp.empty())
-                    ImGui::PlotHistogram("Uploads (MB/s)", m_HistUp.data(), (int)m_HistUp.size(), 0, nullptr, 0.0f, FLT_MAX, ImVec2(0, 55));
-                if (!m_HistEv.empty())
-                    ImGui::PlotHistogram("Evictions (MB/s)", m_HistEv.data(), (int)m_HistEv.size(), 0, nullptr, 0.0f, FLT_MAX, ImVec2(0, 55));
+                if (!vram.empty())
+                    ImGui::PlotLines("VRAM (MB)", vram.data(), (int)vram.size(), 0, nullptr, 0.0f, std::max(1.0f, vram_budget_mb), ImVec2(0, 70));
+                if (!up.empty())
+                    ImGui::PlotHistogram("Uploads (MB/f)", up.data(), (int)up.size(), 0, nullptr, 0.0f, FLT_MAX, ImVec2(0, 55));
+                if (!ev.empty())
+                    ImGui::PlotHistogram("Evictions (MB/f)", ev.data(), (int)ev.size(), 0, nullptr, 0.0f, FLT_MAX, ImVec2(0, 55));
                 ImGui::EndTabItem();
             }
 

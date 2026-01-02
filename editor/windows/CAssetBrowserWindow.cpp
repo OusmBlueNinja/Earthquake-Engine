@@ -10,6 +10,8 @@
 #include <memory>
 #include <string>
 #include <filesystem>
+#include <new>
+#include <inttypes.h>
 
 extern "C"
 {
@@ -25,13 +27,20 @@ namespace editor
 
     static bool is_dir_ignored_rel(const std::filesystem::path& rel)
     {
-        auto s = rel.generic_string();
-        if (s.empty()) return false;
-        if (s.find("/Cache") != std::string::npos) return true;
-        if (s.find("/.git") != std::string::npos) return true;
-        if (s.find("/build") != std::string::npos) return true;
-        if (s.find("/bin") != std::string::npos) return true;
-        return false;
+        try
+        {
+            auto s = rel.generic_string();
+            if (s.empty()) return false;
+            if (s.find("/Cache") != std::string::npos) return true;
+            if (s.find("/.git") != std::string::npos) return true;
+            if (s.find("/build") != std::string::npos) return true;
+            if (s.find("/bin") != std::string::npos) return true;
+            return false;
+        }
+        catch (...)
+        {
+            return false;
+        }
     }
 
     static std::filesystem::path make_abs_norm(const std::filesystem::path& p)
@@ -200,14 +209,22 @@ namespace editor
 
     uint64_t CAssetBrowserWindow::HashPath64(const std::filesystem::path& p)
     {
-        auto s = p.generic_string();
-        uint64_t h = 1469598103934665603ull;
-        for (unsigned char c : s)
+        try
         {
-            h ^= (uint64_t)c;
-            h *= 1099511628211ull;
+            auto s = p.generic_string();
+            uint64_t h = 1469598103934665603ull;
+            for (unsigned char c : s)
+            {
+                h ^= (uint64_t)c;
+                h *= 1099511628211ull;
+            }
+            return h;
         }
-        return h;
+        catch (...)
+        {
+            // Best-effort: stable-ish fallback (avoids scan aborts on allocation/encoding failures).
+            return 0;
+        }
     }
 
     asset_type_t CAssetBrowserWindow::DefaultResolveTypeFromPath(const std::filesystem::path& abs_path)
@@ -363,13 +380,30 @@ namespace editor
                                 now[p] = st;
 
                                 item_t item;
-                                item.abs_path = p.lexically_normal();
-                                item.rel_path = rel.lexically_normal();
-                                item.id = HashPath64(item.rel_path);
-                                item.ext = ToLower(item.abs_path.extension().string());
-                                item.name = StemString(item.abs_path);
-                                item.type = m_cb.resolve_type_from_path ? m_cb.resolve_type_from_path(item.abs_path) : ASSET_NONE;
-                                item.stamp = st;
+                                try
+                                {
+                                    item.abs_path = p.lexically_normal();
+                                    item.rel_path = rel.lexically_normal();
+                                    item.id = HashPath64(item.rel_path);
+                                    item.ext = ToLower(item.abs_path.extension().string());
+                                    item.name = StemString(item.abs_path);
+                                    item.type = m_cb.resolve_type_from_path ? m_cb.resolve_type_from_path(item.abs_path) : ASSET_NONE;
+                                    item.stamp = st;
+                                }
+                                catch (const std::bad_alloc&)
+                                {
+                                    LOG_ERROR("AssetBrowser: out of memory while indexing a file (size=%" PRIu64 " bytes)", (uint64_t)st.file_size);
+                                    continue;
+                                }
+                                catch (const std::exception&)
+                                {
+                                    // Skip problematic entries (e.g. very long/invalid paths, transient IO issues, OOM).
+                                    continue;
+                                }
+                                catch (...)
+                                {
+                                    continue;
+                                }
 
                                 snap.items.push_back(std::move(item));
                             }

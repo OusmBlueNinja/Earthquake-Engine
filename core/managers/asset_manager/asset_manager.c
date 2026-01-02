@@ -199,6 +199,8 @@ static int dedupe_insert_locked(asset_manager_t *am, uint64_t key, uint32_t slot
 
 static uint64_t fnv1a64_bytes(const void *data, size_t n)
 {
+    if (!data || n == 0)
+        return 1469598103934665603ull;
     const uint8_t *p = (const uint8_t *)data;
     uint64_t h = 1469598103934665603ull;
     for (size_t i = 0; i < n; ++i)
@@ -1086,6 +1088,17 @@ static void worker_main(void *p)
         if (!jobq_pop_blocking(&am->jobs, &j, &am->shutting_down, &am->state_m))
             break;
 
+        // NOTE: ptr-load modules are allowed to free `j.path` during `load_fn` (e.g. images free their mem desc).
+        // Never access `j.path` after calling `asset_try_load_any` when `j.path_is_ptr == 1`.
+        ihandle_t slot_persistent = ihandle_invalid();
+        {
+            mutex_lock_impl(&am->state_m);
+            asset_slot_t *s = NULL;
+            if (slot_valid_locked(am, j.handle, &s) && s)
+                slot_persistent = s->persistent;
+            mutex_unlock_impl(&am->state_m);
+        }
+
         mutex_lock_impl(&am->state_m);
         uint32_t sd = am->shutting_down;
         mutex_unlock_impl(&am->state_m);
@@ -1112,7 +1125,14 @@ static void worker_main(void *p)
         bool ok = asset_try_load_any(am, j.type, j.path, j.path_is_ptr, &out, &midx, &ph);
         d.ok = ok;
         d.module_index = midx;
-        d.persistent = ihandle_is_valid(ph) ? ph : make_persistent_handle_from_job(j.type, j.path, j.path_is_ptr);
+        // Prefer module-provided persistent handle, otherwise use the slot's persistent (computed at request time).
+        // Do not hash `j.path` here: ptr loaders may have freed it.
+        if (ihandle_is_valid(ph))
+            d.persistent = ph;
+        else if (ihandle_is_valid(slot_persistent))
+            d.persistent = slot_persistent;
+        else
+            d.persistent = make_persistent_handle_from_job(j.type, j.path, j.path_is_ptr);
 
         if (ok)
             d.asset = out;

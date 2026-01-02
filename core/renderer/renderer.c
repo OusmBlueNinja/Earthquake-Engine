@@ -35,6 +35,7 @@
 #define R_SHADOW_PAD_Z 50.0f
 
 static void R_bind_common_uniforms(renderer_t *r, const shader_t *s);
+static uint32_t R_post_scene_color_tex(const renderer_t *r);
 
 renderer_scene_settings_t R_scene_settings_default(void)
 {
@@ -61,7 +62,7 @@ renderer_scene_settings_t R_scene_settings_default(void)
 
     s.height_invert = 0;
     s.ibl_intensity = 0.2f;
-
+    //! SSR is broken
     s.ssr = 0;
     s.ssr_intensity = 1.0f;
     s.ssr_steps = 48;
@@ -1403,11 +1404,21 @@ static void R_exposure_reduce_ensure(renderer_t *r, uint32_t need_vec4)
     r->exposure_reduce_cap_vec4 = new_cap;
 }
 
+static uint32_t R_post_scene_color_tex(const renderer_t *r)
+{
+    if (!r)
+        return 0;
+    // SSR renders into its own texture; when SSR is disabled, ssr_run writes base scene color (u_Intensity=0).
+    if (r->ssr.color_tex)
+        return r->ssr.color_tex;
+    return r->light_color_tex;
+}
+
 static int R_exposure_reduce_avg_color(renderer_t *r, vec3 *out_avg)
 {
     if (!r || !out_avg)
         return 0;
-    if (!r->light_color_tex)
+    if (!R_post_scene_color_tex(r))
         return 0;
     if (r->exposure_reduce_tex_shader_id == 0xFF || r->exposure_reduce_buf_shader_id == 0xFF)
         return 0;
@@ -1438,7 +1449,7 @@ static int R_exposure_reduce_avg_color(renderer_t *r, vec3 *out_avg)
     shader_set_int(s_tex, "u_Width", w);
     shader_set_int(s_tex, "u_Height", h);
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, r->light_color_tex);
+    glBindTexture(GL_TEXTURE_2D, R_post_scene_color_tex(r));
     shader_set_int(s_tex, "u_Src", 0);
 
     shader_dispatch_compute(s_tex, gx, gy, 1);
@@ -1501,7 +1512,7 @@ static void R_auto_exposure_update(renderer_t *r)
         return;
     }
 
-    if (!r->light_color_tex)
+    if (!R_post_scene_color_tex(r))
         return;
 
     float dt = r->scene.delta_time;
@@ -4936,6 +4947,17 @@ static void R_fg_resolve_color_exec(void *user)
     r->cpu_timings.valid = 1;
 }
 
+static void R_fg_ssr_exec(void *user)
+{
+    renderer_t *r = (renderer_t *)user;
+    if (!r)
+        return;
+    if (!r->light_color_tex)
+        return;
+    ssr_ensure(r);
+    ssr_run(r, r->light_color_tex);
+}
+
 static void R_fg_auto_exposure_exec(void *user)
 {
     renderer_t *r = (renderer_t *)user;
@@ -4953,7 +4975,7 @@ static void R_fg_bloom_exec(void *user)
     renderer_t *r = (renderer_t *)user;
     double t0 = R_time_now_ms();
     R_gpu_timer_begin(r, R_GPU_BLOOM);
-    bloom_run(r, r->light_color_tex, r->black_tex);
+    bloom_run(r, R_post_scene_color_tex(r), r->black_tex);
     R_gpu_timer_end(r);
     r->cpu_timings.ms[R_CPU_BLOOM] = R_time_now_ms() - t0;
     r->cpu_timings.valid = 1;
@@ -4965,7 +4987,7 @@ static void R_fg_composite_exec(void *user)
     uint32_t bloom_tex = (r->cfg.bloom && r->bloom.mips) ? r->bloom.tex_up[0] : 0;
     double t0 = R_time_now_ms();
     R_gpu_timer_begin(r, R_GPU_COMPOSITE);
-    bloom_composite_to_final(r, r->light_color_tex, bloom_tex, r->gbuf_depth, r->black_tex);
+    bloom_composite_to_final(r, R_post_scene_color_tex(r), bloom_tex, r->gbuf_depth, r->black_tex);
     R_gpu_timer_end(r);
     r->cpu_timings.ms[R_CPU_COMPOSITE] = R_time_now_ms() - t0;
     r->cpu_timings.valid = 1;
@@ -4993,6 +5015,9 @@ void R_end_frame(renderer_t *r)
         r->cpu_timings.valid = 1;
     }
 
+    // Ensure the post-process target(s) exist before frame-graph resource import.
+    ssr_ensure(r);
+
     int used_frame_graph = 0;
     if (r->fg)
     {
@@ -5003,6 +5028,9 @@ void R_end_frame(renderer_t *r)
         fg_handle_t res_color_msaa = fg_create_virtual(r->fg, "color_msaa");
         fg_handle_t res_depth_resolved = fg_import_texture2d(r->fg, "depth_resolved", r->gbuf_depth);
         fg_handle_t res_color_resolved = fg_import_texture2d(r->fg, "color_resolved", r->light_color_tex);
+        fg_handle_t res_color_ssr = res_color_resolved;
+        if (r->ssr.color_tex)
+            res_color_ssr = fg_import_texture2d(r->fg, "color_ssr", r->ssr.color_tex);
         fg_handle_t res_bloom = fg_create_virtual(r->fg, "bloom");
         fg_handle_t res_final = fg_import_texture2d(r->fg, "final_color", r->final_color_tex);
         fg_handle_t res_fp = fg_create_virtual(r->fg, "fp_tiles");
@@ -5041,15 +5069,23 @@ void R_end_frame(renderer_t *r)
         fg_pass_use(r->fg, p_res_color, res_color_resolved, FG_ACCESS_WRITE);
         fg_pass_use(r->fg, p_res_color, res_depth_resolved, FG_ACCESS_WRITE);
 
+        if (r->ssr.color_tex)
+        {
+            uint16_t p_ssr = fg_add_pass(r->fg, "ssr", R_fg_ssr_exec, r);
+            fg_pass_use(r->fg, p_ssr, res_color_resolved, FG_ACCESS_READ);
+            fg_pass_use(r->fg, p_ssr, res_depth_resolved, FG_ACCESS_READ);
+            fg_pass_use(r->fg, p_ssr, res_color_ssr, FG_ACCESS_WRITE);
+        }
+
         uint16_t p_exposure = fg_add_pass(r->fg, "auto_exposure", R_fg_auto_exposure_exec, r);
-        fg_pass_use(r->fg, p_exposure, res_color_resolved, FG_ACCESS_READ);
+        fg_pass_use(r->fg, p_exposure, res_color_ssr, FG_ACCESS_READ);
 
         uint16_t p_bloom = fg_add_pass(r->fg, "bloom", R_fg_bloom_exec, r);
-        fg_pass_use(r->fg, p_bloom, res_color_resolved, FG_ACCESS_READ);
+        fg_pass_use(r->fg, p_bloom, res_color_ssr, FG_ACCESS_READ);
         fg_pass_use(r->fg, p_bloom, res_bloom, FG_ACCESS_WRITE);
 
         uint16_t p_comp = fg_add_pass(r->fg, "composite", R_fg_composite_exec, r);
-        fg_pass_use(r->fg, p_comp, res_color_resolved, FG_ACCESS_READ);
+        fg_pass_use(r->fg, p_comp, res_color_ssr, FG_ACCESS_READ);
         fg_pass_use(r->fg, p_comp, res_depth_resolved, FG_ACCESS_READ);
         fg_pass_use(r->fg, p_comp, res_bloom, FG_ACCESS_READ);
         fg_pass_use(r->fg, p_comp, res_final, FG_ACCESS_WRITE);
