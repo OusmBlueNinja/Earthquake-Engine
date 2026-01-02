@@ -941,6 +941,27 @@ static void R_quad3d_render(renderer_t *r)
         if (!q)
             continue;
 
+        if ((q->flags & QUAD3D_TEX_GL) == 0u && r->assets && ihandle_is_valid(q->texture.handle))
+        {
+            float screen_px = 1.0f;
+            if ((q->flags & QUAD3D_SCALE_WITH_VIEW) != 0u)
+            {
+                float sx = fabsf(q->size.x);
+                float sy = fabsf(q->size.y);
+                screen_px = (sx > sy) ? sx : sy;
+            }
+            else
+            {
+                const float hw = 0.5f * fabsf(q->size.x);
+                const float hh = 0.5f * fabsf(q->size.y);
+                const float r0 = sqrtf(hw * hw + hh * hh);
+                screen_px = R_sphere_screen_diameter_px(r, q->center, r0);
+            }
+
+            const uint16_t prio = (uint16_t)(((q->flags & QUAD3D_ON_TOP) != 0u || (q->flags & QUAD3D_SCALE_WITH_VIEW) != 0u) ? 50000u : 0u);
+            asset_manager_image_stream_record_use(r->assets, q->texture.handle, screen_px, 1.0f, prio);
+        }
+
         uint32_t tex_gl = 0;
         if ((q->flags & QUAD3D_TEX_GL) != 0u)
             tex_gl = q->texture.gl;
@@ -2268,6 +2289,49 @@ static vec3 R_mesh_local_center(const mesh_t *mesh)
     return c;
 }
 
+static float R_sphere_screen_diameter_px(const renderer_t *r, vec3 world_center, float world_radius)
+{
+    if (!r || r->fb_size.y <= 0)
+        return 1.0f;
+
+    const float fb_h = (float)r->fb_size.y;
+    const float proj_m11 = r->camera.proj.m[11];
+    const float proj_y = r->camera.proj.m[5];
+
+    float radius_ndc = 0.0f;
+    if (fabsf(proj_m11) > 1e-6f)
+    {
+        float dist = vec3_dist(world_center, r->camera.position);
+        if (dist < 1e-3f)
+            dist = 1e-3f;
+        radius_ndc = (world_radius / dist) * proj_y;
+    }
+    else
+    {
+        radius_ndc = fabsf(world_radius * proj_y);
+    }
+
+    float diameter_px = radius_ndc * fb_h;
+    if (!(diameter_px > 1.0f))
+        diameter_px = 1.0f;
+    return diameter_px;
+}
+
+static void R_stream_record_material_textures(renderer_t *r, const asset_material_t *mat, float screen_coverage_px, float uv_scale, uint16_t priority)
+{
+    if (!r || !r->assets || !mat)
+        return;
+
+    asset_manager_image_stream_record_use(r->assets, mat->albedo_tex, screen_coverage_px, uv_scale, priority);
+    asset_manager_image_stream_record_use(r->assets, mat->normal_tex, screen_coverage_px, uv_scale, priority);
+    asset_manager_image_stream_record_use(r->assets, mat->metallic_tex, screen_coverage_px, uv_scale, priority);
+    asset_manager_image_stream_record_use(r->assets, mat->roughness_tex, screen_coverage_px, uv_scale, priority);
+    asset_manager_image_stream_record_use(r->assets, mat->emissive_tex, screen_coverage_px, uv_scale, priority);
+    asset_manager_image_stream_record_use(r->assets, mat->occlusion_tex, screen_coverage_px, uv_scale, priority);
+    asset_manager_image_stream_record_use(r->assets, mat->height_tex, screen_coverage_px, uv_scale, priority);
+    asset_manager_image_stream_record_use(r->assets, mat->arm_tex, screen_coverage_px, uv_scale, priority);
+}
+
 static vec3 R_transform_point(mat4 m, vec3 p)
 {
     vec3 o;
@@ -2940,6 +3004,16 @@ static void R_build_instancing(renderer_t *r)
                 continue;
 
             asset_material_t *mat = R_resolve_material(r, mesh->material);
+
+            {
+                const vec3 lc = R_mesh_local_center(mesh);
+                const float lr = R_mesh_local_radius(mesh);
+                const vec3 wc = R_transform_point(pm->model_matrix, lc);
+                const float wr = lr * max_scale;
+                const float screen_px = R_sphere_screen_diameter_px(r, wc, wr);
+                R_stream_record_material_textures(r, mat, screen_px, 1.0f, 0);
+            }
+
             int mat_cutout = 0;
             int mat_blend = 0;
             int mat_doublesided = 0;
@@ -3038,6 +3112,16 @@ static void R_build_instancing(renderer_t *r)
                 continue;
 
             asset_material_t *mat = R_resolve_material(r, mesh->material);
+
+            {
+                const vec3 lc = R_mesh_local_center(mesh);
+                const float lr = R_mesh_local_radius(mesh);
+                const vec3 wc = R_transform_point(pm->model_matrix, lc);
+                const float wr = lr * max_scale;
+                const float screen_px = R_sphere_screen_diameter_px(r, wc, wr);
+                R_stream_record_material_textures(r, mat, screen_px, 1.0f, 0);
+            }
+
             int mat_cutout = 0;
             int mat_blend = 0;
             int mat_doublesided = 0;
@@ -3939,7 +4023,7 @@ static void R_sky_pass(renderer_t *r)
 
     gl_state_enable(&r->gl, GL_DEPTH_TEST);
     gl_state_depth_mask(&r->gl, 0);
-    gl_state_depth_func(&r->gl, GL_ALWAYS);
+    gl_state_depth_func(&r->gl, GL_LEQUAL);
 
     shader_bind(sky);
 

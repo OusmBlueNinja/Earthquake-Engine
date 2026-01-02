@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <time.h>
 #include <inttypes.h>
+#include <math.h>
 
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
@@ -16,6 +17,12 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <errno.h>
+#endif
+
+#if defined(__APPLE__)
+#include <OpenGL/gl3.h>
+#else
+#include <GL/glew.h>
 #endif
 
 static uint64_t am_time_ms(void)
@@ -952,6 +959,11 @@ bool asset_manager_init(asset_manager_t *am, const asset_manager_desc_t *desc)
     uint64_t upload_budget_bytes_per_pump = 32ull * 1024ull * 1024ull;
     uint32_t pump_per_frame = 2;
 
+    uint32_t tex_stream_stable_frames = 3;
+    uint32_t tex_stream_min_safety_mips_from_bottom = 0;
+    uint32_t tex_stream_evict_unused_ms = 2000;
+    uint64_t tex_stream_upload_budget_bytes_per_frame = 8ull * 1024ull * 1024ull;
+
     if (desc)
     {
         if (desc->worker_count)
@@ -972,6 +984,14 @@ bool asset_manager_init(asset_manager_t *am, const asset_manager_desc_t *desc)
             upload_budget_bytes_per_pump = desc->upload_budget_bytes_per_pump;
         if (desc->pump_per_frame)
             pump_per_frame = desc->pump_per_frame;
+
+        if (desc->tex_stream_stable_frames)
+            tex_stream_stable_frames = desc->tex_stream_stable_frames;
+        tex_stream_min_safety_mips_from_bottom = desc->tex_stream_min_safety_mips_from_bottom;
+        if (desc->tex_stream_evict_unused_ms)
+            tex_stream_evict_unused_ms = desc->tex_stream_evict_unused_ms;
+        if (desc->tex_stream_upload_budget_bytes_per_frame)
+            tex_stream_upload_budget_bytes_per_frame = desc->tex_stream_upload_budget_bytes_per_frame;
     }
 
     am->handle_type = ht;
@@ -982,6 +1002,11 @@ bool asset_manager_init(asset_manager_t *am, const asset_manager_desc_t *desc)
     am->streaming_enabled = streaming_enabled ? 1u : 0u;
     am->upload_budget_bytes_per_pump = upload_budget_bytes_per_pump;
     am->pump_per_frame = (pump_per_frame == 0) ? 1u : pump_per_frame;
+
+    am->tex_stream_stable_frames = tex_stream_stable_frames;
+    am->tex_stream_min_safety_mips_from_bottom = tex_stream_min_safety_mips_from_bottom;
+    am->tex_stream_evict_unused_ms = tex_stream_evict_unused_ms;
+    am->tex_stream_upload_budget_bytes_per_frame = tex_stream_upload_budget_bytes_per_frame;
     am->now_ms = am_time_ms();
     am->unload_scan_index = 0;
 
@@ -989,6 +1014,11 @@ bool asset_manager_init(asset_manager_t *am, const asset_manager_desc_t *desc)
     am->stats.frame_index = 0;
     am->stats.vram_budget_bytes = am->vram_budget_bytes;
     am->stats.streaming_enabled = am->streaming_enabled;
+    am->stats.tex_stream_uploaded_bytes_last_frame = 0;
+    am->stats.tex_stream_evicted_bytes_last_frame = 0;
+    am->stats.tex_stream_uploads_last_frame = 0;
+    am->stats.tex_stream_evictions_last_frame = 0;
+    am->stats.tex_stream_pending_uploads = 0;
 
     am->slots = vector_impl_create_vector(sizeof(asset_slot_t));
     am->modules = vector_impl_create_vector(sizeof(asset_module_desc_t));
@@ -1305,6 +1335,8 @@ static uint64_t asset_vram_bytes_if_resident(const asset_any_t *a)
 typedef struct am_evict_cand_t
 {
     uint32_t slot_index;
+    uint16_t priority;
+    uint16_t pad0;
     uint64_t last_used;
     uint64_t bytes;
 } am_evict_cand_t;
@@ -1313,6 +1345,10 @@ static int am_evict_cand_cmp(const void *a, const void *b)
 {
     const am_evict_cand_t *x = (const am_evict_cand_t *)a;
     const am_evict_cand_t *y = (const am_evict_cand_t *)b;
+    if (x->priority < y->priority)
+        return -1;
+    if (x->priority > y->priority)
+        return 1;
     if (x->last_used < y->last_used)
         return -1;
     if (x->last_used > y->last_used)
@@ -1320,7 +1356,259 @@ static int am_evict_cand_cmp(const void *a, const void *b)
     return 0;
 }
 
-static void asset_manager_try_evict_textures_locked(asset_manager_t *am)
+static uint32_t clamp_u32(uint32_t v, uint32_t lo, uint32_t hi)
+{
+    if (v < lo)
+        return lo;
+    if (v > hi)
+        return hi;
+    return v;
+}
+
+static uint32_t asset_image_desired_top_mip(const asset_image_t *img, float screen_coverage_px, float uv_scale)
+{
+    if (!img || img->mip_count == 0 || img->width == 0 || img->height == 0)
+        return 0;
+
+    float px = screen_coverage_px;
+    if (!(px > 0.0f))
+        px = 1.0f;
+
+    float us = uv_scale;
+    if (!(us > 0.0f))
+        us = 1.0f;
+
+    const uint32_t max_dim = (img->width > img->height) ? img->width : img->height;
+    float ratio = ((float)max_dim * us) / px;
+
+    if (ratio <= 1.0f)
+        return 0;
+
+    float mipf = log2f(ratio);
+    if (!(mipf > 0.0f))
+        return 0;
+
+    uint32_t mip = (uint32_t)(mipf + 1e-6f);
+    if (mip >= img->mip_count)
+        mip = img->mip_count - 1u;
+    return mip;
+}
+
+void asset_manager_image_stream_record_use(asset_manager_t *am, ihandle_t image, float screen_coverage_px, float uv_scale, uint16_t priority)
+{
+    if (!am || !ihandle_is_valid(image))
+        return;
+
+    // Touch to keep the asset warm / queued for load if needed.
+    asset_manager_touch(am, image);
+
+    mutex_lock_impl(&am->state_m);
+
+    asset_slot_t *slot = NULL;
+    if (!slot_valid_locked(am, image, &slot) || !slot)
+    {
+        mutex_unlock_impl(&am->state_m);
+        return;
+    }
+
+    if (slot->asset.type != ASSET_IMAGE || slot->asset.state != ASSET_STATE_READY)
+    {
+        mutex_unlock_impl(&am->state_m);
+        return;
+    }
+
+    asset_image_t *img = &slot->asset.as.image;
+    if (img->mip_count == 0)
+    {
+        mutex_unlock_impl(&am->state_m);
+        return;
+    }
+
+    img->stream_last_used_frame = am->frame_index;
+    img->stream_last_used_ms = am->now_ms;
+
+    uint16_t p = priority;
+    if (slot->flags & ASSET_FLAG_NO_UNLOAD)
+        p = (uint16_t)65535u;
+    if (p > img->stream_priority)
+        img->stream_priority = p;
+
+    const uint32_t desired = asset_image_desired_top_mip(img, screen_coverage_px, uv_scale);
+
+    if (img->stream_best_target_mip_frame != (uint32_t)am->frame_index)
+    {
+        img->stream_best_target_mip_frame = (uint32_t)am->frame_index;
+        img->stream_best_target_mip = desired;
+    }
+    else
+    {
+        if (desired < img->stream_best_target_mip)
+            img->stream_best_target_mip = desired;
+    }
+
+    mutex_unlock_impl(&am->state_m);
+}
+
+void asset_manager_image_stream_force_top_mip(asset_manager_t *am, ihandle_t image, uint32_t enabled, uint32_t top_mip, uint16_t priority)
+{
+    if (!am || !ihandle_is_valid(image))
+        return;
+
+    mutex_lock_impl(&am->state_m);
+
+    asset_slot_t *slot = NULL;
+    if (!slot_valid_locked(am, image, &slot) || !slot || slot->asset.type != ASSET_IMAGE || slot->asset.state != ASSET_STATE_READY)
+    {
+        mutex_unlock_impl(&am->state_m);
+        return;
+    }
+
+    asset_image_t *img = &slot->asset.as.image;
+    if (img->mip_count == 0)
+    {
+        mutex_unlock_impl(&am->state_m);
+        return;
+    }
+
+    img->stream_forced = enabled ? 1u : 0u;
+    img->stream_forced_top_mip = clamp_u32(top_mip, 0u, img->mip_count - 1u);
+
+    if (enabled)
+    {
+        if (priority > img->stream_priority)
+            img->stream_priority = priority;
+
+        img->stream_target_top_mip = img->stream_forced_top_mip;
+        img->stream_pending_target_top_mip = img->stream_forced_top_mip;
+        img->stream_pending_frames = 0;
+    }
+
+    mutex_unlock_impl(&am->state_m);
+}
+
+typedef struct am_stream_upload_cand_t
+{
+    uint32_t slot_index;
+    uint16_t priority;
+    uint16_t pad0;
+    uint32_t delta; // resident_top - target_top
+    uint64_t last_used_frame;
+} am_stream_upload_cand_t;
+
+static int am_stream_upload_cmp(const void *a, const void *b)
+{
+    const am_stream_upload_cand_t *x = (const am_stream_upload_cand_t *)a;
+    const am_stream_upload_cand_t *y = (const am_stream_upload_cand_t *)b;
+
+    if (x->priority > y->priority)
+        return -1;
+    if (x->priority < y->priority)
+        return 1;
+
+    if (x->delta > y->delta)
+        return -1;
+    if (x->delta < y->delta)
+        return 1;
+
+    if (x->last_used_frame > y->last_used_frame)
+        return -1;
+    if (x->last_used_frame < y->last_used_frame)
+        return 1;
+
+    return 0;
+}
+
+static void asset_manager_texture_stream_finalize_targets_locked(asset_manager_t *am)
+{
+    if (!am)
+        return;
+
+    const uint32_t stable_frames = am->tex_stream_stable_frames ? am->tex_stream_stable_frames : 1u;
+
+    const uint32_t cap = (uint32_t)am->slots.size;
+    for (uint32_t i = 0; i < cap; ++i)
+    {
+        asset_slot_t *s = (asset_slot_t *)vector_impl_at(&am->slots, i);
+        if (!s)
+            continue;
+        if (s->flags & ASSET_FLAG_NO_UNLOAD)
+            continue;
+        if (s->asset.type != ASSET_IMAGE || s->asset.state != ASSET_STATE_READY)
+            continue;
+
+        asset_image_t *img = &s->asset.as.image;
+        if (img->mip_count == 0)
+            continue;
+
+        const uint32_t lowest_mip = img->mip_count - 1u;
+        if ((img->stream_min_safety_mip == 0 && lowest_mip != 0) || img->stream_min_safety_mip >= img->mip_count)
+            img->stream_min_safety_mip = lowest_mip;
+
+        if (img->stream_forced)
+        {
+            uint32_t forced = clamp_u32(img->stream_forced_top_mip, 0u, lowest_mip);
+            img->stream_target_top_mip = forced;
+            img->stream_pending_target_top_mip = forced;
+            img->stream_pending_frames = 0;
+            continue;
+        }
+
+        const uint32_t used_this_frame = (img->stream_best_target_mip_frame == (uint32_t)am->frame_index) ? 1u : 0u;
+
+        if (used_this_frame)
+        {
+            uint32_t desired = img->stream_best_target_mip;
+            desired = clamp_u32(desired, 0u, lowest_mip);
+
+            if (desired < img->stream_target_top_mip)
+            {
+                if (img->stream_pending_target_top_mip != desired)
+                {
+                    img->stream_pending_target_top_mip = desired;
+                    img->stream_pending_frames = 1;
+                }
+                else
+                {
+                    if (img->stream_pending_frames < 0xFFFFu)
+                        img->stream_pending_frames++;
+                }
+
+                if ((uint32_t)img->stream_pending_frames >= stable_frames)
+                {
+                    img->stream_target_top_mip = desired;
+                    img->stream_pending_frames = 0;
+                }
+            }
+            else
+            {
+                img->stream_target_top_mip = desired;
+                img->stream_pending_target_top_mip = desired;
+                img->stream_pending_frames = 0;
+            }
+        }
+        else
+        {
+            // If idle long enough, allow the target to drift back to safety.
+            if (am->stream_unused_ms && img->stream_last_used_ms)
+            {
+                const uint64_t age_ms = (am->now_ms > img->stream_last_used_ms) ? (am->now_ms - img->stream_last_used_ms) : 0;
+                if (age_ms >= (uint64_t)am->stream_unused_ms)
+                {
+                    img->stream_target_top_mip = img->stream_min_safety_mip;
+                    img->stream_pending_target_top_mip = img->stream_min_safety_mip;
+                    img->stream_pending_frames = 0;
+                }
+            }
+        }
+
+        if (img->stream_target_top_mip > lowest_mip)
+            img->stream_target_top_mip = lowest_mip;
+        if (img->stream_current_top_mip > lowest_mip)
+            img->stream_current_top_mip = lowest_mip;
+    }
+}
+
+static void asset_manager_texture_stream_evict_budget_locked(asset_manager_t *am)
 {
     if (!am || !am->streaming_enabled)
         return;
@@ -1332,9 +1620,7 @@ static void asset_manager_try_evict_textures_locked(asset_manager_t *am)
     if (am->stats.vram_resident_bytes <= budget)
         return;
 
-    const uint64_t min_age = (uint64_t)am->stream_unused_frames;
-
-    uint32_t cap = (uint32_t)am->slots.size;
+    const uint32_t cap = (uint32_t)am->slots.size;
     am_evict_cand_t *cands = (am_evict_cand_t *)malloc((size_t)cap * sizeof(am_evict_cand_t));
     if (!cands)
         return;
@@ -1345,22 +1631,27 @@ static void asset_manager_try_evict_textures_locked(asset_manager_t *am)
         asset_slot_t *s = (asset_slot_t *)vector_impl_at(&am->slots, i);
         if (!s)
             continue;
-        if (s->flags & ASSET_FLAG_NO_UNLOAD)
-            continue;
         if (s->asset.type != ASSET_IMAGE || s->asset.state != ASSET_STATE_READY)
             continue;
-        if (s->path_is_ptr || !s->path || !s->path[0])
+
+        asset_image_t *img = &s->asset.as.image;
+        if (!img->gl_handle || !img->mips || img->mip_count == 0)
             continue;
 
-        uint64_t age = (am->frame_index > s->last_touched_frame) ? (am->frame_index - s->last_touched_frame) : 0;
-        if (age < min_age)
+        if (img->stream_current_top_mip >= img->stream_min_safety_mip)
             continue;
 
-        uint64_t bytes = s->asset.as.image.vram_bytes;
+        const uint64_t last_ms = img->stream_last_used_ms ? img->stream_last_used_ms : s->last_requested_ms;
+        const uint64_t age_ms = (last_ms && am->now_ms > last_ms) ? (am->now_ms - last_ms) : 0;
+        if (am->tex_stream_evict_unused_ms && age_ms < (uint64_t)am->tex_stream_evict_unused_ms)
+            continue;
+
+        uint64_t bytes = img->vram_bytes;
         if (!bytes)
             continue;
 
-        cands[n++] = (am_evict_cand_t){i, s->last_touched_frame, bytes};
+        const uint64_t last_used = img->stream_last_used_frame ? img->stream_last_used_frame : s->last_touched_frame;
+        cands[n++] = (am_evict_cand_t){i, img->stream_priority, 0, last_used, bytes};
     }
 
     if (n == 0)
@@ -1369,37 +1660,179 @@ static void asset_manager_try_evict_textures_locked(asset_manager_t *am)
         return;
     }
 
+    // LRU first.
     qsort(cands, (size_t)n, sizeof(am_evict_cand_t), am_evict_cand_cmp);
+
+    uint64_t evicted_bytes = 0;
+    uint32_t evictions = 0;
 
     for (uint32_t k = 0; k < n && am->stats.vram_resident_bytes > budget; ++k)
     {
         asset_slot_t *s = (asset_slot_t *)vector_impl_at(&am->slots, cands[k].slot_index);
-        if (!s)
-            continue;
-        if (s->asset.type != ASSET_IMAGE || s->asset.state != ASSET_STATE_READY)
+        if (!s || s->asset.type != ASSET_IMAGE || s->asset.state != ASSET_STATE_READY)
             continue;
 
-        uint64_t bytes = s->asset.as.image.vram_bytes;
-        asset_cleanup_by_module(am, &s->asset, s->module_index);
-        s->asset.type = (asset_type_t)s->requested_type;
-        s->asset.state = ASSET_STATE_EMPTY;
-        memset(&s->asset.as, 0, sizeof(s->asset.as));
-        s->module_index = 0xFFFFu;
-        s->inflight = 0;
+        asset_image_t *img = &s->asset.as.image;
+        if (!img->gl_handle || !img->mips || img->mip_count == 0)
+            continue;
+
+        // Evict one mip at a time: drop the current top mip (highest quality resident).
+        if (img->stream_current_top_mip >= img->stream_min_safety_mip)
+            continue;
+
+        const uint32_t evict_mip = img->stream_current_top_mip;
+        const uint64_t bytes = img->mips->size[evict_mip];
+
+        img->stream_current_top_mip = evict_mip + 1u;
+        if (img->stream_current_top_mip > (img->mip_count - 1u))
+            img->stream_current_top_mip = img->mip_count - 1u;
+
+        if (evict_mip < 64u)
+            img->stream_residency_mask &= ~(1ull << evict_mip);
+
+        if (img->vram_bytes >= bytes)
+            img->vram_bytes -= bytes;
+        else
+            img->vram_bytes = 0;
 
         if (am->stats.vram_resident_bytes >= bytes)
             am->stats.vram_resident_bytes -= bytes;
         else
             am->stats.vram_resident_bytes = 0;
 
-        if (am->stats.textures_resident)
-            am->stats.textures_resident--;
+        img->stream_last_evict_frame = (uint32_t)am->frame_index;
+        evicted_bytes += bytes;
+        evictions++;
 
-        am->stats.evicted_bytes_last_pump += bytes;
-        am->stats.textures_evicted_total++;
+        // Clamp sampling to remaining resident range.
+        glBindTexture(GL_TEXTURE_2D, (GLuint)img->gl_handle);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, (GLint)img->stream_current_top_mip);
+        glBindTexture(GL_TEXTURE_2D, 0);
     }
 
+    am->stats.tex_stream_evicted_bytes_last_frame = evicted_bytes;
+    am->stats.tex_stream_evictions_last_frame = evictions;
+    am->stats.evicted_bytes_last_pump = evicted_bytes;
+
     free(cands);
+}
+
+static void asset_manager_texture_stream_upload_locked(asset_manager_t *am)
+{
+    if (!am || !am->streaming_enabled)
+        return;
+
+    const uint64_t upload_budget = am->tex_stream_upload_budget_bytes_per_frame;
+    if (upload_budget == 0)
+        return;
+
+    const uint32_t cap = (uint32_t)am->slots.size;
+    am_stream_upload_cand_t *cands = (am_stream_upload_cand_t *)malloc((size_t)cap * sizeof(am_stream_upload_cand_t));
+    if (!cands)
+        return;
+
+    uint32_t n = 0;
+    uint32_t pending = 0;
+
+    for (uint32_t i = 0; i < cap; ++i)
+    {
+        asset_slot_t *s = (asset_slot_t *)vector_impl_at(&am->slots, i);
+        if (!s)
+            continue;
+        if (s->asset.type != ASSET_IMAGE || s->asset.state != ASSET_STATE_READY)
+            continue;
+
+        asset_image_t *img = &s->asset.as.image;
+        if (!img->gl_handle || !img->mips || img->mip_count == 0)
+            continue;
+
+        if (img->stream_current_top_mip <= img->stream_target_top_mip)
+            continue;
+
+        pending++;
+
+        if (img->stream_last_upload_frame == (uint32_t)am->frame_index)
+            continue;
+
+        cands[n++] = (am_stream_upload_cand_t){
+            .slot_index = i,
+            .priority = img->stream_priority,
+            .delta = img->stream_current_top_mip - img->stream_target_top_mip,
+            .last_used_frame = img->stream_last_used_frame};
+    }
+
+    am->stats.tex_stream_pending_uploads = pending;
+
+    if (n == 0)
+    {
+        free(cands);
+        return;
+    }
+
+    qsort(cands, (size_t)n, sizeof(am_stream_upload_cand_t), am_stream_upload_cmp);
+
+    uint64_t uploaded = 0;
+    uint32_t uploads = 0;
+
+    for (uint32_t k = 0; k < n; ++k)
+    {
+        if (uploaded >= upload_budget)
+            break;
+
+        asset_slot_t *s = (asset_slot_t *)vector_impl_at(&am->slots, cands[k].slot_index);
+        if (!s || s->asset.type != ASSET_IMAGE || s->asset.state != ASSET_STATE_READY)
+            continue;
+
+        asset_image_t *img = &s->asset.as.image;
+        if (!img->gl_handle || !img->mips || img->mip_count == 0)
+            continue;
+
+        if (img->stream_current_top_mip <= img->stream_target_top_mip)
+            continue;
+
+        const uint32_t next_mip = img->stream_current_top_mip - 1u;
+        const uint64_t bytes = img->mips->size[next_mip];
+        if (bytes == 0)
+            continue;
+        if (uploaded + bytes > upload_budget)
+            continue;
+
+        const GLenum fmt = (img->channels == 4) ? GL_RGBA : (img->channels == 3 ? GL_RGB : GL_RED);
+        const GLenum type = img->is_float ? GL_FLOAT : GL_UNSIGNED_BYTE;
+
+        const uint32_t mw = img->mips->width[next_mip];
+        const uint32_t mh = img->mips->height[next_mip];
+        const void *src = (const void *)(img->mips->data + (size_t)img->mips->offset[next_mip]);
+
+        glBindTexture(GL_TEXTURE_2D, (GLuint)img->gl_handle);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        glTexSubImage2D(GL_TEXTURE_2D, (GLint)next_mip, 0, 0, (GLsizei)mw, (GLsizei)mh, fmt, type, src);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, (GLint)next_mip);
+        glBindTexture(GL_TEXTURE_2D, 0);
+
+        img->stream_current_top_mip = next_mip;
+        if (next_mip < 64u)
+            img->stream_residency_mask |= (1ull << next_mip);
+        img->stream_last_upload_frame = (uint32_t)am->frame_index;
+
+        img->vram_bytes += bytes;
+        am->stats.vram_resident_bytes += bytes;
+
+        uploaded += bytes;
+        uploads++;
+    }
+
+    am->stats.tex_stream_uploaded_bytes_last_frame = uploaded;
+    am->stats.tex_stream_uploads_last_frame = uploads;
+    am->stats.upload_bytes_last_pump = uploaded;
+
+    free(cands);
+}
+
+static void asset_manager_try_evict_textures_locked(asset_manager_t *am)
+{
+    // Kept for API compatibility; eviction is handled per-mip at end-of-frame.
+    asset_manager_texture_stream_evict_budget_locked(am);
 }
 
 void asset_manager_touch(asset_manager_t *am, ihandle_t h)
@@ -1713,6 +2146,41 @@ void asset_manager_pump(asset_manager_t *am, uint32_t max_per_frame)
             //          (unsigned long long)bytes,
             //          p ? p : "(null)");
 
+            if (s->asset.type == ASSET_IMAGE && s->asset.state == ASSET_STATE_READY)
+            {
+                // For streamed textures, don't drop the entire asset; evict back to safety mip instead.
+                asset_image_t *img = &s->asset.as.image;
+                if (img->mip_count > 0 && img->gl_handle)
+                {
+                    const uint32_t safety = (img->stream_min_safety_mip < img->mip_count) ? img->stream_min_safety_mip : (img->mip_count - 1u);
+                    img->stream_target_top_mip = safety;
+
+                    while (img->stream_current_top_mip < safety)
+                    {
+                        const uint32_t evict_mip = img->stream_current_top_mip;
+                        const uint64_t b = (img->mips && evict_mip < img->mips->mip_count) ? img->mips->size[evict_mip] : 0;
+
+                        img->stream_current_top_mip = evict_mip + 1u;
+                        if (evict_mip < 64u)
+                            img->stream_residency_mask &= ~(1ull << evict_mip);
+
+                        if (b && img->vram_bytes >= b)
+                            img->vram_bytes -= b;
+                        if (b && am->stats.vram_resident_bytes >= b)
+                            am->stats.vram_resident_bytes -= b;
+
+                        am->stats.evicted_bytes_last_pump += b;
+                        img->stream_last_evict_frame = (uint32_t)am->frame_index;
+                    }
+
+                    glBindTexture(GL_TEXTURE_2D, (GLuint)img->gl_handle);
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, (GLint)img->stream_current_top_mip);
+                    glBindTexture(GL_TEXTURE_2D, 0);
+                }
+
+                continue;
+            }
+
             asset_cleanup_by_module(am, &s->asset, s->module_index);
             s->asset.type = (asset_type_t)s->requested_type;
             s->asset.state = ASSET_STATE_EMPTY;
@@ -1766,7 +2234,18 @@ void asset_manager_end_frame(asset_manager_t *am)
         return;
 
     mutex_lock_impl(&am->state_m);
-    asset_manager_try_evict_textures_locked(am);
+
+    am->stats.tex_stream_uploaded_bytes_last_frame = 0;
+    am->stats.tex_stream_evicted_bytes_last_frame = 0;
+    am->stats.tex_stream_uploads_last_frame = 0;
+    am->stats.tex_stream_evictions_last_frame = 0;
+    am->stats.tex_stream_pending_uploads = 0;
+    am->stats.upload_bytes_last_pump = 0;
+    am->stats.evicted_bytes_last_pump = 0;
+
+    asset_manager_texture_stream_finalize_targets_locked(am);
+    asset_manager_texture_stream_evict_budget_locked(am);
+    asset_manager_texture_stream_upload_locked(am);
     mutex_unlock_impl(&am->state_m);
 }
 
@@ -1825,6 +2304,17 @@ bool asset_manager_debug_get_slots(const asset_manager_t *am, asset_debug_slot_t
     out_snapshot->vram_budget_bytes = mut->vram_budget_bytes;
     out_snapshot->vram_resident_bytes = mut->stats.vram_resident_bytes;
 
+    out_snapshot->tex_stream_upload_budget_bytes_per_frame = mut->tex_stream_upload_budget_bytes_per_frame;
+    out_snapshot->tex_stream_stable_frames = mut->tex_stream_stable_frames;
+    out_snapshot->tex_stream_min_safety_mips_from_bottom = mut->tex_stream_min_safety_mips_from_bottom;
+    out_snapshot->tex_stream_evict_unused_ms = mut->tex_stream_evict_unused_ms;
+
+    out_snapshot->tex_stream_uploaded_bytes_last_frame = mut->stats.tex_stream_uploaded_bytes_last_frame;
+    out_snapshot->tex_stream_evicted_bytes_last_frame = mut->stats.tex_stream_evicted_bytes_last_frame;
+    out_snapshot->tex_stream_uploads_last_frame = mut->stats.tex_stream_uploads_last_frame;
+    out_snapshot->tex_stream_evictions_last_frame = mut->stats.tex_stream_evictions_last_frame;
+    out_snapshot->tex_stream_pending_uploads = mut->stats.tex_stream_pending_uploads;
+
     mutex_lock_impl(&mut->jobs.m);
     out_snapshot->jobs_pending = mut->jobs.count;
     mutex_unlock_impl(&mut->jobs.m);
@@ -1860,6 +2350,30 @@ bool asset_manager_debug_get_slots(const asset_manager_t *am, asset_debug_slot_t
         d->last_touched_frame = s->last_touched_frame;
         d->last_requested_ms = s->last_requested_ms;
         d->vram_bytes = asset_vram_bytes_if_resident(&s->asset);
+
+        d->img_mip_count = 0;
+        d->img_resident_top_mip = 0;
+        d->img_target_top_mip = 0;
+        d->img_best_target_top_mip = 0;
+        d->img_residency_mask = 0;
+        d->img_priority = 0;
+        d->img_pending_frames = 0;
+        d->img_forced = 0;
+        d->img_forced_top_mip = 0;
+
+        if (s->asset.type == ASSET_IMAGE && s->asset.state == ASSET_STATE_READY)
+        {
+            const asset_image_t *img = &s->asset.as.image;
+            d->img_mip_count = img->mip_count;
+            d->img_resident_top_mip = img->stream_current_top_mip;
+            d->img_target_top_mip = img->stream_target_top_mip;
+            d->img_best_target_top_mip = img->stream_best_target_mip;
+            d->img_residency_mask = img->stream_residency_mask;
+            d->img_priority = img->stream_priority;
+            d->img_pending_frames = img->stream_pending_frames;
+            d->img_forced = img->stream_forced ? 1u : 0u;
+            d->img_forced_top_mip = img->stream_forced_top_mip;
+        }
 
         if (s->path_is_ptr)
         {

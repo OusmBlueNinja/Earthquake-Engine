@@ -132,6 +132,7 @@ static void ibl_destroy(renderer_t *r)
     r->ibl.capture_fbo = 0;
     r->ibl.capture_rbo = 0;
     r->ibl.src_hdri = ihandle_invalid();
+    r->ibl.src_hdri_top_mip = 0;
     r->ibl.ready = 0;
 }
 
@@ -150,6 +151,7 @@ int ibl_init(renderer_t *r)
     r->ibl.brdf_size = 256;
 
     r->ibl.src_hdri = ihandle_invalid();
+    r->ibl.src_hdri_top_mip = 0;
 
     glGenFramebuffers(1, &r->ibl.capture_fbo);
     glGenRenderbuffers(1, &r->ibl.capture_rbo);
@@ -209,7 +211,27 @@ static uint32_t R_resolve_image_gl_local(const renderer_t *r, ihandle_t h)
     return a->as.image.gl_handle;
 }
 
-static void ibl_fix_hdri_sampling(uint32_t hdri_tex_2d)
+static uint32_t R_resolve_image_top_mip_local(const renderer_t *r, ihandle_t h, uint32_t *out_top_mip)
+{
+    if (out_top_mip)
+        *out_top_mip = 0;
+
+    if (!r || !r->assets)
+        return 0;
+    if (!ihandle_is_valid(h))
+        return 0;
+
+    const asset_any_t *a = asset_manager_get_any(r->assets, h);
+    if (!a || a->type != ASSET_IMAGE || a->state != ASSET_STATE_READY)
+        return 0;
+
+    if (out_top_mip)
+        *out_top_mip = a->as.image.stream_current_top_mip;
+
+    return a->as.image.gl_handle;
+}
+
+static void ibl_fix_hdri_sampling(uint32_t hdri_tex_2d, uint32_t top_mip)
 {
     if (!hdri_tex_2d)
         return;
@@ -221,8 +243,10 @@ static void ibl_fix_hdri_sampling(uint32_t hdri_tex_2d)
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+    // Textures are streamable and may not have mip 0 resident yet.
+    // Clamp to the highest-quality mip that is currently resident to avoid sampling undefined data.
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, (GLint)top_mip);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, (GLint)top_mip);
 
     glBindTexture(GL_TEXTURE_2D, 0);
 }
@@ -415,18 +439,34 @@ void ibl_ensure(renderer_t *r)
     if (!r)
         return;
 
-    uint32_t hdri_gl = R_resolve_image_gl_local(r, r->hdri_tex);
+    // Ensure the HDRI actually streams in (otherwise it can remain at 1x1 safety mip forever,
+    // producing a flat/white env cubemap).
+    if (r->assets && ihandle_is_valid(r->hdri_tex))
+    {
+        // Request enough detail to build a reasonable env cubemap.
+        // Using ~2*faceSize as "screen coverage" yields a mip that still contains angular detail.
+        float coverage_px = (float)(r->ibl.env_size ? (r->ibl.env_size * 2u) : 1024u);
+        // Pin the HDRI to a reasonably-detailed mip to avoid the "1x1 average color" skybox while still
+        // keeping uploads bounded. (If you want full-res, change forced mip to 0 or expose a setting.)
+        asset_manager_image_stream_force_top_mip(r->assets, r->hdri_tex, 1u, 2u, 65000u);
+        asset_manager_image_stream_record_use(r->assets, r->hdri_tex, coverage_px, 1.0f, 65000u);
+    }
+
+    uint32_t hdri_top_mip = 0;
+    uint32_t hdri_gl = R_resolve_image_top_mip_local(r, r->hdri_tex, &hdri_top_mip);
     if (!hdri_gl)
     {
         r->ibl.ready = 0;
         r->ibl.src_hdri = ihandle_invalid();
+        r->ibl.src_hdri_top_mip = 0;
         return;
     }
 
-    if (r->ibl.ready && ihandle_eq(r->ibl.src_hdri, r->hdri_tex))
+    // If the same HDRI is still set and we haven't gained any higher-quality mip since last build, keep current maps.
+    if (r->ibl.ready && ihandle_eq(r->ibl.src_hdri, r->hdri_tex) && hdri_top_mip >= r->ibl.src_hdri_top_mip)
         return;
 
-    ibl_fix_hdri_sampling(hdri_gl);
+    ibl_fix_hdri_sampling(hdri_gl, hdri_top_mip);
 
     ibl_free_maps(r);
 
@@ -446,6 +486,7 @@ void ibl_ensure(renderer_t *r)
     ibl_render_brdf(r, r->ibl.brdf_lut, r->ibl.brdf_size, r->ibl.brdf_shader_id);
 
     r->ibl.src_hdri = r->hdri_tex;
+    r->ibl.src_hdri_top_mip = hdri_top_mip;
     r->ibl.ready = 1;
 }
 

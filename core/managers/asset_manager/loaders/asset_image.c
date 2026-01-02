@@ -8,6 +8,8 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
+#include "image_mips.h"
+
 #include <GL/glew.h>
 
 typedef struct asset_image_mem_desc_t
@@ -142,6 +144,9 @@ static bool asset_image_load_from_memory(const asset_image_mem_desc_t *src, asse
     void *pixels = NULL;
     uint32_t channels = 0;
     uint32_t is_float = 0;
+    uint32_t has_alpha = 0;
+    uint32_t has_smooth_alpha = 0;
+    asset_image_mip_chain_t *mips = NULL;
 
     const int is_hdr = stbi_is_hdr_from_memory(mem, mem_n);
 
@@ -164,7 +169,14 @@ static bool asset_image_load_from_memory(const asset_image_mem_desc_t *src, asse
         memcpy(copy, data, sz);
         stbi_image_free(data);
 
-        pixels = copy;
+        if (!asset_image_mips_build_f32(&mips, copy, (uint32_t)w, (uint32_t)h, 3u))
+        {
+            free(copy);
+            return false;
+        }
+
+        free(copy);
+        pixels = NULL;
         channels = 3;
         is_float = 1;
     }
@@ -189,9 +201,21 @@ static bool asset_image_load_from_memory(const asset_image_mem_desc_t *src, asse
         stbi_image_free(data);
 
         if (want_channels == 4 && rgba_has_any_alpha(copy, (uint32_t)w, (uint32_t)h))
+        {
+            has_alpha = 1u;
+            if (rgba_has_smooth_alpha(copy, (uint32_t)w, (uint32_t)h))
+                has_smooth_alpha = 1u;
             rgba_dilate_rgb_into_zero_alpha(copy, (uint32_t)w, (uint32_t)h, 6);
+        }
 
-        pixels = copy;
+        if (!asset_image_mips_build_u8(&mips, copy, (uint32_t)w, (uint32_t)h, (uint32_t)want_channels))
+        {
+            free(copy);
+            return false;
+        }
+
+        free(copy);
+        pixels = NULL;
         channels = (uint32_t)want_channels;
         is_float = 0;
     }
@@ -205,8 +229,10 @@ static bool asset_image_load_from_memory(const asset_image_mem_desc_t *src, asse
     out_asset->as.image.pixels = (uint8_t *)pixels;
     out_asset->as.image.gl_handle = 0;
     out_asset->as.image.is_float = is_float;
-    out_asset->as.image.has_alpha = 0;
-    out_asset->as.image.has_smooth_alpha = 0;
+    out_asset->as.image.has_alpha = has_alpha;
+    out_asset->as.image.has_smooth_alpha = has_smooth_alpha;
+    out_asset->as.image.mips = mips;
+    out_asset->as.image.mip_count = mips ? mips->mip_count : 0u;
 
     return true;
 }
@@ -226,6 +252,9 @@ static bool asset_image_load_from_file(const char *path, asset_any_t *out_asset)
     void *pixels = NULL;
     uint32_t channels = 0;
     uint32_t is_float = 0;
+    uint32_t has_alpha = 0;
+    uint32_t has_smooth_alpha = 0;
+    asset_image_mip_chain_t *mips = NULL;
 
     if (is_hdr)
     {
@@ -246,7 +275,14 @@ static bool asset_image_load_from_file(const char *path, asset_any_t *out_asset)
         memcpy(copy, data, sz);
         stbi_image_free(data);
 
-        pixels = copy;
+        if (!asset_image_mips_build_f32(&mips, copy, (uint32_t)w, (uint32_t)h, 3u))
+        {
+            free(copy);
+            return false;
+        }
+
+        free(copy);
+        pixels = NULL;
         channels = 3;
         is_float = 1;
     }
@@ -269,9 +305,21 @@ static bool asset_image_load_from_file(const char *path, asset_any_t *out_asset)
         stbi_image_free(data);
 
         if (want_channels == 4 && rgba_has_any_alpha(copy, (uint32_t)w, (uint32_t)h))
+        {
+            has_alpha = 1u;
+            if (rgba_has_smooth_alpha(copy, (uint32_t)w, (uint32_t)h))
+                has_smooth_alpha = 1u;
             rgba_dilate_rgb_into_zero_alpha(copy, (uint32_t)w, (uint32_t)h, 6);
+        }
 
-        pixels = copy;
+        if (!asset_image_mips_build_u8(&mips, copy, (uint32_t)w, (uint32_t)h, (uint32_t)want_channels))
+        {
+            free(copy);
+            return false;
+        }
+
+        free(copy);
+        pixels = NULL;
         channels = (uint32_t)want_channels;
         is_float = 0;
     }
@@ -285,8 +333,10 @@ static bool asset_image_load_from_file(const char *path, asset_any_t *out_asset)
     out_asset->as.image.pixels = (uint8_t *)pixels;
     out_asset->as.image.gl_handle = 0;
     out_asset->as.image.is_float = is_float;
-    out_asset->as.image.has_alpha = 0;
-    out_asset->as.image.has_smooth_alpha = 0;
+    out_asset->as.image.has_alpha = has_alpha;
+    out_asset->as.image.has_smooth_alpha = has_smooth_alpha;
+    out_asset->as.image.mips = mips;
+    out_asset->as.image.mip_count = mips ? mips->mip_count : 0u;
 
     return true;
 }
@@ -332,7 +382,7 @@ static bool asset_image_init(asset_manager_t *am, asset_any_t *asset)
     if (img->gl_handle != 0)
         return true;
 
-    if (!img->pixels || img->width == 0 || img->height == 0)
+    if (!img->mips || !img->mips->data || img->mips->mip_count == 0 || img->width == 0 || img->height == 0)
         return false;
 
     GLuint tex = 0;
@@ -341,84 +391,79 @@ static bool asset_image_init(asset_manager_t *am, asset_any_t *asset)
         return false;
 
     glBindTexture(GL_TEXTURE_2D, tex);
-
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+
+    const uint32_t mip_count = img->mips->mip_count;
+    const uint32_t lowest_mip = (mip_count > 0) ? (mip_count - 1u) : 0u;
 
     if (img->is_float)
     {
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
-        GLenum fmt = (img->channels == 4) ? GL_RGBA : (img->channels == 3 ? GL_RGB : GL_RED);
-        GLint internal = (img->channels == 4) ? GL_RGBA16F : (img->channels == 3 ? GL_RGB16F : GL_R16F);
+        const GLenum fmt = (img->channels == 4) ? GL_RGBA : (img->channels == 3 ? GL_RGB : GL_RED);
+        const GLint internal = (img->channels == 4) ? GL_RGBA16F : (img->channels == 3 ? GL_RGB16F : GL_R16F);
 
-        glTexImage2D(GL_TEXTURE_2D, 0, internal, (GLsizei)img->width, (GLsizei)img->height, 0, fmt, GL_FLOAT, (const void *)img->pixels);
-        img->has_alpha = 0;
-        img->has_smooth_alpha = 0;
-        img->mip_count = 1;
-        img->vram_bytes = (uint64_t)img->width * (uint64_t)img->height * (uint64_t)img->channels * 2ull;
+        glTexStorage2D(GL_TEXTURE_2D, (GLsizei)mip_count, (GLenum)internal, (GLsizei)img->width, (GLsizei)img->height);
+
+        const uint32_t mw = img->mips->width[lowest_mip];
+        const uint32_t mh = img->mips->height[lowest_mip];
+        const void *src = (const void *)(img->mips->data + (size_t)img->mips->offset[lowest_mip]);
+        glTexSubImage2D(GL_TEXTURE_2D, (GLint)lowest_mip, 0, 0, (GLsizei)mw, (GLsizei)mh, fmt, GL_FLOAT, src);
     }
     else
     {
-        int has_alpha = 0;
-        int has_smooth_alpha = 0;
-        if (img->channels == 4)
-        {
-            has_alpha = rgba_has_any_alpha((const uint8_t *)img->pixels, img->width, img->height);
-            if (has_alpha)
-                has_smooth_alpha = rgba_has_smooth_alpha((const uint8_t *)img->pixels, img->width, img->height);
-        }
-        img->has_alpha = (uint32_t)(has_alpha ? 1 : 0);
-        img->has_smooth_alpha = (uint32_t)(has_smooth_alpha ? 1 : 0);
-
+        const int has_alpha = (img->has_alpha != 0);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, has_alpha ? GL_CLAMP_TO_EDGE : GL_REPEAT);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, has_alpha ? GL_CLAMP_TO_EDGE : GL_REPEAT);
 
-        GLenum fmt = (img->channels == 4) ? GL_RGBA : (img->channels == 3 ? GL_RGB : GL_RED);
-        GLint internal = (img->channels == 4) ? GL_RGBA8 : (img->channels == 3 ? GL_RGB8 : GL_R8);
+        const GLenum fmt = (img->channels == 4) ? GL_RGBA : (img->channels == 3 ? GL_RGB : GL_RED);
+        const GLint internal = (img->channels == 4) ? GL_RGBA8 : (img->channels == 3 ? GL_RGB8 : GL_R8);
 
-        glTexImage2D(GL_TEXTURE_2D, 0, internal, (GLsizei)img->width, (GLsizei)img->height, 0, fmt, GL_UNSIGNED_BYTE, (const void *)img->pixels);
-        glGenerateMipmap(GL_TEXTURE_2D);
+        glTexStorage2D(GL_TEXTURE_2D, (GLsizei)mip_count, (GLenum)internal, (GLsizei)img->width, (GLsizei)img->height);
 
-        uint32_t mip_count = 1;
-        {
-            uint32_t mw = img->width;
-            uint32_t mh = img->height;
-            while (mw > 1u || mh > 1u)
-            {
-                if (mw > 1u)
-                    mw >>= 1u;
-                if (mh > 1u)
-                    mh >>= 1u;
-                mip_count++;
-            }
-        }
-        img->mip_count = mip_count;
-
-        uint64_t total = 0;
-        uint32_t mw = img->width;
-        uint32_t mh = img->height;
-        const uint32_t bpp = img->channels;
-        for (uint32_t mip = 0; mip < mip_count; ++mip)
-        {
-            total += (uint64_t)mw * (uint64_t)mh * (uint64_t)bpp;
-            if (mw > 1u)
-                mw >>= 1u;
-            if (mh > 1u)
-                mh >>= 1u;
-        }
-        img->vram_bytes = total;
+        const uint32_t mw = img->mips->width[lowest_mip];
+        const uint32_t mh = img->mips->height[lowest_mip];
+        const void *src = (const void *)(img->mips->data + (size_t)img->mips->offset[lowest_mip]);
+        glTexSubImage2D(GL_TEXTURE_2D, (GLint)lowest_mip, 0, 0, (GLsizei)mw, (GLsizei)mh, fmt, GL_UNSIGNED_BYTE, src);
     }
+
+    // Clamp sampling to resident mip range (starts at lowest mip only).
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, (GLint)lowest_mip);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, (GLint)lowest_mip);
 
     glBindTexture(GL_TEXTURE_2D, 0);
 
     img->gl_handle = (uint32_t)tex;
-    free(img->pixels);
-    img->pixels = NULL;
+
+    img->stream_current_top_mip = lowest_mip;
+    img->stream_target_top_mip = lowest_mip;
+    img->stream_min_safety_mip = lowest_mip;
+    img->stream_pending_target_top_mip = lowest_mip;
+    img->stream_pending_frames = 0;
+    img->stream_priority = 0;
+    img->stream_residency_mask = (lowest_mip < 64u) ? (1ull << lowest_mip) : 0ull;
+    img->stream_last_used_frame = 0;
+    img->stream_last_used_ms = 0;
+    img->stream_best_target_mip_frame = 0;
+    img->stream_best_target_mip = lowest_mip;
+    img->stream_last_upload_frame = 0;
+    img->stream_last_evict_frame = 0;
+    img->stream_forced = 0;
+    img->stream_forced_top_mip = 0;
+
+    img->vram_bytes = img->mips->size[lowest_mip];
+
+    if (img->pixels)
+    {
+        free(img->pixels);
+        img->pixels = NULL;
+    }
+
     return true;
 }
 
@@ -435,6 +480,12 @@ static void asset_image_cleanup(asset_manager_t *am, asset_any_t *asset)
     {
         free(img->pixels);
         img->pixels = NULL;
+    }
+
+    if (img->mips)
+    {
+        asset_image_mips_free(img->mips);
+        img->mips = NULL;
     }
 
     if (img->gl_handle)

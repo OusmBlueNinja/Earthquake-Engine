@@ -22,10 +22,6 @@ void main()
 {
     vec2 uv = gl_FragCoord.xy / vec2(textureSize(u_Depth, 0));
 
-    float d = texture(u_Depth, uv).r;
-    if (d < 1.0)
-        discard;
-
     vec3 vdir = reconstruct_view_dir(uv);
 
     vec3 wdir = normalize((u_InvView * vec4(vdir, 0.0)).xyz);
@@ -35,4 +31,5 @@ void main()
     vec3 col = u_HasEnv != 0 ? texture(u_Env, wdir).rgb : vec3(0.0);
 
     o_Color = vec4(col, 1.0);
+    gl_FragDepth = 1.0;
 }
