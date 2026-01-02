@@ -20,6 +20,11 @@ ApplicationSpecification create_specification()
     spec.asset_manager_desc.upload_budget_bytes_per_pump = 32ull * 1024ull * 1024ull;
     spec.asset_manager_desc.pump_per_frame = 8u;
 
+    spec.asset_manager_desc.tex_stream_stable_frames = 3u;
+    spec.asset_manager_desc.tex_stream_min_safety_mips_from_bottom = 0u;
+    spec.asset_manager_desc.tex_stream_evict_unused_ms = 2000u;
+    spec.asset_manager_desc.tex_stream_upload_budget_bytes_per_frame = 8ull * 1024ull * 1024ull;
+
     return spec;
 }
 

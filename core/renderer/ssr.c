@@ -101,8 +101,6 @@ void ssr_run(renderer_t *r, uint32_t scene_tex)
 {
     if (!r)
         return;
-    if (!r->scene.ssr)
-        return;
     if (!r->ssr.ready || !r->ssr.fbo || !r->ssr.color_tex)
         return;
 
@@ -128,11 +126,11 @@ void ssr_run(renderer_t *r, uint32_t scene_tex)
     shader_set_int(s, "u_GDepth", 1);
 
     glActiveTexture(GL_TEXTURE2);
-    glBindTexture(GL_TEXTURE_2D, r->gbuf_normal);
+    glBindTexture(GL_TEXTURE_2D, r->gbuf_normal ? r->gbuf_normal : 0);
     shader_set_int(s, "u_GNormal", 2);
 
     glActiveTexture(GL_TEXTURE3);
-    glBindTexture(GL_TEXTURE_2D, r->gbuf_material);
+    glBindTexture(GL_TEXTURE_2D, r->gbuf_material ? r->gbuf_material : 0);
     shader_set_int(s, "u_GMaterial", 3);
 
     shader_set_mat4(s, "u_View", r->camera.view);
@@ -141,7 +139,9 @@ void ssr_run(renderer_t *r, uint32_t scene_tex)
     shader_set_mat4(s, "u_InvProj", r->camera.inv_proj);
 
     shader_set_vec2(s, "u_InvResolution", (vec2){ 1.0f / (float)r->fb_size.x, 1.0f / (float)r->fb_size.y });
-    shader_set_float(s, "u_Intensity", r->scene.ssr_intensity);
+    shader_set_float(s, "u_Intensity", r->scene.ssr ? r->scene.ssr_intensity : 0.0f);
+    shader_set_int(s, "u_HasGNormal", (r->gbuf_normal != 0) ? 1 : 0);
+    shader_set_int(s, "u_HasGMaterial", (r->gbuf_material != 0) ? 1 : 0);
     shader_set_int(s, "u_Steps", r->scene.ssr_steps);
     shader_set_float(s, "u_Stride", r->scene.ssr_stride);
     shader_set_float(s, "u_Thickness", r->scene.ssr_thickness);

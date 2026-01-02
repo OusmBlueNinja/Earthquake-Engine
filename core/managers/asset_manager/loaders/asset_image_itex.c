@@ -11,6 +11,8 @@
 
 #include <GL/glew.h>
 
+#include "image_mips.h"
+
 #if defined(_WIN32)
 #define ITEX_STRICMP _stricmp
 #else
@@ -187,6 +189,35 @@ static bool itex_load(asset_manager_t *am, const char *path, uint32_t path_is_pt
         return false;
     }
 
+    // Keep UVs consistent by flipping at load time (matches previous init-time behavior).
+    {
+        uint32_t bpp = h.channels * (h.is_float ? (uint32_t)sizeof(float) : 1u);
+        image_flip_y_bytes(pixels, h.width, h.height, bpp);
+    }
+
+    asset_image_mip_chain_t *mips = NULL;
+    if (h.is_float)
+    {
+        if (!asset_image_mips_build_f32(&mips, (const float *)(const void *)pixels, h.width, h.height, h.channels))
+        {
+            free(pixels);
+            LOG_ERROR("itex: mip build failed '%s'", path);
+            return false;
+        }
+    }
+    else
+    {
+        if (!asset_image_mips_build_u8(&mips, pixels, h.width, h.height, h.channels))
+        {
+            free(pixels);
+            LOG_ERROR("itex: mip build failed '%s'", path);
+            return false;
+        }
+    }
+
+    free(pixels);
+    pixels = NULL;
+
     memset(out_asset, 0, sizeof(*out_asset));
     out_asset->type = ASSET_IMAGE;
     out_asset->state = ASSET_STATE_LOADING;
@@ -194,11 +225,13 @@ static bool itex_load(asset_manager_t *am, const char *path, uint32_t path_is_pt
     out_asset->as.image.width = h.width;
     out_asset->as.image.height = h.height;
     out_asset->as.image.channels = h.channels;
-    out_asset->as.image.pixels = pixels;
+    out_asset->as.image.pixels = NULL;
     out_asset->as.image.gl_handle = 0;
     out_asset->as.image.is_float = h.is_float;
     out_asset->as.image.has_alpha = h.has_alpha;
     out_asset->as.image.has_smooth_alpha = h.has_smooth_alpha;
+    out_asset->as.image.mips = mips;
+    out_asset->as.image.mip_count = mips ? mips->mip_count : 0u;
 
     ihandle_t stored;
     stored.value = h.handle_value;
@@ -220,14 +253,8 @@ static bool itex_init(asset_manager_t *am, asset_any_t *asset)
     if (img->gl_handle != 0)
         return true;
 
-    if (!img->pixels || img->width == 0 || img->height == 0 || img->channels == 0)
+    if (!img->mips || !img->mips->data || img->mips->mip_count == 0 || img->width == 0 || img->height == 0 || img->channels == 0)
         return false;
-
-    // See `asset_image.c`: keep UVs consistent by flipping at upload time.
-    {
-        uint32_t bpp = img->channels * (img->is_float ? (uint32_t)sizeof(float) : 1u);
-        image_flip_y_bytes(img->pixels, img->width, img->height, bpp);
-    }
 
     GLuint tex = 0;
     glGenTextures(1, &tex);
@@ -237,19 +264,42 @@ static bool itex_init(asset_manager_t *am, asset_any_t *asset)
     glBindTexture(GL_TEXTURE_2D, tex);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 
+    const uint32_t mip_count = img->mips->mip_count;
+    const uint32_t lowest_mip = (mip_count > 0) ? (mip_count - 1u) : 0u;
+
+    int sparse_ok = 0;
+#if !defined(__APPLE__)
+    if (GLEW_ARB_sparse_texture != 0)
+    {
+        GLint num_levels = 0;
+        GLenum internal_query = img->is_float ? ((img->channels == 4) ? GL_RGBA16F : (img->channels == 3 ? GL_RGB16F : GL_R16F))
+                                              : ((img->channels == 4) ? GL_RGBA8 : (img->channels == 3 ? GL_RGB8 : GL_R8));
+        glGetInternalformativ(GL_TEXTURE_2D, internal_query, GL_NUM_SPARSE_LEVELS_ARB, 1, &num_levels);
+        if (glGetError() == GL_NO_ERROR && num_levels > 0)
+            sparse_ok = 1;
+    }
+#endif
+
     if (img->is_float)
     {
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
-        GLenum fmt = (img->channels == 4) ? GL_RGBA : (img->channels == 3 ? GL_RGB : GL_RED);
-        GLint internal = (img->channels == 4) ? GL_RGBA16F : (img->channels == 3 ? GL_RGB16F : GL_R16F);
+        const GLenum fmt = (img->channels == 4) ? GL_RGBA : (img->channels == 3 ? GL_RGB : GL_RED);
+        const GLint internal = (img->channels == 4) ? GL_RGBA16F : (img->channels == 3 ? GL_RGB16F : GL_R16F);
 
-        glTexImage2D(GL_TEXTURE_2D, 0, internal, (GLsizei)img->width, (GLsizei)img->height, 0, fmt, GL_FLOAT, (const void *)img->pixels);
-        img->mip_count = 1;
-        img->vram_bytes = (uint64_t)img->width * (uint64_t)img->height * (uint64_t)img->channels * 2ull;
+        if (sparse_ok)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SPARSE_ARB, GL_TRUE);
+        glTexStorage2D(GL_TEXTURE_2D, (GLsizei)mip_count, (GLenum)internal, (GLsizei)img->width, (GLsizei)img->height);
+
+        const uint32_t mw = img->mips->width[lowest_mip];
+        const uint32_t mh = img->mips->height[lowest_mip];
+        const void *src = (const void *)(img->mips->data + (size_t)img->mips->offset[lowest_mip]);
+        if (sparse_ok)
+            glTexPageCommitmentARB(GL_TEXTURE_2D, (GLint)lowest_mip, 0, 0, 0, (GLsizei)mw, (GLsizei)mh, 1, GL_TRUE);
+        glTexSubImage2D(GL_TEXTURE_2D, (GLint)lowest_mip, 0, 0, (GLsizei)mw, (GLsizei)mh, fmt, GL_FLOAT, src);
     }
     else
     {
@@ -259,47 +309,55 @@ static bool itex_init(asset_manager_t *am, asset_any_t *asset)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, has_alpha ? GL_CLAMP_TO_EDGE : GL_REPEAT);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, has_alpha ? GL_CLAMP_TO_EDGE : GL_REPEAT);
 
-        GLenum fmt = (img->channels == 4) ? GL_RGBA : (img->channels == 3 ? GL_RGB : GL_RED);
-        GLint internal = (img->channels == 4) ? GL_RGBA8 : (img->channels == 3 ? GL_RGB8 : GL_R8);
+        const GLenum fmt = (img->channels == 4) ? GL_RGBA : (img->channels == 3 ? GL_RGB : GL_RED);
+        const GLint internal = (img->channels == 4) ? GL_RGBA8 : (img->channels == 3 ? GL_RGB8 : GL_R8);
 
-        glTexImage2D(GL_TEXTURE_2D, 0, internal, (GLsizei)img->width, (GLsizei)img->height, 0, fmt, GL_UNSIGNED_BYTE, (const void *)img->pixels);
-        glGenerateMipmap(GL_TEXTURE_2D);
+        if (sparse_ok)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SPARSE_ARB, GL_TRUE);
+        glTexStorage2D(GL_TEXTURE_2D, (GLsizei)mip_count, (GLenum)internal, (GLsizei)img->width, (GLsizei)img->height);
 
-        uint32_t mip_count = 1;
-        {
-            uint32_t mw = img->width;
-            uint32_t mh = img->height;
-            while (mw > 1u || mh > 1u)
-            {
-                if (mw > 1u)
-                    mw >>= 1u;
-                if (mh > 1u)
-                    mh >>= 1u;
-                mip_count++;
-            }
-        }
-        img->mip_count = mip_count;
-
-        uint64_t total = 0;
-        uint32_t mw = img->width;
-        uint32_t mh = img->height;
-        const uint32_t bpp = img->channels;
-        for (uint32_t mip = 0; mip < mip_count; ++mip)
-        {
-            total += (uint64_t)mw * (uint64_t)mh * (uint64_t)bpp;
-            if (mw > 1u)
-                mw >>= 1u;
-            if (mh > 1u)
-                mh >>= 1u;
-        }
-        img->vram_bytes = total;
+        const uint32_t mw = img->mips->width[lowest_mip];
+        const uint32_t mh = img->mips->height[lowest_mip];
+        const void *src = (const void *)(img->mips->data + (size_t)img->mips->offset[lowest_mip]);
+        if (sparse_ok)
+            glTexPageCommitmentARB(GL_TEXTURE_2D, (GLint)lowest_mip, 0, 0, 0, (GLsizei)mw, (GLsizei)mh, 1, GL_TRUE);
+        glTexSubImage2D(GL_TEXTURE_2D, (GLint)lowest_mip, 0, 0, (GLsizei)mw, (GLsizei)mh, fmt, GL_UNSIGNED_BYTE, src);
     }
+
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, (GLint)lowest_mip);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, (GLint)lowest_mip);
 
     glBindTexture(GL_TEXTURE_2D, 0);
 
     img->gl_handle = (uint32_t)tex;
-    free(img->pixels);
-    img->pixels = NULL;
+
+    img->stream_current_top_mip = lowest_mip;
+    img->stream_target_top_mip = lowest_mip;
+    img->stream_min_safety_mip = lowest_mip;
+    img->stream_pending_target_top_mip = lowest_mip;
+    img->stream_pending_frames = 0;
+    img->stream_priority = 0;
+    img->stream_residency_mask = (lowest_mip < 64u) ? (1ull << lowest_mip) : 0ull;
+    img->stream_last_used_frame = 0;
+    img->stream_last_used_ms = 0;
+    img->stream_best_target_mip_frame = 0;
+    img->stream_best_target_mip = lowest_mip;
+    img->stream_best_priority_frame = 0;
+    img->stream_best_priority = 0;
+    img->stream_last_upload_frame = 0;
+    img->stream_last_evict_frame = 0;
+    img->stream_forced = 0;
+    img->stream_forced_top_mip = 0;
+    img->stream_sparse = sparse_ok ? 1u : 0u;
+    img->stream_upload_inflight_mip = 0xFFFFFFFFu;
+    img->stream_upload_row = 0u;
+    img->vram_bytes = img->mips->size[lowest_mip];
+
+    if (img->pixels)
+    {
+        free(img->pixels);
+        img->pixels = NULL;
+    }
     return true;
 }
 
@@ -316,6 +374,12 @@ static void itex_cleanup(asset_manager_t *am, asset_any_t *asset)
     {
         free(img->pixels);
         img->pixels = NULL;
+    }
+
+    if (img->mips)
+    {
+        asset_image_mips_free(img->mips);
+        img->mips = NULL;
     }
 
     if (img->gl_handle)
@@ -496,13 +560,32 @@ static bool itex_save_blob(asset_manager_t *am, ihandle_t h, const asset_any_t *
     }
     else
     {
-        if (!img->gl_handle)
+        if (img->mips && img->mips->data && img->mips->mip_count > 0)
+        {
+            const uint32_t bpp = itex_bytes_per_pixel(img->channels, img->is_float);
+            const uint64_t sz64 = (uint64_t)img->width * (uint64_t)img->height * (uint64_t)bpp;
+            if (sz64 == 0 || sz64 > 0xFFFFFFFFull)
+            {
+                LOG_ERROR(" src_size overflow/invalid (w=%u h=%u bpp=%u => %" PRIu64 ") (handle=%s)",
+                          (unsigned)img->width, (unsigned)img->height, (unsigned)bpp, (uint64_t)sz64, hb);
+                return false;
+            }
+
+            src_size = (uint32_t)sz64;
+            src_pixels = (uint8_t *)malloc((size_t)src_size);
+            if (!src_pixels)
+            {
+                LOG_ERROR(" OOM allocating src_pixels (%u bytes) (handle=%s)", (unsigned)src_size, hb);
+                return false;
+            }
+            memcpy(src_pixels, img->mips->data + (size_t)img->mips->offset[0], (size_t)src_size);
+        }
+        else if (!img->gl_handle)
         {
             LOG_ERROR(" no CPU pixels and gl_handle=0 (cannot read back) (handle=%s)", hb);
             return false;
         }
-
-        if (!itex_pull_pixels_from_gl(img, &src_pixels, &src_size))
+        else if (!itex_pull_pixels_from_gl(img, &src_pixels, &src_size))
         {
             LOG_ERROR(" failed to pull pixels from GL (gl_handle=%u w=%u h=%u ch=%u is_float=%u) (handle=%s)",
                       (unsigned)img->gl_handle, (unsigned)img->width, (unsigned)img->height,

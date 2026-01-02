@@ -57,6 +57,16 @@ namespace editor
         ImGui::Text("stream_unused_ms: %u", m_Snapshot.stream_unused_ms);
         ImGui::Text("stream_unused_frames: %u", m_Snapshot.stream_unused_frames);
         ImGui::Text("vram: %.1f / %.1f MB", (double)bytes_to_mb(m_Snapshot.vram_resident_bytes), (double)bytes_to_mb(m_Snapshot.vram_budget_bytes));
+        ImGui::Text("tex_stream: budget %.2f MB  stable %u  evict_unused_ms %u",
+                    (double)bytes_to_mb(m_Snapshot.tex_stream_upload_budget_bytes_per_frame),
+                    (unsigned)m_Snapshot.tex_stream_stable_frames,
+                    (unsigned)m_Snapshot.tex_stream_evict_unused_ms);
+        ImGui::Text("tex_stream: up %.2f MB (%u)  ev %.2f MB (%u)  pending %u",
+                    (double)bytes_to_mb(m_Snapshot.tex_stream_uploaded_bytes_last_frame),
+                    (unsigned)m_Snapshot.tex_stream_uploads_last_frame,
+                    (double)bytes_to_mb(m_Snapshot.tex_stream_evicted_bytes_last_frame),
+                    (unsigned)m_Snapshot.tex_stream_evictions_last_frame,
+                    (unsigned)m_Snapshot.tex_stream_pending_uploads);
 
         ImGui::SeparatorText("Queues");
         ImGui::Text("jobs_pending: %u", m_Snapshot.jobs_pending);
@@ -82,7 +92,7 @@ namespace editor
             ImGuiTableFlags_Hideable |
             ImGuiTableFlags_ScrollY;
 
-        if (!ImGui::BeginTable("##asset_table", 12, table_flags, ImVec2(0.0f, 0.0f)))
+        if (!ImGui::BeginTable("##asset_table", 14, table_flags, ImVec2(0.0f, 0.0f)))
             return;
 
         ImGui::TableSetupScrollFreeze(0, 1);
@@ -95,6 +105,8 @@ namespace editor
         ImGui::TableSetupColumn("Inflight", ImGuiTableColumnFlags_WidthFixed, 60.0f);
         ImGui::TableSetupColumn("Flags", ImGuiTableColumnFlags_WidthFixed, 110.0f);
         ImGui::TableSetupColumn("VRAM (MB)", ImGuiTableColumnFlags_WidthFixed, 90.0f);
+        ImGui::TableSetupColumn("Mips", ImGuiTableColumnFlags_WidthFixed, 120.0f);
+        ImGui::TableSetupColumn("Residency", ImGuiTableColumnFlags_WidthFixed, 120.0f);
         ImGui::TableSetupColumn("Age (s)", ImGuiTableColumnFlags_WidthFixed, 70.0f);
         ImGui::TableSetupColumn("Remaining (s)", ImGuiTableColumnFlags_WidthFixed, 95.0f);
         ImGui::TableSetupColumn("Path", ImGuiTableColumnFlags_WidthStretch);
@@ -173,18 +185,30 @@ namespace editor
                 ImGui::TextUnformatted("-");
 
             ImGui::TableSetColumnIndex(9);
+            if (s.type == ASSET_IMAGE && s.state == ASSET_STATE_READY && s.img_mip_count)
+                ImGui::Text("%u  %u/%u%s  p%u", (unsigned)s.img_mip_count, (unsigned)s.img_resident_top_mip, (unsigned)s.img_target_top_mip, s.img_forced ? " *" : "", (unsigned)s.img_priority);
+            else
+                ImGui::TextUnformatted("-");
+
+            ImGui::TableSetColumnIndex(10);
+            if (s.type == ASSET_IMAGE && s.state == ASSET_STATE_READY && s.img_mip_count)
+                ImGui::Text("0x%08X%08X", (unsigned)(s.img_residency_mask >> 32), (unsigned)(s.img_residency_mask & 0xFFFFFFFFu));
+            else
+                ImGui::TextUnformatted("-");
+
+            ImGui::TableSetColumnIndex(11);
             if (s.last_requested_ms)
                 ImGui::Text("%.1f", (double)age_ms / 1000.0);
             else
                 ImGui::TextUnformatted("-");
 
-            ImGui::TableSetColumnIndex(10);
+            ImGui::TableSetColumnIndex(12);
             if (s.last_requested_ms && m_Snapshot.streaming_enabled && m_Snapshot.stream_unused_ms)
                 ImGui::Text("%.1f", (double)remain_ms / 1000.0);
             else
                 ImGui::TextUnformatted("-");
 
-            ImGui::TableSetColumnIndex(11);
+            ImGui::TableSetColumnIndex(13);
             ImGui::TextUnformatted(s.path[0] ? s.path : "-");
         }
 

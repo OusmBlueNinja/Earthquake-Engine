@@ -25,6 +25,7 @@ extern "C"
 #include "editor/windows/CViewPortWindow.h"
 #include "editor/windows/CStatsWindow.h"
 #include "editor/windows/CAssetManagerWindow.h"
+#include "editor/windows/CTextureStreamingWindow.h"
 #include "editor/windows/CSceneViewerWindow.h"
 #include "editor/windows/CEntityInspectorWindow.h"
 #include "editor/windows/CAssetBrowserWindow.h"
@@ -136,6 +137,7 @@ static void editor_windows_init(editor_layer_data_t *d, Application *app)
 
     d->windows.emplace_back(std::make_unique<editor::CStatsWindow>());
     d->windows.emplace_back(std::make_unique<editor::CAssetManagerWindow>());
+    d->windows.emplace_back(std::make_unique<editor::CTextureStreamingWindow>());
     d->windows.emplace_back(std::make_unique<editor::CSceneViewerWindow>());
     d->windows.emplace_back(std::make_unique<editor::CEntityInspectorWindow>());
 
@@ -418,6 +420,15 @@ void layer_init(layer_t *layer)
     ImGuiIO &io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+    io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+
+    if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
+    {
+        // Recommended style tweaks for multi-viewport: platform windows look like regular OS windows.
+        ImGuiStyle &st = ImGui::GetStyle();
+        st.WindowRounding = 0.0f;
+        st.Colors[ImGuiCol_WindowBg].w = 1.0f;
+    }
 
     ImGui_ImplGlfw_InitForOpenGL(w, true);
     ImGui_ImplOpenGL3_Init("#version 430");
@@ -492,6 +503,15 @@ void layer_post_update(layer_t *layer, float dt)
     glDisable(GL_SAMPLE_COVERAGE);
 
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+    ImGuiIO &io = ImGui::GetIO();
+    if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
+    {
+        GLFWwindow *backup = glfwGetCurrentContext();
+        ImGui::UpdatePlatformWindows();
+        ImGui::RenderPlatformWindowsDefault();
+        glfwMakeContextCurrent(backup);
+    }
 
     if (d->first_frame)
         d->first_frame = 0;

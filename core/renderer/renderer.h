@@ -181,13 +181,7 @@ typedef enum quad3d_flags_t
     QUAD3D_ON_TOP = 1u << 1,
     QUAD3D_FACE_CAMERA = 1u << 2,
     QUAD3D_ABSOLUTE_ROTATION = 1u << 3,
-
-    // If set, interpret `quad3d_t.texture.gl` as a raw OpenGL `GL_TEXTURE_2D` name.
-    // If not set, interpret `quad3d_t.texture.handle` as an `ASSET_IMAGE` handle and resolve via the asset manager.
     QUAD3D_TEX_GL = 1u << 4,
-
-    // If set, `quad3d_t.size` is treated as pixels and converted to world units based on depth/projection,
-    // so the quad stays a consistent size on screen (useful for editor icons / text).
     QUAD3D_SCALE_WITH_VIEW = 1u << 5
 } quad3d_flags_t;
 
@@ -200,7 +194,6 @@ typedef union quad3d_texture_u
 typedef struct quad3d_t
 {
     vec3 center;
-    // World-units by default; if `QUAD3D_SCALE_WITH_VIEW` is set, this is pixels.
     vec2 size;
 
     vec3 rotation;
@@ -354,3 +347,4 @@ shader_t *R_new_shader_from_files(const char *vp, const char *fp);
 
 //! private
 void R_update_resize(renderer_t *r);
+static float R_sphere_screen_diameter_px(const renderer_t *r, vec3 world_center, float world_radius);

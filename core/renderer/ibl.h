@@ -26,6 +26,7 @@ typedef struct ibl_t
     uint8_t brdf_shader_id;
 
     ihandle_t src_hdri;
+    uint32_t src_hdri_top_mip;
     int ready;
 } ibl_t;
 
