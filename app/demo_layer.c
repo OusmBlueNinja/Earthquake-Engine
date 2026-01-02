@@ -319,7 +319,7 @@ static void demo_layer_init(layer_t *layer)
     s->boost_mult = 2.0f;
 
     demo_layer_apply_camera(s, r);
-    s->hdri_h = asset_manager_request(am, ASSET_IMAGE, "C:/Users/spenc/Desktop/je_gray_02_16k.hdr");
+    s->hdri_h = asset_manager_request(am, ASSET_IMAGE, "C:/Users/spenc/Desktop/kloofendal_48d_partly_cloudy_puresky_8k.hdr");
 
     s->focus_index = -1;
 
