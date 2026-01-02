@@ -294,85 +294,98 @@ namespace editor
             bool scan_ok = false;
             bool root_exists = false;
 
-            if (!m_scan_root_abs.empty())
+            try
             {
-                root_exists = std::filesystem::exists(m_scan_root_abs, ec) && std::filesystem::is_directory(m_scan_root_abs, ec);
-                if (ec)
+                if (!m_scan_root_abs.empty())
                 {
-                    ec.clear();
-                }
-                else if (root_exists)
-                {
-                    std::filesystem::recursive_directory_iterator it(m_scan_root_abs, std::filesystem::directory_options::skip_permission_denied, ec);
-                    std::filesystem::recursive_directory_iterator end;
-                    if (!ec)
+                    root_exists = std::filesystem::exists(m_scan_root_abs, ec) && std::filesystem::is_directory(m_scan_root_abs, ec);
+                    if (ec)
                     {
-                        scan_ok = true;
-
-                        for (; it != end && m_scan_run.load(); it.increment(ec))
+                        ec.clear();
+                    }
+                    else if (root_exists)
+                    {
+                        std::filesystem::recursive_directory_iterator it(m_scan_root_abs, std::filesystem::directory_options::skip_permission_denied, ec);
+                        std::filesystem::recursive_directory_iterator end;
+                        if (!ec)
                         {
-                            if (ec)
-                            {
-                                ec.clear();
-                                continue;
-                            }
+                            scan_ok = true;
 
-                            auto p = it->path();
-                            auto rel = std::filesystem::relative(p, m_scan_root_abs, ec);
-                            if (ec)
+                            for (; it != end && m_scan_run.load(); it.increment(ec))
                             {
-                                ec.clear();
-                                continue;
-                            }
+                                if (ec)
+                                {
+                                    ec.clear();
+                                    continue;
+                                }
 
-                            if (is_dir_ignored_rel(rel))
-                            {
+                                auto p = it->path();
+                                auto rel = std::filesystem::relative(p, m_scan_root_abs, ec);
+                                if (ec)
+                                {
+                                    ec.clear();
+                                    continue;
+                                }
+
+                                if (is_dir_ignored_rel(rel))
+                                {
+                                    if (it->is_directory(ec))
+                                        it.disable_recursion_pending();
+                                    continue;
+                                }
+
                                 if (it->is_directory(ec))
-                                    it.disable_recursion_pending();
-                                continue;
+                                {
+                                    snap.folders_rel.push_back(rel.lexically_normal());
+                                    continue;
+                                }
+
+                                if (!it->is_regular_file(ec))
+                                    continue;
+
+                                file_stamp_t st;
+                                auto ft = std::filesystem::last_write_time(p, ec);
+                                if (ec)
+                                {
+                                    ec.clear();
+                                    continue;
+                                }
+                                st.write_time = FileTimeToU64(ft);
+
+                                auto fs = std::filesystem::file_size(p, ec);
+                                if (ec)
+                                {
+                                    ec.clear();
+                                    fs = 0;
+                                }
+                                st.file_size = (uint64_t)fs;
+
+                                now[p] = st;
+
+                                item_t item;
+                                item.abs_path = p.lexically_normal();
+                                item.rel_path = rel.lexically_normal();
+                                item.id = HashPath64(item.rel_path);
+                                item.ext = ToLower(item.abs_path.extension().string());
+                                item.name = StemString(item.abs_path);
+                                item.type = m_cb.resolve_type_from_path ? m_cb.resolve_type_from_path(item.abs_path) : ASSET_NONE;
+                                item.stamp = st;
+
+                                snap.items.push_back(std::move(item));
                             }
-
-                            if (it->is_directory(ec))
-                            {
-                                snap.folders_rel.push_back(rel.lexically_normal());
-                                continue;
-                            }
-
-                            if (!it->is_regular_file(ec))
-                                continue;
-
-                            file_stamp_t st;
-                            auto ft = std::filesystem::last_write_time(p, ec);
-                            if (ec)
-                            {
-                                ec.clear();
-                                continue;
-                            }
-                            st.write_time = FileTimeToU64(ft);
-
-                            auto fs = std::filesystem::file_size(p, ec);
-                            if (ec)
-                            {
-                                ec.clear();
-                                fs = 0;
-                            }
-                            st.file_size = (uint64_t)fs;
-
-                            now[p] = st;
-
-                            item_t item;
-                            item.abs_path = p.lexically_normal();
-                            item.rel_path = rel.lexically_normal();
-                            item.id = HashPath64(item.rel_path);
-                            item.ext = ToLower(item.abs_path.extension().string());
-                            item.name = StemString(item.abs_path);
-                            item.type = m_cb.resolve_type_from_path ? m_cb.resolve_type_from_path(item.abs_path) : ASSET_NONE;
-                            item.stamp = st;
-
-                            snap.items.push_back(std::move(item));
                         }
                     }
                 }
+            }
+            catch (const std::exception& e)
+            {
+                LOG_ERROR("AssetBrowser scan exception: %s", e.what());
+                scan_ok = false;
+            }
+            catch (...)
+            {
+                LOG_ERROR("AssetBrowser scan exception: unknown");
+                scan_ok = false;
             }
 
             if (!scan_ok)

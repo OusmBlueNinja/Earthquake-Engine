@@ -396,6 +396,23 @@ static bool asset_image_init(asset_manager_t *am, asset_any_t *asset)
     const uint32_t mip_count = img->mips->mip_count;
     const uint32_t lowest_mip = (mip_count > 0) ? (mip_count - 1u) : 0u;
 
+    int sparse_ok = 0;
+#if !defined(__APPLE__)
+    if (GLEW_ARB_sparse_texture != 0)
+    {
+        GLint num_levels = 0;
+        GLenum internal_query = 0;
+        if (img->is_float)
+            internal_query = (img->channels == 4) ? GL_RGBA16F : (img->channels == 3 ? GL_RGB16F : GL_R16F);
+        else
+            internal_query = (img->channels == 4) ? GL_RGBA8 : (img->channels == 3 ? GL_RGB8 : GL_R8);
+
+        glGetInternalformativ(GL_TEXTURE_2D, internal_query, GL_NUM_SPARSE_LEVELS_ARB, 1, &num_levels);
+        if (glGetError() == GL_NO_ERROR && num_levels > 0)
+            sparse_ok = 1;
+    }
+#endif
+
     if (img->is_float)
     {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
@@ -406,11 +423,15 @@ static bool asset_image_init(asset_manager_t *am, asset_any_t *asset)
         const GLenum fmt = (img->channels == 4) ? GL_RGBA : (img->channels == 3 ? GL_RGB : GL_RED);
         const GLint internal = (img->channels == 4) ? GL_RGBA16F : (img->channels == 3 ? GL_RGB16F : GL_R16F);
 
+        if (sparse_ok)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SPARSE_ARB, GL_TRUE);
         glTexStorage2D(GL_TEXTURE_2D, (GLsizei)mip_count, (GLenum)internal, (GLsizei)img->width, (GLsizei)img->height);
 
         const uint32_t mw = img->mips->width[lowest_mip];
         const uint32_t mh = img->mips->height[lowest_mip];
         const void *src = (const void *)(img->mips->data + (size_t)img->mips->offset[lowest_mip]);
+        if (sparse_ok)
+            glTexPageCommitmentARB(GL_TEXTURE_2D, (GLint)lowest_mip, 0, 0, 0, (GLsizei)mw, (GLsizei)mh, 1, GL_TRUE);
         glTexSubImage2D(GL_TEXTURE_2D, (GLint)lowest_mip, 0, 0, (GLsizei)mw, (GLsizei)mh, fmt, GL_FLOAT, src);
     }
     else
@@ -424,11 +445,15 @@ static bool asset_image_init(asset_manager_t *am, asset_any_t *asset)
         const GLenum fmt = (img->channels == 4) ? GL_RGBA : (img->channels == 3 ? GL_RGB : GL_RED);
         const GLint internal = (img->channels == 4) ? GL_RGBA8 : (img->channels == 3 ? GL_RGB8 : GL_R8);
 
+        if (sparse_ok)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SPARSE_ARB, GL_TRUE);
         glTexStorage2D(GL_TEXTURE_2D, (GLsizei)mip_count, (GLenum)internal, (GLsizei)img->width, (GLsizei)img->height);
 
         const uint32_t mw = img->mips->width[lowest_mip];
         const uint32_t mh = img->mips->height[lowest_mip];
         const void *src = (const void *)(img->mips->data + (size_t)img->mips->offset[lowest_mip]);
+        if (sparse_ok)
+            glTexPageCommitmentARB(GL_TEXTURE_2D, (GLint)lowest_mip, 0, 0, 0, (GLsizei)mw, (GLsizei)mh, 1, GL_TRUE);
         glTexSubImage2D(GL_TEXTURE_2D, (GLint)lowest_mip, 0, 0, (GLsizei)mw, (GLsizei)mh, fmt, GL_UNSIGNED_BYTE, src);
     }
 
@@ -451,10 +476,13 @@ static bool asset_image_init(asset_manager_t *am, asset_any_t *asset)
     img->stream_last_used_ms = 0;
     img->stream_best_target_mip_frame = 0;
     img->stream_best_target_mip = lowest_mip;
+    img->stream_best_priority_frame = 0;
+    img->stream_best_priority = 0;
     img->stream_last_upload_frame = 0;
     img->stream_last_evict_frame = 0;
     img->stream_forced = 0;
     img->stream_forced_top_mip = 0;
+    img->stream_sparse = sparse_ok ? 1u : 0u;
     img->stream_upload_inflight_mip = 0xFFFFFFFFu;
     img->stream_upload_row = 0u;
 

@@ -25,6 +25,291 @@
 #include <GL/glew.h>
 #endif
 
+typedef struct asset_image_mem_desc_t
+{
+    void *bytes;
+    size_t bytes_n;
+    char *debug_name;
+} asset_image_mem_desc_t;
+
+static uint64_t pack_persistent_key(ihandle_t h)
+{
+    // Layout: [type:16][meta:16][value:32]
+    return ((uint64_t)h.type << 48) | ((uint64_t)h.meta << 32) | (uint64_t)h.value;
+}
+
+static uint32_t u32_next_pow2(uint32_t x)
+{
+    if (x <= 1u)
+        return 1u;
+    x--;
+    x |= x >> 1;
+    x |= x >> 2;
+    x |= x >> 4;
+    x |= x >> 8;
+    x |= x >> 16;
+    return x + 1u;
+}
+
+static uint32_t u64_hash_to_u32(uint64_t x)
+{
+    // mix64 -> 32
+    x ^= x >> 33;
+    x *= 0xff51afd7ed558ccdULL;
+    x ^= x >> 33;
+    x *= 0xc4ceb9fe1a85ec53ULL;
+    x ^= x >> 33;
+    return (uint32_t)(x ^ (x >> 32));
+}
+
+static void dedupe_destroy(asset_manager_t *am)
+{
+    if (!am)
+        return;
+    free(am->dedupe_keys);
+    free(am->dedupe_vals);
+    am->dedupe_keys = NULL;
+    am->dedupe_vals = NULL;
+    am->dedupe_cap = 0;
+    am->dedupe_count = 0;
+}
+
+static int dedupe_init(asset_manager_t *am, uint32_t cap_pow2)
+{
+    if (!am)
+        return 0;
+    cap_pow2 = u32_next_pow2(cap_pow2);
+    if (cap_pow2 < 1024u)
+        cap_pow2 = 1024u;
+
+    am->dedupe_keys = (uint64_t *)calloc((size_t)cap_pow2, sizeof(uint64_t));
+    am->dedupe_vals = (uint32_t *)calloc((size_t)cap_pow2, sizeof(uint32_t));
+    if (!am->dedupe_keys || !am->dedupe_vals)
+    {
+        dedupe_destroy(am);
+        return 0;
+    }
+    am->dedupe_cap = cap_pow2;
+    am->dedupe_count = 0;
+    return 1;
+}
+
+static uint32_t dedupe_find_slot_index_locked(const asset_manager_t *am, uint64_t key)
+{
+    if (!am || !am->dedupe_cap || !am->dedupe_keys || !am->dedupe_vals)
+        return 0;
+    if (key == 0)
+        return 0;
+
+    const uint32_t mask = am->dedupe_cap - 1u;
+    uint32_t i = u64_hash_to_u32(key) & mask;
+    for (uint32_t probe = 0; probe < am->dedupe_cap; ++probe)
+    {
+        uint64_t k = am->dedupe_keys[i];
+        if (k == 0)
+            return 0;
+        if (k == key)
+            return am->dedupe_vals[i];
+        i = (i + 1u) & mask;
+    }
+    return 0;
+}
+
+static int dedupe_rehash_locked(asset_manager_t *am, uint32_t new_cap_pow2)
+{
+    if (!am)
+        return 0;
+    new_cap_pow2 = u32_next_pow2(new_cap_pow2);
+    if (new_cap_pow2 < 1024u)
+        new_cap_pow2 = 1024u;
+
+    uint64_t *old_keys = am->dedupe_keys;
+    uint32_t *old_vals = am->dedupe_vals;
+    uint32_t old_cap = am->dedupe_cap;
+
+    am->dedupe_keys = (uint64_t *)calloc((size_t)new_cap_pow2, sizeof(uint64_t));
+    am->dedupe_vals = (uint32_t *)calloc((size_t)new_cap_pow2, sizeof(uint32_t));
+    if (!am->dedupe_keys || !am->dedupe_vals)
+    {
+        free(am->dedupe_keys);
+        free(am->dedupe_vals);
+        am->dedupe_keys = old_keys;
+        am->dedupe_vals = old_vals;
+        return 0;
+    }
+
+    am->dedupe_cap = new_cap_pow2;
+    am->dedupe_count = 0;
+
+    const uint32_t mask = am->dedupe_cap - 1u;
+    for (uint32_t i = 0; i < old_cap; ++i)
+    {
+        uint64_t k = old_keys[i];
+        uint32_t v = old_vals[i];
+        if (k == 0 || v == 0)
+            continue;
+
+        uint32_t idx = u64_hash_to_u32(k) & mask;
+        while (am->dedupe_keys[idx] != 0)
+            idx = (idx + 1u) & mask;
+        am->dedupe_keys[idx] = k;
+        am->dedupe_vals[idx] = v;
+        am->dedupe_count++;
+    }
+
+    free(old_keys);
+    free(old_vals);
+    return 1;
+}
+
+static int dedupe_insert_locked(asset_manager_t *am, uint64_t key, uint32_t slot_index_1based)
+{
+    if (!am || key == 0 || slot_index_1based == 0)
+        return 0;
+
+    if (!am->dedupe_cap || !am->dedupe_keys || !am->dedupe_vals)
+    {
+        if (!dedupe_init(am, 4096u))
+            return 0;
+    }
+
+    // keep load factor <= ~0.7
+    if ((am->dedupe_count + 1u) * 10u >= am->dedupe_cap * 7u)
+    {
+        if (!dedupe_rehash_locked(am, am->dedupe_cap * 2u))
+            return 0;
+    }
+
+    const uint32_t mask = am->dedupe_cap - 1u;
+    uint32_t i = u64_hash_to_u32(key) & mask;
+    for (;;)
+    {
+        uint64_t k = am->dedupe_keys[i];
+        if (k == 0 || k == key)
+        {
+            if (k == 0)
+                am->dedupe_count++;
+            am->dedupe_keys[i] = key;
+            am->dedupe_vals[i] = slot_index_1based;
+            return 1;
+        }
+        i = (i + 1u) & mask;
+    }
+}
+
+static uint64_t fnv1a64_bytes(const void *data, size_t n)
+{
+    const uint8_t *p = (const uint8_t *)data;
+    uint64_t h = 1469598103934665603ull;
+    for (size_t i = 0; i < n; ++i)
+    {
+        h ^= (uint64_t)p[i];
+        h *= 1099511628211ull;
+    }
+    return h;
+}
+
+static uint64_t fnv1a64_str_norm_path(const char *path)
+{
+    uint64_t h = 1469598103934665603ull;
+    if (!path)
+        return h;
+
+    for (const char *p = path; *p; ++p)
+    {
+        unsigned char c = (unsigned char)*p;
+        if (c == '\\')
+            c = '/';
+        // Cross-platform: treat paths case-insensitively for hashing.
+        if (c >= 'A' && c <= 'Z')
+            c = (unsigned char)(c - 'A' + 'a');
+
+        h ^= (uint64_t)c;
+        h *= 1099511628211ull;
+    }
+
+    return h;
+}
+
+static ihandle_t make_persistent_handle_from_hash(asset_type_t type, uint64_t h64)
+{
+    uint32_t v = (uint32_t)(h64 ^ (h64 >> 32) ^ (uint64_t)(uint32_t)type);
+    uint16_t meta = (uint16_t)((h64 >> 16) ^ (h64 >> 48) ^ (uint64_t)(uint16_t)type);
+    if (v == 0)
+        v = 1u;
+
+    ihandle_t h;
+    h.value = v;
+    h.type = (ihandle_type_t)type;
+    h.meta = meta;
+    return h;
+}
+
+static ihandle_t make_persistent_handle_from_job(asset_type_t type, const char *path_or_ptr, uint32_t path_is_ptr)
+{
+    // Disk path -> deterministic hash of normalized path.
+    if (!path_is_ptr)
+    {
+        uint64_t h64 = fnv1a64_str_norm_path(path_or_ptr);
+        return make_persistent_handle_from_hash(type, h64);
+    }
+
+    // Pointer loads: for images, hash the payload bytes. For other types, hash the pointer value.
+    if (type == ASSET_IMAGE)
+    {
+        const asset_image_mem_desc_t *src = (const asset_image_mem_desc_t *)path_or_ptr;
+        if (src && src->bytes && src->bytes_n)
+        {
+            uint64_t h64 = fnv1a64_bytes(src->bytes, src->bytes_n);
+            return make_persistent_handle_from_hash(type, h64);
+        }
+    }
+
+    uint64_t h64 = fnv1a64_bytes(&path_or_ptr, sizeof(path_or_ptr));
+    return make_persistent_handle_from_hash(type, h64);
+}
+
+static int path_norm_eq(const char *a, const char *b)
+{
+    if (a == b)
+        return 1;
+    if (!a || !b)
+        return 0;
+
+    for (;;)
+    {
+        unsigned char ca = (unsigned char)*a++;
+        unsigned char cb = (unsigned char)*b++;
+
+        if (ca == '\\')
+            ca = '/';
+        if (cb == '\\')
+            cb = '/';
+
+        if (ca >= 'A' && ca <= 'Z')
+            ca = (unsigned char)(ca - 'A' + 'a');
+        if (cb >= 'A' && cb <= 'Z')
+            cb = (unsigned char)(cb - 'A' + 'a');
+
+        if (ca != cb)
+            return 0;
+        if (ca == 0)
+            return 1;
+    }
+}
+
+static void free_image_mem_desc_ptr(void *ptr)
+{
+    if (!ptr)
+        return;
+    asset_image_mem_desc_t *src = (asset_image_mem_desc_t *)ptr;
+    if (src->bytes)
+        free(src->bytes);
+    if (src->debug_name)
+        free(src->debug_name);
+    free(src);
+}
+
 static uint64_t am_time_ms(void)
 {
 #if defined(_WIN32)
@@ -827,7 +1112,7 @@ static void worker_main(void *p)
         bool ok = asset_try_load_any(am, j.type, j.path, j.path_is_ptr, &out, &midx, &ph);
         d.ok = ok;
         d.module_index = midx;
-        d.persistent = ph;
+        d.persistent = ihandle_is_valid(ph) ? ph : make_persistent_handle_from_job(j.type, j.path, j.path_is_ptr);
 
         if (ok)
             d.asset = out;
@@ -1028,6 +1313,7 @@ bool asset_manager_init(asset_manager_t *am, const asset_manager_desc_t *desc)
 
     mutex_init_impl(&am->state_m);
     am->shutting_down = 0;
+    dedupe_init(am, 4096u);
 
     am->prng_state = ((uint64_t)(uintptr_t)am << 1) ^ ((uint64_t)time(NULL) * 0x9E3779B97F4A7C15ull) ^ 0xD1B54A32D192ED03ull;
     if (am->prng_state == 0)
@@ -1089,6 +1375,7 @@ void asset_manager_shutdown(asset_manager_t *am)
     vector_impl_free(&am->slots);
 
     mutex_destroy_impl(&am->state_m);
+    dedupe_destroy(am);
     memset(am, 0, sizeof(*am));
 }
 
@@ -1108,6 +1395,8 @@ ihandle_t asset_manager_request(asset_manager_t *am, asset_type_t type, const ch
     }
 
     const uint64_t now_ms = am_time_ms();
+    const ihandle_t persistent = make_persistent_handle_from_job(type, path, 0u);
+    const uint64_t pkey = pack_persistent_key(persistent);
 
     mutex_lock_impl(&am->state_m);
     uint32_t sd = am->shutting_down;
@@ -1115,6 +1404,29 @@ ihandle_t asset_manager_request(asset_manager_t *am, asset_type_t type, const ch
     {
         mutex_unlock_impl(&am->state_m);
         return ihandle_invalid();
+    }
+
+    // Deduplicate: persistent-key lookup (O(1)), then verify path match (guards hash collisions).
+    {
+        uint32_t idx1 = dedupe_find_slot_index_locked(am, pkey);
+        if (idx1 != 0)
+        {
+            uint32_t i = idx1 - 1u;
+            if (i < am->slots.size)
+            {
+                asset_slot_t *s = (asset_slot_t *)vector_impl_at(&am->slots, i);
+                if (s && !s->path_is_ptr && (asset_type_t)s->requested_type == type && s->path && s->path[0] && path_norm_eq(s->path, path))
+                {
+                    s->last_touched_frame = am->frame_index;
+                    s->last_requested_ms = now_ms;
+
+                    ihandle_t existing = ihandle_make(am->handle_type, (uint16_t)(i + 1u), s->generation);
+                    mutex_unlock_impl(&am->state_m);
+                    asset_manager_touch(am, existing);
+                    return existing;
+                }
+            }
+        }
     }
 
     ihandle_t h;
@@ -1126,6 +1438,8 @@ ihandle_t asset_manager_request(asset_manager_t *am, asset_type_t type, const ch
         slot->requested_type = (uint16_t)type;
         slot->last_touched_frame = am->frame_index;
         slot->last_requested_ms = now_ms;
+        slot->persistent = persistent;
+        dedupe_insert_locked(am, pkey, (uint32_t)ihandle_index(h));
 
         size_t pn = strlen(path);
         slot->path = (char *)malloc(pn + 1);
@@ -1184,6 +1498,8 @@ ihandle_t asset_manager_request_ptr(asset_manager_t *am, asset_type_t type, void
         return ihandle_invalid();
 
     const uint64_t now_ms = am_time_ms();
+    const ihandle_t persistent = make_persistent_handle_from_job(type, (const char *)ptr, 1u);
+    const uint64_t pkey = pack_persistent_key(persistent);
 
     mutex_lock_impl(&am->state_m);
     uint32_t sd = am->shutting_down;
@@ -1191,6 +1507,32 @@ ihandle_t asset_manager_request_ptr(asset_manager_t *am, asset_type_t type, void
     {
         mutex_unlock_impl(&am->state_m);
         return ihandle_invalid();
+    }
+
+    // Deduplicate by persistent key (for image ptr loads this is derived from the payload bytes).
+    {
+        uint32_t idx1 = dedupe_find_slot_index_locked(am, pkey);
+        if (idx1 != 0)
+        {
+            uint32_t i = idx1 - 1u;
+            if (i < am->slots.size)
+            {
+                asset_slot_t *s = (asset_slot_t *)vector_impl_at(&am->slots, i);
+                if (s && s->path_is_ptr && (asset_type_t)s->requested_type == type && ihandle_is_valid(s->persistent) && ihandle_eq(s->persistent, persistent))
+                {
+                    s->last_touched_frame = am->frame_index;
+                    s->last_requested_ms = now_ms;
+
+                    ihandle_t existing = ihandle_make(am->handle_type, (uint16_t)(i + 1u), s->generation);
+                    mutex_unlock_impl(&am->state_m);
+
+                    if (type == ASSET_IMAGE)
+                        free_image_mem_desc_ptr(ptr);
+
+                    return existing;
+                }
+            }
+        }
     }
 
     ihandle_t h;
@@ -1203,6 +1545,8 @@ ihandle_t asset_manager_request_ptr(asset_manager_t *am, asset_type_t type, void
         slot->requested_type = (uint16_t)type;
         slot->last_touched_frame = am->frame_index;
         slot->last_requested_ms = now_ms;
+        slot->persistent = persistent;
+        dedupe_insert_locked(am, pkey, (uint32_t)ihandle_index(h));
     }
     mutex_unlock_impl(&am->state_m);
 
@@ -1430,8 +1774,6 @@ void asset_manager_image_stream_record_use(asset_manager_t *am, ihandle_t image,
     uint16_t p = priority;
     if (slot->flags & ASSET_FLAG_NO_UNLOAD)
         p = (uint16_t)65535u;
-    if (p > img->stream_priority)
-        img->stream_priority = p;
 
     const uint32_t desired = asset_image_desired_top_mip(img, screen_coverage_px, uv_scale);
 
@@ -1444,6 +1786,17 @@ void asset_manager_image_stream_record_use(asset_manager_t *am, ihandle_t image,
     {
         if (desired < img->stream_best_target_mip)
             img->stream_best_target_mip = desired;
+    }
+
+    if (img->stream_best_priority_frame != (uint32_t)am->frame_index)
+    {
+        img->stream_best_priority_frame = (uint32_t)am->frame_index;
+        img->stream_best_priority = p;
+    }
+    else
+    {
+        if (p > img->stream_best_priority)
+            img->stream_best_priority = p;
     }
 
     mutex_unlock_impl(&am->state_m);
@@ -1557,6 +1910,8 @@ static void asset_manager_texture_stream_finalize_targets_locked(asset_manager_t
 
         if (used_this_frame)
         {
+            img->stream_priority = (s->flags & ASSET_FLAG_NO_UNLOAD) ? (uint16_t)65535u : img->stream_best_priority;
+
             uint32_t desired = img->stream_best_target_mip;
             desired = clamp_u32(desired, 0u, lowest_mip);
 
@@ -1588,6 +1943,8 @@ static void asset_manager_texture_stream_finalize_targets_locked(asset_manager_t
         }
         else
         {
+            img->stream_priority = (s->flags & ASSET_FLAG_NO_UNLOAD) ? (uint16_t)65535u : 0u;
+
             // If idle long enough, allow the target to drift back to safety.
             if (am->stream_unused_ms && img->stream_last_used_ms)
             {
@@ -1683,6 +2040,15 @@ static void asset_manager_texture_stream_evict_budget_locked(asset_manager_t *am
         const uint32_t evict_mip = img->stream_current_top_mip;
         const uint64_t bytes = img->mips->size[evict_mip];
 
+        if (GLEW_ARB_sparse_texture != 0 && img->stream_sparse)
+        {
+            const uint32_t mw = img->mips->width[evict_mip];
+            const uint32_t mh = img->mips->height[evict_mip];
+            glBindTexture(GL_TEXTURE_2D, (GLuint)img->gl_handle);
+            glTexPageCommitmentARB(GL_TEXTURE_2D, (GLint)evict_mip, 0, 0, 0, (GLsizei)mw, (GLsizei)mh, 1, GL_FALSE);
+            glBindTexture(GL_TEXTURE_2D, 0);
+        }
+
         img->stream_current_top_mip = evict_mip + 1u;
         if (img->stream_current_top_mip > (img->mip_count - 1u))
             img->stream_current_top_mip = img->mip_count - 1u;
@@ -1710,11 +2076,87 @@ static void asset_manager_texture_stream_evict_budget_locked(asset_manager_t *am
         glBindTexture(GL_TEXTURE_2D, 0);
     }
 
-    am->stats.tex_stream_evicted_bytes_last_frame = evicted_bytes;
-    am->stats.tex_stream_evictions_last_frame = evictions;
-    am->stats.evicted_bytes_last_pump = evicted_bytes;
+    am->stats.tex_stream_evicted_bytes_last_frame += evicted_bytes;
+    am->stats.tex_stream_evictions_last_frame += evictions;
+    am->stats.evicted_bytes_last_pump += evicted_bytes;
 
     free(cands);
+}
+
+static void asset_manager_texture_stream_evict_unused_locked(asset_manager_t *am)
+{
+    if (!am || !am->streaming_enabled)
+        return;
+
+    const uint32_t cap = (uint32_t)am->slots.size;
+
+    uint64_t evicted_bytes = 0;
+    uint32_t evictions = 0;
+
+    for (uint32_t i = 0; i < cap; ++i)
+    {
+        asset_slot_t *s = (asset_slot_t *)vector_impl_at(&am->slots, i);
+        if (!s)
+            continue;
+        if (s->flags & ASSET_FLAG_NO_UNLOAD)
+            continue;
+        if (s->asset.type != ASSET_IMAGE || s->asset.state != ASSET_STATE_READY)
+            continue;
+
+        asset_image_t *img = &s->asset.as.image;
+        if (!img->gl_handle || !img->mips || img->mip_count == 0)
+            continue;
+
+        const uint64_t last_ms = img->stream_last_used_ms ? img->stream_last_used_ms : s->last_requested_ms;
+        const uint64_t age_ms = (last_ms && am->now_ms > last_ms) ? (am->now_ms - last_ms) : 0;
+        if (am->tex_stream_evict_unused_ms && age_ms < (uint64_t)am->tex_stream_evict_unused_ms)
+            continue;
+
+        // Evict at most one mip per texture per frame (to avoid thrash and keep it incremental).
+        const uint32_t evict_mip = img->stream_current_top_mip;
+        if (evict_mip >= img->mip_count)
+            continue;
+
+        // Never evict below safety.
+        if (evict_mip >= img->stream_min_safety_mip)
+            continue;
+
+        const uint64_t bytes = img->mips->size[evict_mip];
+
+        if (GLEW_ARB_sparse_texture != 0 && img->stream_sparse)
+        {
+            const uint32_t mw = img->mips->width[evict_mip];
+            const uint32_t mh = img->mips->height[evict_mip];
+            glBindTexture(GL_TEXTURE_2D, (GLuint)img->gl_handle);
+            glTexPageCommitmentARB(GL_TEXTURE_2D, (GLint)evict_mip, 0, 0, 0, (GLsizei)mw, (GLsizei)mh, 1, GL_FALSE);
+            glBindTexture(GL_TEXTURE_2D, 0);
+        }
+
+        img->stream_current_top_mip = evict_mip + 1u;
+        if (img->stream_current_top_mip > (img->mip_count - 1u))
+            img->stream_current_top_mip = img->mip_count - 1u;
+
+        if (evict_mip < 64u)
+            img->stream_residency_mask &= ~(1ull << evict_mip);
+
+        if (bytes && img->vram_bytes >= bytes)
+            img->vram_bytes -= bytes;
+        if (bytes && am->stats.vram_resident_bytes >= bytes)
+            am->stats.vram_resident_bytes -= bytes;
+
+        glBindTexture(GL_TEXTURE_2D, (GLuint)img->gl_handle);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, (GLint)img->stream_current_top_mip);
+        glBindTexture(GL_TEXTURE_2D, 0);
+
+        img->stream_last_evict_frame = (uint32_t)am->frame_index;
+        evicted_bytes += bytes;
+        evictions++;
+    }
+
+    // Accumulate into per-frame stats (budget eviction also adds to these).
+    am->stats.tex_stream_evicted_bytes_last_frame += evicted_bytes;
+    am->stats.tex_stream_evictions_last_frame += evictions;
+    am->stats.evicted_bytes_last_pump += evicted_bytes;
 }
 
 static void asset_manager_texture_stream_upload_locked(asset_manager_t *am)
@@ -1843,6 +2285,8 @@ static void asset_manager_texture_stream_upload_locked(asset_manager_t *am)
         const void *src = (const void *)(img->mips->data + (size_t)src_off);
 
         glBindTexture(GL_TEXTURE_2D, (GLuint)img->gl_handle);
+        if (GLEW_ARB_sparse_texture != 0 && img->stream_sparse && img->stream_upload_row == 0u)
+            glTexPageCommitmentARB(GL_TEXTURE_2D, (GLint)next_mip, 0, 0, 0, (GLsizei)mw, (GLsizei)mh, 1, GL_TRUE);
         glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
         glTexSubImage2D(GL_TEXTURE_2D,
                         (GLint)next_mip,
@@ -2302,6 +2746,7 @@ void asset_manager_end_frame(asset_manager_t *am)
     am->stats.evicted_bytes_last_pump = 0;
 
     asset_manager_texture_stream_finalize_targets_locked(am);
+    asset_manager_texture_stream_evict_unused_locked(am);
     asset_manager_texture_stream_evict_budget_locked(am);
     asset_manager_texture_stream_upload_locked(am);
     mutex_unlock_impl(&am->state_m);

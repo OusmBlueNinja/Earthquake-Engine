@@ -211,6 +211,13 @@ typedef struct asset_manager_t
 
     uint32_t asset_get_any_cnt_frame;
     uint32_t asset_get_any_cnt_last_frame;
+
+    // Dedupe map: persistent-key -> slot index (1-based like handle index).
+    // Used to avoid allocating duplicate slots when requesting the same path/payload repeatedly.
+    uint64_t *dedupe_keys;
+    uint32_t *dedupe_vals;
+    uint32_t dedupe_cap;
+    uint32_t dedupe_count;
 } asset_manager_t;
 
 enum

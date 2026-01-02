@@ -211,10 +211,21 @@ static uint32_t R_resolve_image_gl_local(const renderer_t *r, ihandle_t h)
     return a->as.image.gl_handle;
 }
 
-static uint32_t R_resolve_image_top_mip_local(const renderer_t *r, ihandle_t h, uint32_t *out_top_mip)
+static uint32_t R_resolve_image_stream_info_local(const renderer_t *r,
+                                                  ihandle_t h,
+                                                  uint32_t *out_top_mip,
+                                                  uint32_t *out_w,
+                                                  uint32_t *out_h,
+                                                  uint32_t *out_mip_count)
 {
     if (out_top_mip)
         *out_top_mip = 0;
+    if (out_w)
+        *out_w = 0;
+    if (out_h)
+        *out_h = 0;
+    if (out_mip_count)
+        *out_mip_count = 0;
 
     if (!r || !r->assets)
         return 0;
@@ -227,8 +238,38 @@ static uint32_t R_resolve_image_top_mip_local(const renderer_t *r, ihandle_t h, 
 
     if (out_top_mip)
         *out_top_mip = a->as.image.stream_current_top_mip;
+    if (out_w)
+        *out_w = a->as.image.width;
+    if (out_h)
+        *out_h = a->as.image.height;
+    if (out_mip_count)
+        *out_mip_count = a->as.image.mip_count;
 
     return a->as.image.gl_handle;
+}
+
+static uint32_t ibl_desired_top_mip(uint32_t w, uint32_t h, uint32_t mip_count, float coverage_px)
+{
+    if (mip_count == 0 || w == 0 || h == 0)
+        return 0;
+
+    float px = coverage_px;
+    if (!(px > 0.0f))
+        px = 1.0f;
+
+    const uint32_t max_dim = (w > h) ? w : h;
+    float ratio = (float)max_dim / px;
+    if (ratio <= 1.0f)
+        return 0;
+
+    float mipf = log2f(ratio);
+    if (!(mipf > 0.0f))
+        return 0;
+
+    uint32_t mip = (uint32_t)(mipf + 1e-6f);
+    if (mip >= mip_count)
+        mip = mip_count - 1u;
+    return mip;
 }
 
 static void ibl_fix_hdri_sampling(uint32_t hdri_tex_2d, uint32_t top_mip)
@@ -450,7 +491,8 @@ void ibl_ensure(renderer_t *r)
     }
 
     uint32_t hdri_top_mip = 0;
-    uint32_t hdri_gl = R_resolve_image_top_mip_local(r, r->hdri_tex, &hdri_top_mip);
+    uint32_t hdri_w = 0, hdri_h = 0, hdri_mips = 0;
+    uint32_t hdri_gl = R_resolve_image_stream_info_local(r, r->hdri_tex, &hdri_top_mip, &hdri_w, &hdri_h, &hdri_mips);
     if (!hdri_gl)
     {
         r->ibl.ready = 0;
@@ -459,9 +501,37 @@ void ibl_ensure(renderer_t *r)
         return;
     }
 
+    // Only rebuild when HDRI reaches a "good enough" mip for the cubemap size, and avoid rebuilding for every single mip step.
+    float coverage_px = (float)(r->ibl.env_size ? (r->ibl.env_size * 2u) : 1024u);
+    uint32_t desired_mip = ibl_desired_top_mip(hdri_w, hdri_h, hdri_mips, coverage_px);
+
     // If the same HDRI is still set and we haven't gained any higher-quality mip since last build, keep current maps.
     if (r->ibl.ready && ihandle_eq(r->ibl.src_hdri, r->hdri_tex) && hdri_top_mip >= r->ibl.src_hdri_top_mip)
         return;
+
+    if (ihandle_eq(r->ibl.src_hdri, r->hdri_tex))
+    {
+        // Rebuild only if we improved enough, or we crossed into the desired mip threshold.
+        const uint32_t old_mip = r->ibl.src_hdri_top_mip;
+        const uint32_t new_mip = hdri_top_mip;
+        const uint32_t improved_by = (old_mip > new_mip) ? (old_mip - new_mip) : 0u;
+        const int crossed_desired = (old_mip > desired_mip) && (new_mip <= desired_mip);
+        if (!crossed_desired && improved_by < 2u)
+            return;
+    }
+
+    // If the resident mip is extremely tiny, wait (prevents "1x1 average color" skybox).
+    if (!r->ibl.ready)
+    {
+        uint32_t rw = hdri_w >> hdri_top_mip;
+        uint32_t rh = hdri_h >> hdri_top_mip;
+        if (rw < 1u)
+            rw = 1u;
+        if (rh < 1u)
+            rh = 1u;
+        if (rw <= 2u && rh <= 2u)
+            return;
+    }
 
     ibl_fix_hdri_sampling(hdri_gl, hdri_top_mip);
 

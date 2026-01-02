@@ -53,12 +53,18 @@ typedef struct asset_image_t
 
     uint32_t stream_best_target_mip_frame;
     uint32_t stream_best_target_mip; // aggregator for current frame
+    uint32_t stream_best_priority_frame;
+    uint16_t stream_best_priority;
+    uint16_t stream_best_priority_pad0;
     uint32_t stream_last_upload_frame;
     uint32_t stream_last_evict_frame;
 
     uint8_t stream_forced;
     uint8_t stream_forced_pad0[3];
     uint32_t stream_forced_top_mip;
+
+    uint8_t stream_sparse;
+    uint8_t stream_sparse_pad0[3];
 
     // Partial mip upload state (one mip at a time, uploaded in row slices).
     uint32_t stream_upload_inflight_mip; // 0xFFFFFFFF when idle
