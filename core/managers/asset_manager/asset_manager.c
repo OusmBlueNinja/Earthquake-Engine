@@ -1791,10 +1791,8 @@ static void asset_manager_texture_stream_upload_locked(asset_manager_t *am)
             continue;
 
         const uint32_t next_mip = img->stream_current_top_mip - 1u;
-        const uint64_t bytes = img->mips->size[next_mip];
-        if (bytes == 0)
-            continue;
-        if (uploaded + bytes > upload_budget)
+        const uint64_t mip_bytes = img->mips->size[next_mip];
+        if (mip_bytes == 0)
             continue;
 
         const GLenum fmt = (img->channels == 4) ? GL_RGBA : (img->channels == 3 ? GL_RGB : GL_RED);
@@ -1802,24 +1800,84 @@ static void asset_manager_texture_stream_upload_locked(asset_manager_t *am)
 
         const uint32_t mw = img->mips->width[next_mip];
         const uint32_t mh = img->mips->height[next_mip];
-        const void *src = (const void *)(img->mips->data + (size_t)img->mips->offset[next_mip]);
+
+        const uint32_t bytes_per_comp = img->is_float ? 4u : 1u;
+        const uint32_t row_bytes_u32 = mw * img->channels * bytes_per_comp;
+        if (row_bytes_u32 == 0 || mh == 0)
+            continue;
+
+        // Ensure we only upload one mip at a time per texture, but allow that mip to be uploaded across frames.
+        if (img->stream_upload_inflight_mip != next_mip)
+        {
+            img->stream_upload_inflight_mip = next_mip;
+            img->stream_upload_row = 0u;
+        }
+
+        if (img->stream_upload_row >= mh)
+        {
+            img->stream_upload_inflight_mip = 0xFFFFFFFFu;
+            img->stream_upload_row = 0u;
+            continue;
+        }
+
+        const uint64_t row_bytes = (uint64_t)row_bytes_u32;
+        const uint64_t remaining_budget = (uploaded < upload_budget) ? (upload_budget - uploaded) : 0;
+
+        // If the next row alone doesn't fit, skip to other textures unless we haven't uploaded anything yet this frame.
+        // This guarantees forward progress for very large mips without permanently wedging the streamer.
+        if (remaining_budget < row_bytes && uploaded != 0)
+            continue;
+
+        uint32_t max_rows = (remaining_budget >= row_bytes) ? (uint32_t)(remaining_budget / row_bytes) : 1u;
+        if (max_rows < 1u)
+            max_rows = 1u;
+
+        uint32_t rows_left = mh - img->stream_upload_row;
+        uint32_t rows = (rows_left < max_rows) ? rows_left : max_rows;
+        if (rows < 1u)
+            rows = 1u;
+
+        const uint64_t slice_bytes = row_bytes * (uint64_t)rows;
+        const uint64_t mip_off = img->mips->offset[next_mip];
+        const uint64_t src_off = mip_off + (uint64_t)img->stream_upload_row * row_bytes;
+        const void *src = (const void *)(img->mips->data + (size_t)src_off);
 
         glBindTexture(GL_TEXTURE_2D, (GLuint)img->gl_handle);
         glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-        glTexSubImage2D(GL_TEXTURE_2D, (GLint)next_mip, 0, 0, (GLsizei)mw, (GLsizei)mh, fmt, type, src);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, (GLint)next_mip);
+        glTexSubImage2D(GL_TEXTURE_2D,
+                        (GLint)next_mip,
+                        0,
+                        (GLint)img->stream_upload_row,
+                        (GLsizei)mw,
+                        (GLsizei)rows,
+                        fmt,
+                        type,
+                        src);
         glBindTexture(GL_TEXTURE_2D, 0);
 
-        img->stream_current_top_mip = next_mip;
-        if (next_mip < 64u)
-            img->stream_residency_mask |= (1ull << next_mip);
+        img->stream_upload_row += rows;
         img->stream_last_upload_frame = (uint32_t)am->frame_index;
 
-        img->vram_bytes += bytes;
-        am->stats.vram_resident_bytes += bytes;
-
-        uploaded += bytes;
+        uploaded += slice_bytes;
         uploads++;
+
+        // If we finished the mip, make it resident for sampling and account bytes once.
+        if (img->stream_upload_row >= mh)
+        {
+            img->stream_upload_inflight_mip = 0xFFFFFFFFu;
+            img->stream_upload_row = 0u;
+
+            img->stream_current_top_mip = next_mip;
+            if (next_mip < 64u)
+                img->stream_residency_mask |= (1ull << next_mip);
+
+            glBindTexture(GL_TEXTURE_2D, (GLuint)img->gl_handle);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, (GLint)next_mip);
+            glBindTexture(GL_TEXTURE_2D, 0);
+
+            img->vram_bytes += mip_bytes;
+            am->stats.vram_resident_bytes += mip_bytes;
+        }
     }
 
     am->stats.tex_stream_uploaded_bytes_last_frame = uploaded;

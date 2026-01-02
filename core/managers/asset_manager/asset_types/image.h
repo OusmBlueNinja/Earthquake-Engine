@@ -60,6 +60,10 @@ typedef struct asset_image_t
     uint8_t stream_forced_pad0[3];
     uint32_t stream_forced_top_mip;
 
+    // Partial mip upload state (one mip at a time, uploaded in row slices).
+    uint32_t stream_upload_inflight_mip; // 0xFFFFFFFF when idle
+    uint32_t stream_upload_row;          // next row to upload within inflight mip
+
     // Streamed-resident bytes (sum of resident mip sizes, not GL allocation size).
     uint64_t vram_bytes;
 } asset_image_t;

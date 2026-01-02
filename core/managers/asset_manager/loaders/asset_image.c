@@ -455,6 +455,8 @@ static bool asset_image_init(asset_manager_t *am, asset_any_t *asset)
     img->stream_last_evict_frame = 0;
     img->stream_forced = 0;
     img->stream_forced_top_mip = 0;
+    img->stream_upload_inflight_mip = 0xFFFFFFFFu;
+    img->stream_upload_row = 0u;
 
     img->vram_bytes = img->mips->size[lowest_mip];
 

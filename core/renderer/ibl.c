@@ -446,9 +446,6 @@ void ibl_ensure(renderer_t *r)
         // Request enough detail to build a reasonable env cubemap.
         // Using ~2*faceSize as "screen coverage" yields a mip that still contains angular detail.
         float coverage_px = (float)(r->ibl.env_size ? (r->ibl.env_size * 2u) : 1024u);
-        // Pin the HDRI to a reasonably-detailed mip to avoid the "1x1 average color" skybox while still
-        // keeping uploads bounded. (If you want full-res, change forced mip to 0 or expose a setting.)
-        asset_manager_image_stream_force_top_mip(r->assets, r->hdri_tex, 1u, 2u, 65000u);
         asset_manager_image_stream_record_use(r->assets, r->hdri_tex, coverage_px, 1.0f, 65000u);
     }
 
