@@ -531,13 +531,13 @@ static bool asset_image_load_from_file(const char *path, asset_any_t *out_asset)
 
     if (is_hdr)
     {
-        // Huge HDRIs (e.g. 24k) are too big to fully decode to floats in RAM.
-        // For those, stream-decode RGBE and downsample to a more reasonable size.
+        // Huge HDRIs (e.g. 24k) are too big to fully decode to floats (and build mips) in RAM.
+        // Fail with a clear message instead of letting stb fail with an opaque allocation error.
         int info_w = 0, info_h = 0, info_c = 0;
         const int info_ok = stbi_info(path, &info_w, &info_h, &info_c);
 
-        const int max_w = 4096;
-        const int max_h = 4096;
+        const int max_w = 16384;
+        const int max_h = 16384;
 
         int src_w = info_ok ? info_w : 0;
         int src_h = info_ok ? info_h : 0;
@@ -560,31 +560,25 @@ static bool asset_image_load_from_file(const char *path, asset_any_t *out_asset)
                 target_h = 1;
         }
 
+        (void)target_w;
+        (void)target_h;
+
         const uint64_t big_pixels = (uint64_t)src_w * (uint64_t)src_h;
-        const uint64_t big_threshold = 60000000ull; // ~60MP ~= 960MB for float RGB (w/o mips), before overhead.
-        const int want_stream_downsample = (src_w > max_w || src_h > max_h || big_pixels > big_threshold);
+        const uint64_t big_threshold = 60000000ull; // ~60MP ~= 960MB for float RGB (no mips), before overhead.
+        const int too_big = (src_w > max_w || src_h > max_h || (src_w > 0 && src_h > 0 && big_pixels > big_threshold));
 
-        if (want_stream_downsample && target_w > 0 && target_h > 0)
+        if (too_big)
         {
-            float *base = NULL;
-            int dw = 0;
-            int dh = 0;
-            if (!hdr_load_rgbe_downsampled(path, target_w, target_h, &base, &dw, &dh))
-                return false;
-
-            if (!asset_image_mips_build_f32(&mips, base, (uint32_t)dw, (uint32_t)dh, 3u))
-            {
-                free(base);
-                return false;
-            }
-
-            free(base);
-            w = dw;
-            h = dh;
-            c = 3;
-            pixels = NULL;
-            channels = 3;
-            is_float = 1;
+            const uint64_t base_bytes = (src_w > 0 && src_h > 0) ? (big_pixels * 3ull * 4ull) : 0ull;
+            const uint64_t mip_bytes_approx = (base_bytes * 4ull) / 3ull;
+            LOG_ERROR("HDR image too big to load (src=%dx%d, ~%llu MB base, ~%llu MB+mips). Limits: %dx%d and <=%llu MP. (%s)",
+                      src_w, src_h,
+                      (unsigned long long)(base_bytes / (1024ull * 1024ull)),
+                      (unsigned long long)(mip_bytes_approx / (1024ull * 1024ull)),
+                      max_w, max_h,
+                      (unsigned long long)(big_threshold / 1000000ull),
+                      path);
+            return false;
         }
         else
         {
