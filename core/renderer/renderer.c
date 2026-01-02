@@ -62,6 +62,7 @@ renderer_scene_settings_t R_scene_settings_default(void)
 
     s.height_invert = 0;
     s.ibl_intensity = 0.2f;
+    
     //! SSR is broken
     s.ssr = 0;
     s.ssr_intensity = 1.0f;

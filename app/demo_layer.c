@@ -278,8 +278,6 @@ static int demo_key_to_focus_index(int key)
 
 static bool demo_layer_on_event(layer_t *layer, event_t *e)
 {
-    
-    
 
     return false;
 }
@@ -321,9 +319,8 @@ static void demo_layer_init(layer_t *layer)
     s->boost_mult = 2.0f;
 
     demo_layer_apply_camera(s, r);
-    s->hdri_h = asset_manager_request(am, ASSET_IMAGE, "C:/Users/spenc/Desktop/Bistro_v5_2/Bistro_v5_2/san_giuseppe_bridge_4k.hdr");
+    s->hdri_h = asset_manager_request(am, ASSET_IMAGE, "C:/Users/spenc/Desktop/je_gray_02_16k.hdr");
 
-    
     s->focus_index = -1;
 
     s->stats_accum = 0.0f;
@@ -350,8 +347,6 @@ static void demo_layer_shutdown(layer_t *layer)
 
 static void demo_layer_update(layer_t *layer, float dt)
 {
-    
-    
 }
 
 static void demo_layer_draw(layer_t *layer)

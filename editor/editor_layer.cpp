@@ -21,6 +21,7 @@ extern "C"
 
 #include "editor/CEditorContext.h"
 #include "editor/systems/CEditorProjectManager.h"
+#include "editor/systems/CEditorSceneManager.h"
 #include "editor/windows/CBaseWindow.h"
 #include "editor/windows/CViewPortWindow.h"
 #include "editor/windows/CStatsWindow.h"
@@ -49,6 +50,10 @@ typedef struct editor_layer_data_t
 
     editor::CEditorContext ctx;
     editor::CEditorProjectManager project;
+    editor::CEditorSceneManager scene_mgr;
+
+    std::filesystem::path applied_project_file;
+    bool loaded_startup_scene;
 
     bool show_project_create;
     bool show_project_open;
@@ -111,6 +116,9 @@ static void editor_apply_project(editor_layer_data_t *d)
         d->asset_browser->SetAssetManager(d->ctx.assets);
         d->asset_browser->SetProjectRoot(std::filesystem::path{});
         d->asset_browser->SetScanRoot(std::filesystem::path{});
+        d->scene_mgr.Clear();
+        d->applied_project_file.clear();
+        d->loaded_startup_scene = false;
         return;
     }
 
@@ -118,9 +126,16 @@ static void editor_apply_project(editor_layer_data_t *d)
     if (!p)
         return;
 
+    if (!d->applied_project_file.empty() && d->applied_project_file == p->project_file)
+        return;
+
     d->asset_browser->SetAssetManager(d->ctx.assets);
     d->asset_browser->SetProjectRoot(p->root_dir);
-    d->asset_browser->SetScanRoot(p->assets_dir);
+    d->asset_browser->SetScanRoot(p->root_dir);
+
+    d->scene_mgr.SetScenePath(p->startup_scene);
+    d->loaded_startup_scene = false;
+    d->applied_project_file = p->project_file;
 }
 
 static void editor_windows_init(editor_layer_data_t *d, Application *app)
@@ -158,10 +173,23 @@ static void editor_windows_tick(editor_layer_data_t *d, float dt, Application *a
     d->ctx.app = app;
     d->ctx.renderer = app ? &app->renderer : nullptr;
     d->ctx.assets = (d->ctx.renderer) ? d->ctx.renderer->assets : nullptr;
+    d->ctx.scene = &d->scene_mgr;
     d->ctx.dt = dt;
     d->ctx.fps = (dt > 0.000001f) ? (1.0f / dt) : 0.0f;
 
     editor_apply_project(d);
+
+    if (d->project.HasOpenProject() && !d->loaded_startup_scene && d->ctx.app && d->ctx.assets)
+    {
+        const editor::CEditorProject *p = d->project.GetProject();
+        if (p && !p->startup_scene.empty())
+        {
+            std::error_code ec;
+            if (std::filesystem::exists(p->startup_scene, ec) && std::filesystem::is_regular_file(p->startup_scene, ec))
+                d->scene_mgr.LoadNow(&d->ctx.app->scene, d->ctx.assets, p->startup_scene);
+        }
+        d->loaded_startup_scene = true;
+    }
 
     for (auto &wptr : d->windows)
     {
@@ -177,6 +205,9 @@ static void editor_windows_tick(editor_layer_data_t *d, float dt, Application *a
             w->Tick(dt, &d->ctx);
         w->End();
     }
+
+    if (d->ctx.app && d->ctx.assets)
+        d->scene_mgr.TickAutosave(dt, &d->ctx.app->scene, d->ctx.assets);
 }
 
 static void editor_windows_shutdown(editor_layer_data_t *d)
@@ -346,6 +377,42 @@ static void editor_draw_dockspace(editor_layer_data_t *d)
                     editor_apply_project(d);
                 }
             }
+
+            ImGui::EndMenu();
+        }
+
+        if (ImGui::BeginMenu("Scene"))
+        {
+            bool has_project = d && d->project.HasOpenProject();
+            bool can_scene_io = has_project && d && d->ctx.app && d->ctx.assets && d->scene_mgr.HasScenePath();
+
+            if (d && d->scene_mgr.HasScenePath())
+            {
+                auto s = d->scene_mgr.GetScenePath().string();
+                ImGui::TextUnformatted(s.c_str());
+            }
+
+            ImGui::Separator();
+
+            bool autosave = d ? d->scene_mgr.GetAutosaveEnabled() : false;
+            if (d && ImGui::MenuItem("Autosave", nullptr, &autosave, has_project))
+                d->scene_mgr.SetAutosaveEnabled(autosave);
+
+            if (d)
+            {
+                float interval = d->scene_mgr.GetAutosaveIntervalSeconds();
+                ImGui::SetNextItemWidth(160.0f);
+                if (ImGui::SliderFloat("Interval (s)", &interval, 0.1f, 30.0f, "%.1f"))
+                    d->scene_mgr.SetAutosaveIntervalSeconds(interval);
+            }
+
+            ImGui::Separator();
+
+            if (d && ImGui::MenuItem(d->scene_mgr.IsDirty() ? "Save *" : "Save", nullptr, false, can_scene_io))
+                d->scene_mgr.SaveNow(&d->ctx.app->scene, d->ctx.assets);
+
+            if (d && ImGui::MenuItem("Reload", nullptr, false, can_scene_io))
+                d->scene_mgr.LoadNow(&d->ctx.app->scene, d->ctx.assets, d->scene_mgr.GetScenePath());
 
             ImGui::EndMenu();
         }

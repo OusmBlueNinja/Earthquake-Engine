@@ -319,6 +319,9 @@ void asset_manager_set_streaming(asset_manager_t *am, uint32_t enabled, uint64_t
 void asset_manager_set_upload_budget(asset_manager_t *am, uint64_t bytes_per_pump);
 void asset_manager_end_frame(asset_manager_t *am);
 
+// Best-effort: returns the original path used to request the asset handle (empty for pointer-backed loads).
+bool asset_manager_get_path(const asset_manager_t *am, ihandle_t h, char *out_path, uint32_t out_path_size);
+
 uint32_t asset_manager_debug_get_slot_count(const asset_manager_t *am);
 bool asset_manager_debug_get_slots(const asset_manager_t *am, asset_debug_slot_t *out_slots, uint32_t cap, asset_manager_debug_snapshot_t *out_snapshot);
 

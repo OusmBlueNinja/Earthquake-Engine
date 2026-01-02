@@ -1068,10 +1068,20 @@ static bool asset_try_load_any(asset_manager_t *am, asset_type_t type, const cha
 
     {
         const char *ext = path_is_ptr ? "" : asset_path_ext(path);
-        if (path_is_ptr)
-            LOG_ERROR("Failed to find a compatible module for type=%u path_ptr=%p", (unsigned)type, (void *)path);
+        if (strong_n > 0)
+        {
+            if (path_is_ptr)
+                LOG_ERROR("Failed to load asset: all compatible loaders failed for type=%u path_ptr=%p", (unsigned)type, (void *)path);
+            else
+                LOG_ERROR("Failed to load asset: all compatible loaders failed for type=%u ext=%s path=%s", (unsigned)type, ext[0] ? ext : "(none)", path);
+        }
         else
-            LOG_ERROR("Failed to find a compatible module for type=%u ext=%s path=%s", (unsigned)type, ext[0] ? ext : "(none)", path);
+        {
+            if (path_is_ptr)
+                LOG_ERROR("Failed to find a compatible module for type=%u path_ptr=%p", (unsigned)type, (void *)path);
+            else
+                LOG_ERROR("Failed to find a compatible module for type=%u ext=%s path=%s", (unsigned)type, ext[0] ? ext : "(none)", path);
+        }
     }
 
     return false;
@@ -2793,6 +2803,32 @@ const asset_any_t *asset_manager_get_any(const asset_manager_t *am, ihandle_t h)
 
 
     return ret;
+}
+
+bool asset_manager_get_path(const asset_manager_t *am, ihandle_t h, char *out_path, uint32_t out_path_size)
+{
+    if (out_path && out_path_size)
+        out_path[0] = 0;
+    if (!am || !out_path || out_path_size == 0)
+        return false;
+
+    asset_manager_t *am_mut = (asset_manager_t *)am;
+
+    mutex_lock_impl(&am_mut->state_m);
+    asset_slot_t *slot = NULL;
+    bool ok = slot_valid_locked(am_mut, h, &slot);
+    if (ok && slot && slot->path && !slot->path_is_ptr)
+    {
+        size_t n = strlen(slot->path);
+        if (n >= (size_t)out_path_size)
+            n = (size_t)out_path_size - 1;
+        memcpy(out_path, slot->path, n);
+        out_path[n] = 0;
+        mutex_unlock_impl(&am_mut->state_m);
+        return true;
+    }
+    mutex_unlock_impl(&am_mut->state_m);
+    return false;
 }
 
 uint32_t asset_manager_debug_get_slot_count(const asset_manager_t *am)

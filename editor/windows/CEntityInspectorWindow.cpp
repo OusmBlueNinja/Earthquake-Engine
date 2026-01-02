@@ -17,6 +17,7 @@ extern "C"
 
 #include "imgui.h"
 #include "editor/CEditorContext.h"
+#include "editor/systems/CEditorSceneManager.h"
 #include "IconsFontAwesome6.h"
 
 namespace editor
@@ -392,13 +393,14 @@ namespace editor
         ImGui::EndPopup();
     }
 
-    static void inspector_draw_tag_inline(ecs_world_t *w, ecs_entity_t e)
+    static bool inspector_draw_tag_inline(CEditorContext *ctx, ecs_world_t *w, ecs_entity_t e)
     {
         c_tag_t *tag = ecs_get(w, e, c_tag_t);
         if (!tag)
-            return;
+            return false;
 
         ImGui::PushID("TagInline");
+        bool changed = false;
 
         float h = ImGui::GetFrameHeight();
         float icon_w = h;
@@ -417,6 +419,7 @@ namespace editor
         {
             memset(tag->name, 0, sizeof(tag->name));
             memcpy(tag->name, name_buf, sizeof(tag->name) - 1);
+            changed = true;
         }
 
         ImGui::SameLine();
@@ -425,7 +428,10 @@ namespace editor
         ImVec2 icon_sz(icon_w, h);
 
         if (ui_icon_button_centered_no_bg("##vis", visible ? ICON_FA_EYE : ICON_FA_EYE_SLASH, icon_sz))
+        {
             tag->visible = visible ? 0u : 1u;
+            changed = true;
+        }
 
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Visibility");
@@ -442,12 +448,20 @@ namespace editor
 
         inspector_layers_popup(&layers_mask);
 
-        tag->layer = (uint32_t)layers_mask;
+        if (tag->layer != (uint32_t)layers_mask)
+        {
+            tag->layer = (uint32_t)layers_mask;
+            changed = true;
+        }
 
         ImGui::PopID();
 
+        if (changed && ctx && ctx->scene)
+            ctx->scene->MarkDirty();
+
         (void)w;
         (void)e;
+        return changed;
     }
 
     static bool inspector_vec3_plain(const char *id, vec3 *v, float speed, float reset_value)
@@ -603,7 +617,7 @@ namespace editor
             if (open_menu)
                 ImGui::OpenPopup(PopupID());
 
-            DrawMenu(w, e, comp);
+            DrawMenu(ctx, w, e, comp);
 
             if (!open)
                 return;
@@ -614,7 +628,7 @@ namespace editor
         }
 
     private:
-        void DrawMenu(ecs_world_t *w, ecs_entity_t e, void *comp) const
+        void DrawMenu(CEditorContext *ctx, ecs_world_t *w, ecs_entity_t e, void *comp) const
         {
             if (!ImGui::BeginPopup(PopupID()))
                 return;
@@ -627,12 +641,18 @@ namespace editor
             {
                 memcpy(comp, g_comp_clip.bytes, ClipSize());
                 PasteFixup(e, comp);
+                if (ctx && ctx->scene)
+                    ctx->scene->MarkDirty();
             }
 
             ImGui::Separator();
 
             if (ImGui::MenuItem(ICON_FA_TRASH " Remove", nullptr, false, comp != nullptr))
+            {
                 Remove(w, e);
+                if (ctx && ctx->scene)
+                    ctx->scene->MarkDirty();
+            }
 
             ImGui::EndPopup();
         }
@@ -658,9 +678,10 @@ namespace editor
             tr->base.entity = e;
         }
 
-        void DrawBody(CEditorContext *, ecs_world_t *, ecs_entity_t, void *comp) const override
+        void DrawBody(CEditorContext *ctx, ecs_world_t *, ecs_entity_t, void *comp) const override
         {
             c_transform_t *tr = (c_transform_t *)comp;
+            bool changed = false;
 
             if (ImGui::BeginTable("##TransformTable", 2, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_PadOuterX))
             {
@@ -672,24 +693,27 @@ namespace editor
                 ImGui::AlignTextToFramePadding();
                 ImGui::TextUnformatted("Position");
                 ImGui::TableSetColumnIndex(1);
-                inspector_vec3_plain("pos", &tr->position, 0.05f, 0.0f);
+                changed |= inspector_vec3_plain("pos", &tr->position, 0.05f, 0.0f);
 
                 ImGui::TableNextRow();
                 ImGui::TableSetColumnIndex(0);
                 ImGui::AlignTextToFramePadding();
                 ImGui::TextUnformatted("Rotation");
                 ImGui::TableSetColumnIndex(1);
-                inspector_vec3_plain("rot", &tr->rotation, 0.25f, 0.0f);
+                changed |= inspector_vec3_plain("rot", &tr->rotation, 0.25f, 0.0f);
 
                 ImGui::TableNextRow();
                 ImGui::TableSetColumnIndex(0);
                 ImGui::AlignTextToFramePadding();
                 ImGui::TextUnformatted("Scale");
                 ImGui::TableSetColumnIndex(1);
-                inspector_vec3_plain("scl", &tr->scale, 0.05f, 1.0f);
+                changed |= inspector_vec3_plain("scl", &tr->scale, 0.05f, 1.0f);
 
                 ImGui::EndTable();
             }
+
+            if (changed && ctx && ctx->scene)
+                ctx->scene->MarkDirty();
         }
     };
 
@@ -751,6 +775,8 @@ namespace editor
                         memcpy(&hnd, pl->Data, sizeof(ihandle_t));
                         mr->model = hnd;
                         mr->base.entity = e;
+                        if (ctx && ctx->scene)
+                            ctx->scene->MarkDirty();
                     }
                 }
                 ImGui::EndDragDropTarget();
@@ -778,9 +804,10 @@ namespace editor
             l->base.entity = e;
         }
 
-        void DrawBody(CEditorContext *, ecs_world_t *, ecs_entity_t e, void *comp) const override
+        void DrawBody(CEditorContext *ctx, ecs_world_t *, ecs_entity_t e, void *comp) const override
         {
             c_light_t *l = (c_light_t *)comp;
+            bool changed = false;
 
             if (l->intensity < 0.0f) l->intensity = 0.0f;
             if (l->radius < 0.0f) l->radius = 0.0f;
@@ -802,7 +829,10 @@ namespace editor
                 if (t < 0) t = 0;
                 if (t > 2) t = 2;
                 if (ImGui::Combo("##type", &t, items, 3))
+                {
                     l->type = (light_type_t)t;
+                    changed = true;
+                }
 
                 ImGui::TableNextRow();
                 ImGui::TableSetColumnIndex(0);
@@ -816,6 +846,7 @@ namespace editor
                     l->color.x = col[0];
                     l->color.y = col[1];
                     l->color.z = col[2];
+                    changed = true;
                 }
 
                 ImGui::TableNextRow();
@@ -825,7 +856,7 @@ namespace editor
                 ImGui::TableSetColumnIndex(1);
 
                 ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
-                ImGui::DragFloat("##intensity", &l->intensity, 0.05f, 0.0f, 0.0f, "%.3f");
+                changed |= ImGui::DragFloat("##intensity", &l->intensity, 0.05f, 0.0f, 0.0f, "%.3f");
 
                 if (l->type != LIGHT_DIRECTIONAL)
                 {
@@ -836,7 +867,7 @@ namespace editor
                     ImGui::TableSetColumnIndex(1);
 
                     ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
-                    ImGui::DragFloat("##radius", &l->radius, 0.05f, 0.0f, 0.0f, "%.3f");
+                    changed |= ImGui::DragFloat("##radius", &l->radius, 0.05f, 0.0f, 0.0f, "%.3f");
 
                     ImGui::TableNextRow();
                     ImGui::TableSetColumnIndex(0);
@@ -845,13 +876,15 @@ namespace editor
                     ImGui::TableSetColumnIndex(1);
 
                     ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
-                    ImGui::DragFloat("##range", &l->range, 0.05f, 0.0f, 0.0f, "%.3f");
+                    changed |= ImGui::DragFloat("##range", &l->range, 0.05f, 0.0f, 0.0f, "%.3f");
                 }
 
                 ImGui::EndTable();
             }
 
             l->base.entity = e;
+            if (changed && ctx && ctx->scene)
+                ctx->scene->MarkDirty();
         }
     };
 
@@ -859,7 +892,7 @@ namespace editor
     static CInspectorMeshRendererComponent g_inspector_mesh_renderer;
     static CInspectorLightComponent g_inspector_light;
 
-    static void inspector_add_components_popup(CBaseInspectorComponent *const *list, int list_count, ecs_world_t *w, ecs_entity_t e)
+    static void inspector_add_components_popup(CEditorContext *ctx, CBaseInspectorComponent *const *list, int list_count, ecs_world_t *w, ecs_entity_t e)
     {
         if (!ImGui::BeginPopup("AddComponentPopup"))
             return;
@@ -883,7 +916,11 @@ namespace editor
                 snprintf(label, sizeof(label), "%s", c->Name() ? c->Name() : "");
 
             if (ImGui::MenuItem(label, nullptr, false, enabled))
+            {
                 c->Add(w, e);
+                if (ctx && ctx->scene)
+                    ctx->scene->MarkDirty();
+            }
         }
 
         ImGui::EndPopup();
@@ -909,7 +946,7 @@ namespace editor
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f, 10.0f));
         ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(4.0f, 2.0f));
 
-        inspector_draw_tag_inline(w, e);
+        inspector_draw_tag_inline(ctx, w, e);
 
         ImGui::Dummy(ImVec2(0.0f, 4.0f));
 
@@ -936,7 +973,7 @@ namespace editor
                 &g_inspector_light
             };
 
-        inspector_add_components_popup(add_list, (int)(sizeof(add_list) / sizeof(add_list[0])), w, e);
+        inspector_add_components_popup(ctx, add_list, (int)(sizeof(add_list) / sizeof(add_list[0])), w, e);
 
         if (ImGui::BeginPopupContextVoid("AddComponentsRC", ImGuiPopupFlags_MouseButtonRight))
         {

@@ -230,10 +230,14 @@ namespace editor
     asset_type_t CAssetBrowserWindow::DefaultResolveTypeFromPath(const std::filesystem::path& abs_path)
     {
         auto ext = ToLower(abs_path.extension().string());
+        auto fname = ToLower(abs_path.filename().string());
         if (ext == ".itex") return ASSET_IMAGE;
         if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".tga" || ext == ".hdr") return ASSET_IMAGE;
         if (ext == ".imesh" || ext == ".obj" || ext == ".fbx" || ext == ".gltf" || ext == ".glb") return ASSET_MODEL;
         if (ext == ".ikv" || ext == ".imat" || ext == ".material") return ASSET_MATERIAL;
+        if (ext == ".scene") return ASSET_SCENE;
+        if (fname.size() >= 10 && fname.rfind(".scene.yaml") == fname.size() - 10) return ASSET_SCENE;
+        if (fname.size() >= 9 && fname.rfind(".scene.yml") == fname.size() - 9) return ASSET_SCENE;
 
         if (ext == ".iasset")
         {

@@ -6,6 +6,10 @@ extern "C"
 #include "renderer/camera.h"
 #include "types/vec3.h"
 #include "managers/cvar.h"
+#include "core/systems/ecs/ecs.h"
+#include "core/systems/ecs/components/c_tag.h"
+#include "core/systems/ecs/components/c_transform.h"
+#include "core/systems/ecs/components/c_mesh_renderer.h"
 }
 
 #include <stdint.h>
@@ -13,9 +17,11 @@ extern "C"
 #include <stdio.h>
 #include <vector>
 #include <string.h>
+#include <filesystem>
 
 #include "imgui.h"
 #include "CBaseWindow.h"
+#include "editor/systems/CEditorSceneManager.h"
 
 namespace editor
 {
@@ -101,6 +107,8 @@ namespace editor
                 ImGui::Text("renderer: null");
                 return;
             }
+
+            ecs_world_t *world = (ctx && ctx->app) ? &ctx->app->scene : nullptr;
 
             if (dt < 0.0f)
                 dt = 0.0f;
@@ -241,6 +249,9 @@ namespace editor
             else
                 ImGui::Text("No final texture");
 
+            bool img_hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+            HandleAssetDragDrop(ctx, world, img_pos, ImVec2(w, h), img_hovered);
+
             UpdateStats(dt);
 
             if (m_ShowOverlay)
@@ -250,6 +261,261 @@ namespace editor
     private:
         static constexpr float VP_ZOOM_MULTIPLIER = 1.12f;
         static constexpr float VP_ZOOM_MIN_DISTANCE = 0.001f;
+
+        struct asset_browser_drag_payload_t
+        {
+            ihandle_t handle;
+            uint32_t type;
+        };
+
+        static inline vec3 v3_from_vec4_divw(vec4 v)
+        {
+            float iw = (fabsf(v.w) > 1e-8f) ? (1.0f / v.w) : 1.0f;
+            return (vec3){v.x * iw, v.y * iw, v.z * iw};
+        }
+
+        bool RayFromMouseInViewport(ImVec2 img_pos, ImVec2 img_size, vec3 *out_origin, vec3 *out_dir) const
+        {
+            if (!out_origin || !out_dir)
+                return false;
+
+            const ImGuiIO &io = ImGui::GetIO();
+            float mx = io.MousePos.x - img_pos.x;
+            float my = io.MousePos.y - img_pos.y;
+            if (mx < 0.0f || my < 0.0f || mx > img_size.x || my > img_size.y)
+                return false;
+
+            float ndc_x = (img_size.x > 1e-6f) ? (2.0f * (mx / img_size.x) - 1.0f) : 0.0f;
+            float ndc_y = (img_size.y > 1e-6f) ? (1.0f - 2.0f * (my / img_size.y)) : 0.0f;
+
+            vec4 p_ndc_near = vec4_make(ndc_x, ndc_y, -1.0f, 1.0f);
+            vec4 p_ndc_far = vec4_make(ndc_x, ndc_y, 1.0f, 1.0f);
+
+            vec4 p_view_near = mat4_mul_vec4(m_Cam.inv_proj, p_ndc_near);
+            vec4 p_view_far = mat4_mul_vec4(m_Cam.inv_proj, p_ndc_far);
+
+            vec4 p_world_near4 = mat4_mul_vec4(m_Cam.inv_view, p_view_near);
+            vec4 p_world_far4 = mat4_mul_vec4(m_Cam.inv_view, p_view_far);
+
+            vec3 p_world_near = v3_from_vec4_divw(p_world_near4);
+            vec3 p_world_far = v3_from_vec4_divw(p_world_far4);
+
+            vec3 dir = vp_v3_norm(vp_v3_sub(p_world_far, p_world_near));
+            if (vp_v3_len(dir) <= 1e-8f)
+                return false;
+
+            *out_origin = p_world_near;
+            *out_dir = dir;
+            return true;
+        }
+
+        static bool RayPlaneY0(vec3 origin, vec3 dir, vec3 *out_hit)
+        {
+            if (!out_hit)
+                return false;
+            float denom = dir.y;
+            if (fabsf(denom) < 1e-6f)
+                return false;
+            float t = -origin.y / denom;
+            if (t < 0.0f)
+                t = 0.0f;
+            *out_hit = vp_v3_add(origin, vp_v3_mul(dir, t));
+            return true;
+        }
+
+        static void SetEntityName(ecs_world_t *w, ecs_entity_t e, const char *name)
+        {
+            if (!w || !ecs_entity_is_alive(w, e))
+                return;
+            c_tag_t *tag = ecs_get(w, e, c_tag_t);
+            if (!tag)
+                return;
+            memset(tag->name, 0, sizeof(tag->name));
+            if (name && name[0])
+                memcpy(tag->name, name, strlen(name) < (sizeof(tag->name) - 1) ? strlen(name) : (sizeof(tag->name) - 1));
+        }
+
+        static void DeriveNameFromPath(const char *path, char *out, uint32_t out_sz)
+        {
+            if (!out || out_sz == 0)
+                return;
+            out[0] = 0;
+            if (!path || !path[0])
+                return;
+
+            const char *base = path;
+            for (const char *p = path; *p; ++p)
+                if (*p == '/' || *p == '\\')
+                    base = p + 1;
+
+            const char *dot = NULL;
+            for (const char *p = base; *p; ++p)
+                if (*p == '.')
+                    dot = p;
+
+            size_t n = dot ? (size_t)(dot - base) : strlen(base);
+            if (n >= (size_t)out_sz)
+                n = (size_t)out_sz - 1;
+            memcpy(out, base, n);
+            out[n] = 0;
+        }
+
+        void CancelDragPlacement(ecs_world_t *w)
+        {
+            if (w && m_DragPlaceEntity && ecs_entity_is_alive(w, m_DragPlaceEntity))
+                ecs_entity_destroy(w, m_DragPlaceEntity);
+            m_DragPlaceActive = false;
+            m_DragPlaceEntity = 0;
+            m_DragPlaceHandle = ihandle_invalid();
+            m_DragPlaceType = ASSET_NONE;
+        }
+
+        void HandleAssetDragDrop(CEditorContext *ctx, ecs_world_t *w, ImVec2 img_pos, ImVec2 img_size, bool img_hovered)
+        {
+            if (!ctx || !ctx->assets || !w)
+                return;
+
+            const ImGuiPayload *p = ImGui::GetDragDropPayload();
+            const bool dd_active = (p != nullptr);
+
+            // Cancel preview if the drag ended or became incompatible.
+            if (m_DragPlaceActive && (!dd_active || !p || !p->IsDataType("ASSET_IHANDLE")))
+            {
+                CancelDragPlacement(w);
+                return;
+            }
+
+            if (dd_active && p && p->IsDataType("ASSET_IHANDLE") && img_hovered && p->DataSize >= (int)sizeof(asset_browser_drag_payload_t))
+            {
+                asset_browser_drag_payload_t pl{};
+                memcpy(&pl, p->Data, sizeof(pl));
+
+                if (pl.type == (uint32_t)ASSET_MODEL && ihandle_is_valid(pl.handle))
+                {
+                    // Start or refresh preview placement.
+                    if (!m_DragPlaceActive || !ihandle_eq(m_DragPlaceHandle, pl.handle))
+                    {
+                        if (m_DragPlaceActive)
+                            CancelDragPlacement(w);
+
+                        ecs_entity_t e = ecs_entity_create(w);
+                        ecs_add(w, e, c_transform_t);
+                        c_mesh_renderer_t *mr = ecs_add(w, e, c_mesh_renderer_t);
+                        if (mr)
+                        {
+                            mr->model = pl.handle;
+                            mr->base.entity = e;
+                        }
+
+                        char name[128];
+                        char path_buf[ASSET_DEBUG_PATH_MAX];
+                        path_buf[0] = 0;
+                        if (asset_manager_get_path(ctx->assets, pl.handle, path_buf, (uint32_t)sizeof(path_buf)))
+                            DeriveNameFromPath(path_buf, name, (uint32_t)sizeof(name));
+                        else
+                            snprintf(name, sizeof(name), "Model");
+                        name[sizeof(name) - 1] = 0;
+                        SetEntityName(w, e, name);
+
+                        m_DragPlaceActive = true;
+                        m_DragPlaceEntity = e;
+                        m_DragPlaceHandle = pl.handle;
+                        m_DragPlaceType = (asset_type_t)pl.type;
+                    }
+
+                    if (m_DragPlaceEntity && ecs_entity_is_alive(w, m_DragPlaceEntity))
+                    {
+                        vec3 ro, rd, hit;
+                        if (RayFromMouseInViewport(img_pos, img_size, &ro, &rd) && RayPlaneY0(ro, rd, &hit))
+                        {
+                            c_transform_t *tr = ecs_get(w, m_DragPlaceEntity, c_transform_t);
+                            if (tr)
+                            {
+                                tr->position = hit;
+                                tr->base.entity = m_DragPlaceEntity;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Drop accept (commit).
+            if (img_hovered && ImGui::BeginDragDropTarget())
+            {
+                if (const ImGuiPayload *pl = ImGui::AcceptDragDropPayload("ASSET_IHANDLE"))
+                {
+                    if (pl->DataSize >= (int)sizeof(asset_browser_drag_payload_t))
+                    {
+                        asset_browser_drag_payload_t dd{};
+                        memcpy(&dd, pl->Data, sizeof(dd));
+
+                        if (dd.type == (uint32_t)ASSET_MODEL && ihandle_is_valid(dd.handle))
+                        {
+                            if (!m_DragPlaceActive || !ecs_entity_is_alive(w, m_DragPlaceEntity) || !ihandle_eq(m_DragPlaceHandle, dd.handle))
+                            {
+                                if (m_DragPlaceActive)
+                                    CancelDragPlacement(w);
+
+                                ecs_entity_t e = ecs_entity_create(w);
+                                ecs_add(w, e, c_transform_t);
+                                c_mesh_renderer_t *mr = ecs_add(w, e, c_mesh_renderer_t);
+                                if (mr)
+                                {
+                                    mr->model = dd.handle;
+                                    mr->base.entity = e;
+                                }
+
+                                char name[128];
+                                char path_buf[ASSET_DEBUG_PATH_MAX];
+                                path_buf[0] = 0;
+                                if (asset_manager_get_path(ctx->assets, dd.handle, path_buf, (uint32_t)sizeof(path_buf)))
+                                    DeriveNameFromPath(path_buf, name, (uint32_t)sizeof(name));
+                                else
+                                    snprintf(name, sizeof(name), "Model");
+                                name[sizeof(name) - 1] = 0;
+                                SetEntityName(w, e, name);
+
+                                vec3 ro, rd, hit;
+                                if (RayFromMouseInViewport(img_pos, img_size, &ro, &rd) && RayPlaneY0(ro, rd, &hit))
+                                {
+                                    c_transform_t *tr = ecs_get(w, e, c_transform_t);
+                                    if (tr)
+                                    {
+                                        tr->position = hit;
+                                        tr->base.entity = e;
+                                    }
+                                }
+
+                                m_DragPlaceActive = true;
+                                m_DragPlaceEntity = e;
+                                m_DragPlaceHandle = dd.handle;
+                                m_DragPlaceType = (asset_type_t)dd.type;
+                            }
+
+                            if (ctx->scene)
+                                ctx->scene->MarkDirty();
+
+                            // Finalize placement (keep entity).
+                            m_DragPlaceActive = false;
+                            m_DragPlaceEntity = 0;
+                            m_DragPlaceHandle = ihandle_invalid();
+                            m_DragPlaceType = ASSET_NONE;
+                        }
+                        else if (dd.type == (uint32_t)ASSET_SCENE && ihandle_is_valid(dd.handle) && ctx->scene && ctx->app)
+                        {
+                            char scene_path[ASSET_DEBUG_PATH_MAX];
+                            scene_path[0] = 0;
+                            if (asset_manager_get_path(ctx->assets, dd.handle, scene_path, (uint32_t)sizeof(scene_path)))
+                            {
+                                ctx->scene->LoadNow(&ctx->app->scene, ctx->assets, std::filesystem::path(scene_path));
+                                ctx->selected_entity = 0;
+                            }
+                        }
+                    }
+                }
+                ImGui::EndDragDropTarget();
+            }
+        }
 
         void ResetOrbit()
         {
@@ -659,5 +925,10 @@ namespace editor
         float m_FastMult = 2.25f;
 
         float m_RmbLookMult = 0.45f;
+
+        bool m_DragPlaceActive = false;
+        ecs_entity_t m_DragPlaceEntity = 0;
+        ihandle_t m_DragPlaceHandle = ihandle_invalid();
+        asset_type_t m_DragPlaceType = ASSET_NONE;
     };
 }

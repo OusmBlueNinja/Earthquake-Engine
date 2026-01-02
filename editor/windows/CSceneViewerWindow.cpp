@@ -16,6 +16,7 @@ extern "C"
 
 #include "imgui.h"
 #include "editor/CEditorContext.h"
+#include "editor/systems/CEditorSceneManager.h"
 #include "IconsFontAwesome6.h"
 
 namespace editor
@@ -234,6 +235,8 @@ namespace editor
             }
             ecs_entity_set_parent(w, ne, scene_viewer_parent(w, e) ? scene_viewer_parent(w, e) : root);
             ctx->selected_entity = ne;
+            if (ctx && ctx->scene)
+                ctx->scene->MarkDirty();
         }
 
         if (ImGui::MenuItem("Delete"))
@@ -241,6 +244,8 @@ namespace editor
             ecs_entity_destroy(w, e);
             if (ctx->selected_entity == e)
                 ctx->selected_entity = 0;
+            if (ctx && ctx->scene)
+                ctx->scene->MarkDirty();
             return;
         }
     }
@@ -328,7 +333,11 @@ namespace editor
                     if (scene_viewer_is_valid(w, dropped) && dropped != e && dropped != root)
                     {
                         if (!scene_viewer_would_cycle(w, dropped, e))
+                        {
                             ecs_entity_set_parent(w, dropped, e);
+                            if (ctx && ctx->scene)
+                                ctx->scene->MarkDirty();
+                        }
                     }
                 }
             }
@@ -357,6 +366,8 @@ namespace editor
         {
             if (tag)
                 tag->visible = self_vis ? 0u : 1u;
+            if (ctx && ctx->scene)
+                ctx->scene->MarkDirty();
         }
 
         if (ImGui::IsItemHovered())
@@ -447,6 +458,8 @@ namespace editor
             {
                 ecs_entity_t e = scene_viewer_create_entity(w);
                 ctx->selected_entity = e;
+                if (ctx && ctx->scene)
+                    ctx->scene->MarkDirty();
             }
 
             if (ImGui::MenuItem("Clear Selection", nullptr, false, ctx->selected_entity != 0))
@@ -463,7 +476,11 @@ namespace editor
                 {
                     ecs_entity_t dropped = *(const ecs_entity_t *)pl->Data;
                     if (scene_viewer_is_valid(w, dropped) && dropped != root)
+                    {
                         ecs_entity_set_parent(w, dropped, root);
+                        if (ctx && ctx->scene)
+                            ctx->scene->MarkDirty();
+                    }
                 }
             }
             ImGui::EndDragDropTarget();

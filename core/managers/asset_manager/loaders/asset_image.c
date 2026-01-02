@@ -2,6 +2,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <math.h>
 
 #include "asset_manager/asset_manager.h"
 
@@ -37,6 +38,278 @@ static int asset_path_has_ext(const char *path, const char *ext_lower)
         if (a != b)
             return 0;
     }
+    return 1;
+}
+
+static int hdr_parse_resolution_line(const char *line, int *out_w, int *out_h)
+{
+    if (!line || !out_w || !out_h)
+        return 0;
+
+    // Common variants:
+    //   -Y 256 +X 512
+    //   +Y 256 +X 512
+    //   -Y 256 -X 512
+    int y = 0;
+    int x = 0;
+
+    if (sscanf(line, " -Y %d +X %d", &y, &x) == 2)
+        goto ok;
+    if (sscanf(line, " +Y %d +X %d", &y, &x) == 2)
+        goto ok;
+    if (sscanf(line, " -Y %d -X %d", &y, &x) == 2)
+        goto ok;
+    if (sscanf(line, " +Y %d -X %d", &y, &x) == 2)
+        goto ok;
+
+    return 0;
+
+ok:
+    if (x <= 0 || y <= 0)
+        return 0;
+    *out_w = x;
+    *out_h = y;
+    return 1;
+}
+
+static int hdr_read_scanline_rgbe_rle(FILE *f, uint8_t *out_rgbe4, int width)
+{
+    if (!f || !out_rgbe4 || width <= 0)
+        return 0;
+
+    // RLE scanline marker requires width in [8, 32767].
+    if (width < 8 || width > 32767)
+        return 0;
+
+    uint8_t hdr[4];
+    if (fread(hdr, 1, 4, f) != 4)
+        return 0;
+
+    if (hdr[0] != 2 || hdr[1] != 2 || (hdr[2] & 0x80) != 0)
+        return 0;
+
+    int w = ((int)hdr[2] << 8) | (int)hdr[3];
+    if (w != width)
+        return 0;
+
+    // Decode 4 separate channel runs into a temp planar buffer [4][width].
+    uint8_t *planar = (uint8_t *)malloc((size_t)width * 4u);
+    if (!planar)
+        return 0;
+
+    uint8_t *chan[4] = {
+        planar + 0 * (size_t)width,
+        planar + 1 * (size_t)width,
+        planar + 2 * (size_t)width,
+        planar + 3 * (size_t)width};
+
+    for (int c = 0; c < 4; ++c)
+    {
+        int x = 0;
+        while (x < width)
+        {
+            int count = fgetc(f);
+            if (count == EOF)
+            {
+                free(planar);
+                return 0;
+            }
+
+            if (count > 128)
+            {
+                int run = count - 128;
+                int v = fgetc(f);
+                if (v == EOF)
+                {
+                    free(planar);
+                    return 0;
+                }
+                if (x + run > width)
+                {
+                    free(planar);
+                    return 0;
+                }
+                memset(chan[c] + x, v, (size_t)run);
+                x += run;
+            }
+            else
+            {
+                int run = count;
+                if (run <= 0)
+                {
+                    free(planar);
+                    return 0;
+                }
+                if (x + run > width)
+                {
+                    free(planar);
+                    return 0;
+                }
+                if (fread(chan[c] + x, 1, (size_t)run, f) != (size_t)run)
+                {
+                    free(planar);
+                    return 0;
+                }
+                x += run;
+            }
+        }
+    }
+
+    for (int x = 0; x < width; ++x)
+    {
+        out_rgbe4[(size_t)x * 4u + 0u] = chan[0][x];
+        out_rgbe4[(size_t)x * 4u + 1u] = chan[1][x];
+        out_rgbe4[(size_t)x * 4u + 2u] = chan[2][x];
+        out_rgbe4[(size_t)x * 4u + 3u] = chan[3][x];
+    }
+
+    free(planar);
+    return 1;
+}
+
+static int hdr_load_rgbe_downsampled(const char *path, int target_w, int target_h, float **out_rgb3, int *out_w, int *out_h)
+{
+    if (out_rgb3)
+        *out_rgb3 = NULL;
+    if (out_w)
+        *out_w = 0;
+    if (out_h)
+        *out_h = 0;
+
+    if (!path || !path[0] || !out_rgb3 || !out_w || !out_h)
+        return 0;
+    if (target_w <= 0 || target_h <= 0)
+        return 0;
+
+    FILE *f = fopen(path, "rb");
+    if (!f)
+        return 0;
+
+    char line[512];
+    int src_w = 0;
+    int src_h = 0;
+
+    // Header: read lines until blank line, then a resolution line.
+    for (;;)
+    {
+        if (!fgets(line, (int)sizeof(line), f))
+        {
+            fclose(f);
+            return 0;
+        }
+        if (line[0] == '\n' || line[0] == '\r' || line[0] == 0)
+            break;
+    }
+
+    if (!fgets(line, (int)sizeof(line), f))
+    {
+        fclose(f);
+        return 0;
+    }
+
+    if (!hdr_parse_resolution_line(line, &src_w, &src_h))
+    {
+        fclose(f);
+        return 0;
+    }
+
+    if (src_w <= 0 || src_h <= 0)
+    {
+        fclose(f);
+        return 0;
+    }
+
+    float *sum = (float *)calloc((size_t)target_w * (size_t)target_h * 3u, sizeof(float));
+    uint32_t *cnt = (uint32_t *)calloc((size_t)target_w * (size_t)target_h, sizeof(uint32_t));
+    uint8_t *scan = (uint8_t *)malloc((size_t)src_w * 4u);
+    if (!sum || !cnt || !scan)
+    {
+        free(sum);
+        free(cnt);
+        free(scan);
+        fclose(f);
+        return 0;
+    }
+
+
+    for (int y = 0; y < src_h; ++y)
+    {
+        if (!hdr_read_scanline_rgbe_rle(f, scan, src_w))
+        {
+            free(sum);
+            free(cnt);
+            free(scan);
+            fclose(f);
+            return 0;
+        }
+
+        int ty = (int)(((int64_t)y * (int64_t)target_h) / (int64_t)src_h);
+        if (ty < 0)
+            ty = 0;
+        if (ty >= target_h)
+            ty = target_h - 1;
+
+        for (int x = 0; x < src_w; ++x)
+        {
+            int tx = (int)(((int64_t)x * (int64_t)target_w) / (int64_t)src_w);
+            if (tx < 0)
+                tx = 0;
+            if (tx >= target_w)
+                tx = target_w - 1;
+
+            const uint8_t *rgbe = scan + (size_t)x * 4u;
+            const uint8_t r = rgbe[0];
+            const uint8_t g = rgbe[1];
+            const uint8_t b = rgbe[2];
+            const uint8_t e = rgbe[3];
+
+            float rf = 0.0f, gf = 0.0f, bf = 0.0f;
+            if (e != 0)
+            {
+                // RGBE -> float RGB
+                const float scale = ldexpf(1.0f, (int)e - (128 + 8));
+                rf = (float)r * scale;
+                gf = (float)g * scale;
+                bf = (float)b * scale;
+            }
+
+            const size_t di = ((size_t)ty * (size_t)target_w + (size_t)tx);
+            sum[di * 3u + 0u] += rf;
+            sum[di * 3u + 1u] += gf;
+            sum[di * 3u + 2u] += bf;
+            cnt[di]++;
+        }
+    }
+
+    free(scan);
+    fclose(f);
+
+    float *out = (float *)malloc((size_t)target_w * (size_t)target_h * 3u * sizeof(float));
+    if (!out)
+    {
+        free(sum);
+        free(cnt);
+        return 0;
+    }
+
+    for (int y = 0; y < target_h; ++y)
+    {
+        for (int x = 0; x < target_w; ++x)
+        {
+            const size_t di = ((size_t)y * (size_t)target_w + (size_t)x);
+            const uint32_t c = cnt[di] ? cnt[di] : 1u;
+            out[di * 3u + 0u] = sum[di * 3u + 0u] / (float)c;
+            out[di * 3u + 1u] = sum[di * 3u + 1u] / (float)c;
+            out[di * 3u + 2u] = sum[di * 3u + 2u] / (float)c;
+        }
+    }
+
+    free(sum);
+    free(cnt);
+
+    *out_rgb3 = out;
+    *out_w = target_w;
+    *out_h = target_h;
     return 1;
 }
 
@@ -258,33 +531,78 @@ static bool asset_image_load_from_file(const char *path, asset_any_t *out_asset)
 
     if (is_hdr)
     {
-        float *data = stbi_loadf(path, &w, &h, &c, 3);
-        if (!data)
-            return false;
+        // Huge HDRIs (e.g. 24k) are too big to fully decode to floats in RAM.
+        // For those, stream-decode RGBE and downsample to a more reasonable size.
+        int info_w = 0, info_h = 0, info_c = 0;
+        const int info_ok = stbi_info(path, &info_w, &info_h, &info_c);
 
-        size_t count = (size_t)w * (size_t)h * 3u;
-        size_t sz = count * sizeof(float);
+        const int max_w = 4096;
+        const int max_h = 4096;
 
-        float *copy = (float *)malloc(sz);
-        if (!copy)
+        int src_w = info_ok ? info_w : 0;
+        int src_h = info_ok ? info_h : 0;
+
+        int target_w = 0;
+        int target_h = 0;
+
+        if (src_w > 0 && src_h > 0)
         {
+            float sx = (float)max_w / (float)src_w;
+            float sy = (float)max_h / (float)src_h;
+            float s = sx < sy ? sx : sy;
+            if (s > 1.0f)
+                s = 1.0f;
+            target_w = (int)floorf((float)src_w * s + 0.5f);
+            target_h = (int)floorf((float)src_h * s + 0.5f);
+            if (target_w < 1)
+                target_w = 1;
+            if (target_h < 1)
+                target_h = 1;
+        }
+
+        const uint64_t big_pixels = (uint64_t)src_w * (uint64_t)src_h;
+        const uint64_t big_threshold = 60000000ull; // ~60MP ~= 960MB for float RGB (w/o mips), before overhead.
+        const int want_stream_downsample = (src_w > max_w || src_h > max_h || big_pixels > big_threshold);
+
+        if (want_stream_downsample && target_w > 0 && target_h > 0)
+        {
+            float *base = NULL;
+            int dw = 0;
+            int dh = 0;
+            if (!hdr_load_rgbe_downsampled(path, target_w, target_h, &base, &dw, &dh))
+                return false;
+
+            if (!asset_image_mips_build_f32(&mips, base, (uint32_t)dw, (uint32_t)dh, 3u))
+            {
+                free(base);
+                return false;
+            }
+
+            free(base);
+            w = dw;
+            h = dh;
+            c = 3;
+            pixels = NULL;
+            channels = 3;
+            is_float = 1;
+        }
+        else
+        {
+            float *data = stbi_loadf(path, &w, &h, &c, 3);
+            if (!data)
+                return false;
+
+            if (!asset_image_mips_build_f32(&mips, data, (uint32_t)w, (uint32_t)h, 3u))
+            {
+                stbi_image_free(data);
+                return false;
+            }
+
             stbi_image_free(data);
-            return false;
+            pixels = NULL;
+            channels = 3;
+            is_float = 1;
         }
-
-        memcpy(copy, data, sz);
-        stbi_image_free(data);
-
-        if (!asset_image_mips_build_f32(&mips, copy, (uint32_t)w, (uint32_t)h, 3u))
-        {
-            free(copy);
-            return false;
-        }
-
-        free(copy);
-        pixels = NULL;
-        channels = 3;
-        is_float = 1;
     }
     else
     {
@@ -457,7 +775,6 @@ static bool asset_image_init(asset_manager_t *am, asset_any_t *asset)
         glTexSubImage2D(GL_TEXTURE_2D, (GLint)lowest_mip, 0, 0, (GLsizei)mw, (GLsizei)mh, fmt, GL_UNSIGNED_BYTE, src);
     }
 
-    // Clamp sampling to resident mip range (starts at lowest mip only).
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, (GLint)lowest_mip);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, (GLint)lowest_mip);
 

@@ -9,6 +9,7 @@
 #include "asset_model_stl.h"
 #include "asset_model_3mf.h"
 #include "asset_model_fbx.h"
+#include "asset_scene_yaml.h"
 
 #include "asset_image_itex.h"
 #include "asset_model_imesh.h"
@@ -36,4 +37,5 @@ static inline void register_asset_modules(asset_manager_t *am)
     REGISTER_ASSET_MODULE(am, asset_module_model_fbx);
     REGISTER_ASSET_MODULE(am, asset_module_image_itex);
     REGISTER_ASSET_MODULE(am, asset_module_model_imesh);
+    REGISTER_ASSET_MODULE(am, asset_module_scene_yaml);
 }
