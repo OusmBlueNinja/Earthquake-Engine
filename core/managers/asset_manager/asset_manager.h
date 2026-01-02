@@ -133,6 +133,12 @@ typedef struct asset_manager_desc_t
 
     uint64_t upload_budget_bytes_per_pump;
     uint32_t pump_per_frame;
+
+    // Texture mip streaming (Disk -> RAM mip chain -> GPU mips).
+    uint32_t tex_stream_stable_frames;
+    uint32_t tex_stream_min_safety_mips_from_bottom; // 0 => keep only lowest mip as safety, 1 => keep last 2 mips, etc.
+    uint32_t tex_stream_evict_unused_ms;             // cooldown: only evict mips if unused for this long
+    uint64_t tex_stream_upload_budget_bytes_per_frame;
 } asset_manager_desc_t;
 
 typedef struct asset_manager_stats_t
@@ -144,6 +150,12 @@ typedef struct asset_manager_stats_t
 
     uint64_t upload_bytes_last_pump;
     uint64_t evicted_bytes_last_pump;
+
+    uint64_t tex_stream_uploaded_bytes_last_frame;
+    uint64_t tex_stream_evicted_bytes_last_frame;
+    uint32_t tex_stream_uploads_last_frame; // number of mip uploads
+    uint32_t tex_stream_evictions_last_frame; // number of mip evictions
+    uint32_t tex_stream_pending_uploads; // textures currently wanting sharper mips
 
     uint32_t textures_resident;
 
@@ -189,10 +201,23 @@ typedef struct asset_manager_t
     uint64_t upload_budget_bytes_per_pump;
     uint32_t pump_per_frame;
 
+    // Texture mip streaming knobs (see asset_manager_desc_t).
+    uint32_t tex_stream_stable_frames;
+    uint32_t tex_stream_min_safety_mips_from_bottom;
+    uint32_t tex_stream_evict_unused_ms;
+    uint64_t tex_stream_upload_budget_bytes_per_frame;
+
     asset_manager_stats_t stats;
 
     uint32_t asset_get_any_cnt_frame;
     uint32_t asset_get_any_cnt_last_frame;
+
+    // Dedupe map: persistent-key -> slot index (1-based like handle index).
+    // Used to avoid allocating duplicate slots when requesting the same path/payload repeatedly.
+    uint64_t *dedupe_keys;
+    uint32_t *dedupe_vals;
+    uint32_t dedupe_cap;
+    uint32_t dedupe_count;
 } asset_manager_t;
 
 enum
@@ -221,6 +246,18 @@ typedef struct asset_debug_slot_t
     uint64_t last_requested_ms;
     uint64_t vram_bytes;
 
+    // Image streaming debug (valid when type==ASSET_IMAGE and state==READY).
+    uint32_t img_mip_count;
+    uint32_t img_resident_top_mip;
+    uint32_t img_target_top_mip;
+    uint32_t img_best_target_top_mip;
+    uint64_t img_residency_mask;
+    uint16_t img_priority;
+    uint16_t img_pending_frames;
+    uint8_t img_forced;
+    uint8_t img_pad0[3];
+    uint32_t img_forced_top_mip;
+
     char path[ASSET_DEBUG_PATH_MAX];
 } asset_debug_slot_t;
 
@@ -239,7 +276,26 @@ typedef struct asset_manager_debug_snapshot_t
     uint64_t now_ms;
     uint64_t vram_budget_bytes;
     uint64_t vram_resident_bytes;
+
+    uint64_t tex_stream_upload_budget_bytes_per_frame;
+    uint32_t tex_stream_stable_frames;
+    uint32_t tex_stream_min_safety_mips_from_bottom;
+    uint32_t tex_stream_evict_unused_ms;
+
+    uint64_t tex_stream_uploaded_bytes_last_frame;
+    uint64_t tex_stream_evicted_bytes_last_frame;
+    uint32_t tex_stream_uploads_last_frame;
+    uint32_t tex_stream_evictions_last_frame;
+    uint32_t tex_stream_pending_uploads;
 } asset_manager_debug_snapshot_t;
+
+// Called by the renderer for visible texture usage. Updates per-texture target mip selection for the current frame.
+// `screen_coverage_px` should be roughly the max pixel diameter of the drawable using the texture.
+void asset_manager_image_stream_record_use(asset_manager_t *am, ihandle_t image, float screen_coverage_px, float uv_scale, uint16_t priority);
+
+// Forces a texture to target (and keep) a specific top mip until cleared.
+// `top_mip` is clamped to [0, mip_count-1]. Use `enabled=0` to clear.
+void asset_manager_image_stream_force_top_mip(asset_manager_t *am, ihandle_t image, uint32_t enabled, uint32_t top_mip, uint16_t priority);
 
 bool asset_manager_init(asset_manager_t *am, const asset_manager_desc_t *desc);
 void asset_manager_shutdown(asset_manager_t *am);

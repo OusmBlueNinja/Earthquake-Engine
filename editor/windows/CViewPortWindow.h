@@ -11,6 +11,8 @@ extern "C"
 #include <stdint.h>
 #include <math.h>
 #include <stdio.h>
+#include <vector>
+#include <string.h>
 
 #include "imgui.h"
 #include "CBaseWindow.h"
@@ -442,9 +444,12 @@ namespace editor
 
             const render_gpu_timings_t *gt = r ? R_get_gpu_timings(r) : nullptr;
 
-            char text[768];
+            char text[1536];
             char asset_line[256];
             asset_line[0] = 0;
+
+            char tex_lines[768];
+            tex_lines[0] = 0;
 
             if (r && r->assets)
             {
@@ -453,22 +458,113 @@ namespace editor
                 {
                     double vram_mb = (double)st.vram_resident_bytes / (1024.0 * 1024.0);
                     double bud_mb = (double)st.vram_budget_bytes / (1024.0 * 1024.0);
-                    double up_mb = (double)st.upload_bytes_last_pump / (1024.0 * 1024.0);
-                    double ev_mb = (double)st.evicted_bytes_last_pump / (1024.0 * 1024.0);
+                    double up_mb = (double)st.tex_stream_uploaded_bytes_last_frame / (1024.0 * 1024.0);
+                    double ev_mb = (double)st.tex_stream_evicted_bytes_last_frame / (1024.0 * 1024.0);
 
                     if (st.vram_budget_bytes)
                     {
                         snprintf(asset_line, sizeof(asset_line),
-                                 "Tex: %.1f/%.0f MB  up %.2f MB  ev %.2f MB  jobs %u/%u",
-                                 vram_mb, bud_mb, up_mb, ev_mb,
+                                 "Tex: %.1f/%.0f MB  up %.2f MB (%u)  ev %.2f MB (%u)  pend %u  jobs %u/%u",
+                                 vram_mb, bud_mb, up_mb, (unsigned)st.tex_stream_uploads_last_frame, ev_mb, (unsigned)st.tex_stream_evictions_last_frame,
+                                 (unsigned)st.tex_stream_pending_uploads,
                                  (unsigned)st.jobs_pending, (unsigned)st.done_pending);
                     }
                     else
                     {
                         snprintf(asset_line, sizeof(asset_line),
-                                 "Tex: %.1f MB  up %.2f MB  ev %.2f MB  jobs %u/%u",
-                                 vram_mb, up_mb, ev_mb,
+                                 "Tex: %.1f MB  up %.2f MB (%u)  ev %.2f MB (%u)  pend %u  jobs %u/%u",
+                                 vram_mb, up_mb, (unsigned)st.tex_stream_uploads_last_frame, ev_mb, (unsigned)st.tex_stream_evictions_last_frame,
+                                 (unsigned)st.tex_stream_pending_uploads,
                                  (unsigned)st.jobs_pending, (unsigned)st.done_pending);
+                    }
+                }
+            }
+
+            if (r && r->assets)
+            {
+                const uint32_t slot_count = asset_manager_debug_get_slot_count(r->assets);
+                if (slot_count > 0)
+                {
+                    static std::vector<asset_debug_slot_t> slots;
+                    slots.resize(slot_count);
+
+                    asset_manager_debug_snapshot_t snap = {};
+                    asset_manager_debug_get_slots(r->assets, slots.data(), slot_count, &snap);
+
+                    struct top_t
+                    {
+                        uint32_t slot_index = 0;
+                        uint32_t delta = 0;
+                        uint16_t priority = 0;
+                        const char *path = nullptr;
+                        uint32_t res = 0;
+                        uint32_t tgt = 0;
+                    };
+
+                    top_t top[4] = {};
+                    uint32_t top_n = 0;
+
+                    for (uint32_t i = 0; i < slot_count; ++i)
+                    {
+                        const asset_debug_slot_t &s = slots[i];
+                        if (s.type != ASSET_IMAGE || s.state != ASSET_STATE_READY)
+                            continue;
+                        if (s.img_mip_count == 0)
+                            continue;
+                        if (s.img_resident_top_mip <= s.img_target_top_mip)
+                            continue;
+
+                        const uint32_t delta = s.img_resident_top_mip - s.img_target_top_mip;
+                        const uint16_t prio = s.img_priority;
+
+                        // Insert into a tiny fixed top-k list.
+                        uint32_t ins = top_n;
+                        if (ins > 4)
+                            ins = 4;
+                        for (uint32_t k = 0; k < top_n && k < 4; ++k)
+                        {
+                            if (prio > top[k].priority || (prio == top[k].priority && delta > top[k].delta))
+                            {
+                                ins = k;
+                                break;
+                            }
+                        }
+
+                        if (ins >= 4)
+                            continue;
+
+                        if (top_n < 4)
+                            top_n++;
+
+                        for (uint32_t k = top_n - 1u; k > ins; --k)
+                            top[k] = top[k - 1u];
+
+                        top[ins] = top_t{.slot_index = s.slot_index, .delta = delta, .priority = prio, .path = s.path, .res = s.img_resident_top_mip, .tgt = s.img_target_top_mip};
+                    }
+
+                    if (top_n)
+                    {
+                        size_t off = 0;
+                        off += snprintf(tex_lines + off, sizeof(tex_lines) - off, "Streaming:\n");
+                        for (uint32_t k = 0; k < top_n && off + 64 < sizeof(tex_lines); ++k)
+                        {
+                            const char *p = top[k].path ? top[k].path : "-";
+                            // Show a short suffix of the path.
+                            const char *tail = p;
+                            for (const char *q = p; *q; ++q)
+                            {
+                                if (*q == '/' || *q == '\\')
+                                    tail = q + 1;
+                            }
+
+                            off += snprintf(tex_lines + off, sizeof(tex_lines) - off,
+                                            "  #%u %u/%u (+%u) %s\n",
+                                            (unsigned)top[k].slot_index,
+                                            (unsigned)top[k].res,
+                                            (unsigned)top[k].tgt,
+                                            (unsigned)top[k].delta,
+                                            tail);
+                        }
                     }
                 }
             }
@@ -490,6 +586,12 @@ namespace editor
                          gt->ms[R_GPU_COMPOSITE],
                          asset_line[0] ? "\n" : "",
                          asset_line[0] ? asset_line : "");
+
+                if (tex_lines[0])
+                {
+                    strncat(text, "\n", sizeof(text) - strlen(text) - 1u);
+                    strncat(text, tex_lines, sizeof(text) - strlen(text) - 1u);
+                }
             }
             else
             {
@@ -498,6 +600,12 @@ namespace editor
                          (double)pos.x, (double)pos.y, (double)pos.z,
                          asset_line[0] ? "\n" : "",
                          asset_line[0] ? asset_line : "");
+
+                if (tex_lines[0])
+                {
+                    strncat(text, "\n", sizeof(text) - strlen(text) - 1u);
+                    strncat(text, tex_lines, sizeof(text) - strlen(text) - 1u);
+                }
             }
 
             float pad = 8.0f;

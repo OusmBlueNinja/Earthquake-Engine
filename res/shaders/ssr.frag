@@ -8,6 +8,9 @@ uniform sampler2D u_GDepth;
 uniform sampler2D u_GNormal;
 uniform sampler2D u_GMaterial;
 
+uniform int u_HasGNormal;
+uniform int u_HasGMaterial;
+
 uniform mat4 u_View;
 uniform mat4 u_Proj;
 uniform mat4 u_InvView;
@@ -45,6 +48,30 @@ float saturate(float x)
     return clamp(x, 0.0, 1.0);
 }
 
+vec3 normal_from_depth(vec2 uv, float depth)
+{
+    vec2 du = vec2(u_InvResolution.x, 0.0);
+    vec2 dv = vec2(0.0, u_InvResolution.y);
+
+    float dx = texture(u_GDepth, uv + du).r;
+    float dy = texture(u_GDepth, uv + dv).r;
+
+    // If neighbors are background, fall back to a stable normal.
+    if (dx >= 1.0 || dy >= 1.0 || depth >= 1.0)
+        return vec3(0.0, 0.0, 1.0);
+
+    vec3 P = reconstruct_view_pos(uv, depth);
+    vec3 Px = reconstruct_view_pos(uv + du, dx);
+    vec3 Py = reconstruct_view_pos(uv + dv, dy);
+
+    vec3 dPdx = Px - P;
+    vec3 dPdy = Py - P;
+    vec3 N = normalize(cross(dPdy, dPdx));
+    if (any(isnan(N)) || length(N) < 1e-4)
+        N = vec3(0.0, 0.0, 1.0);
+    return N;
+}
+
 void main()
 {
     vec3 base = texture(u_Scene, v_UV).rgb;
@@ -56,12 +83,22 @@ void main()
         return;
     }
 
-    vec3 N = decode_normal(texture(u_GNormal, v_UV));
-    vec4 mm = texture(u_GMaterial, v_UV);
-    float rough = clamp(mm.r, 0.02, 1.0);
+    vec3 N = (u_HasGNormal != 0) ? decode_normal(texture(u_GNormal, v_UV)) : normal_from_depth(v_UV, depth);
+
+    float rough = 0.6;
+    if (u_HasGMaterial != 0)
+    {
+        vec4 mm = texture(u_GMaterial, v_UV);
+        rough = mm.r;
+    }
+    rough = clamp(rough, 0.02, 1.0);
 
     vec3 Pvs = reconstruct_view_pos(v_UV, depth);
     vec3 V = normalize(-Pvs);
+
+    // Keep N facing the view to reduce instability.
+    if (dot(N, V) < 0.0)
+        N = -N;
 
     vec3 R = reflect(-V, N);
 
