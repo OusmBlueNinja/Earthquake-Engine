@@ -39,10 +39,18 @@ namespace editor
         bool m_ShowOnlyResident = true;
         bool m_ShowOnlyPending = false;
 
+        float m_ThumbSize = 96.0f;
+        bool m_GridShowNames = true;
+        ihandle_t m_Selected = {};
+        int m_SelectedPreviewMip = -1; // -1 => current resident top mip
+
         std::vector<float> m_HistVRAM;
         std::vector<float> m_HistUp;
         std::vector<float> m_HistEv;
-        size_t m_HistMax = 1200;
+        size_t m_HistMax = 60;
+        uint64_t m_HistLastSampleMs = 0;
+        uint64_t m_HistAccUploadedBytes = 0;
+        uint64_t m_HistAccEvictedBytes = 0;
 
         std::vector<asset_debug_slot_t> m_Slots;
         asset_manager_debug_snapshot_t m_Snapshot = {};
